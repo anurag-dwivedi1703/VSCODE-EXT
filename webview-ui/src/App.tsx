@@ -9,7 +9,7 @@ const DEFAULT_WORKSPACES = [
     { id: '1', name: 'No Workspace Open', status: 'Idle' }
 ];
 
-type LogType = 'user' | 'agent' | 'tool' | 'error' | 'info' | 'system';
+type LogType = 'user' | 'agent' | 'tool' | 'error' | 'info' | 'system' | 'artifact';
 
 interface LogGroup {
     type: LogType;
@@ -89,6 +89,14 @@ function parseLogs(logs: string[]): LogGroup[] {
             }
             systemGroup.details?.push(log);
         }
+        // Artifact created
+        else if (log.includes('[Artifact Created]:')) {
+            if (currentGroup) groups.push(currentGroup);
+            if (systemGroup) { groups.push(systemGroup); systemGroup = null; }
+
+            const path = log.replace('[Artifact Created]:', '').trim();
+            currentGroup = { type: 'artifact', content: path };
+        }
         else {
             // Append to current if match type
             if (currentGroup && (currentGroup.type === 'agent' || currentGroup.type === 'user')) {
@@ -118,6 +126,10 @@ function App() {
     const [expandedAgentId, setExpandedAgentId] = useState<string | null>(null);
     const [showNewAgentModal, setShowNewAgentModal] = useState(false);
 
+    // Preview State
+    const [previewContent, setPreviewContent] = useState<string | null>(null);
+    const [previewPath, setPreviewPath] = useState<string | null>(null);
+
     // Auto-scroll logic
     const logsEndRef = useRef<HTMLDivElement>(null);
 
@@ -141,6 +153,10 @@ function App() {
                 if (message.workspaces.length > 0) {
                     setSelectedWorkspace(message.workspaces[0].id);
                 }
+            }
+            if (message.command === 'fileContent') {
+                setPreviewContent(message.content);
+                setPreviewPath(message.path);
             }
         };
         window.addEventListener('message', messageHandler);
@@ -261,6 +277,21 @@ function App() {
                                             </div>
                                         );
                                     }
+                                    if (group.type === 'artifact') {
+                                        return (
+                                            <div key={i} className="msg-artifact-card">
+                                                <div className="artifact-icon">📄</div>
+                                                <div className="artifact-info">
+                                                    <div className="artifact-name">{group.content.split(/[\\/]/).pop()}</div>
+                                                    <div className="artifact-desc">Information Artifact</div>
+                                                </div>
+                                                <button className="artifact-open-btn"
+                                                    onClick={() => vscode.postMessage({ command: 'previewFile', path: group.content, taskId: activeAgent.id })}>
+                                                    OPEN
+                                                </button>
+                                            </div>
+                                        );
+                                    }
                                     if (group.type === 'error') {
                                         return <div key={i} className="msg-error">⚠️ {group.content}</div>;
                                     }
@@ -308,39 +339,53 @@ function App() {
                 )}
             </main>
 
-            {/* RIGHT PANE: CONTEXT & ARTIFACTS */}
+            {/* RIGHT PANE: CONTEXT & ARTIFACTS OR PREVIEW */}
             <aside className="pane-context">
                 <div className="pane-header">
-                    <span>REVIEW CONTEXT</span>
-                </div>
-                <div className="context-list">
-                    {activeAgent && activeAgent.worktreePath && (
-                        <div className="context-item">
-                            <strong>Worktree:</strong><br />
-                            <code style={{ wordBreak: 'break-all' }}>{activeAgent.worktreePath}</code>
-                        </div>
-                    )}
-
-                    {/* ARTIFACTS LIST */}
-                    {activeAgent && activeAgent.artifacts && activeAgent.artifacts.length > 0 && (
-                        <div>
-                            <div className="sub-header">Created Artifacts</div>
-                            {activeAgent.artifacts.map((path: string, i: number) => (
-                                <div key={i} className="context-item artifact-item"
-                                    onClick={() => vscode.postMessage({ command: 'openFile', path })}>
-                                    <span style={{ marginRight: '5px' }}>📄</span>
-                                    <span>{path.split(/[\\/]/).pop()}</span>
-                                </div>
-                            ))}
-                        </div>
-                    )}
-
-                    {(!activeAgent || !activeAgent.artifacts || activeAgent.artifacts.length === 0) && (
-                        <div className="context-item empty-context" >
-                            No artifacts created yet.
-                        </div>
+                    <span>{previewContent ? 'PREVIEW' : 'REVIEW CONTEXT'}</span>
+                    {previewContent && (
+                        <button className="icon-btn" style={{ marginLeft: 'auto' }} onClick={() => {
+                            setPreviewContent(null);
+                            setPreviewPath(null);
+                        }}>❌ Close</button>
                     )}
                 </div>
+
+                {previewContent ? (
+                    <div className="markdown-body" style={{ padding: '20px', overflowY: 'auto', flex: 1 }}>
+                        <h3>{previewPath?.split(/[\\/]/).pop()}</h3>
+                        <ReactMarkdown>{previewContent}</ReactMarkdown>
+                    </div>
+                ) : (
+                    <div className="context-list">
+                        {activeAgent && activeAgent.worktreePath && (
+                            <div className="context-item">
+                                <strong>Worktree:</strong><br />
+                                <code style={{ wordBreak: 'break-all' }}>{activeAgent.worktreePath}</code>
+                            </div>
+                        )}
+
+                        {/* ARTIFACTS LIST */}
+                        {activeAgent && activeAgent.artifacts && activeAgent.artifacts.length > 0 && (
+                            <div>
+                                <div className="sub-header">Created Artifacts</div>
+                                {activeAgent.artifacts.map((path: string, i: number) => (
+                                    <div key={i} className="context-item artifact-item"
+                                        onClick={() => vscode.postMessage({ command: 'previewFile', path, taskId: activeAgent.id })}>
+                                        <span style={{ marginRight: '5px' }}>📄</span>
+                                        <span>{path.split(/[\\/]/).pop()}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {(!activeAgent || !activeAgent.artifacts || activeAgent.artifacts.length === 0) && (
+                            <div className="context-item empty-context" >
+                                No artifacts created yet.
+                            </div>
+                        )}
+                    </div>
+                )}
             </aside>
 
             {/* Modal */}

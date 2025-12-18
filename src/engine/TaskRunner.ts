@@ -190,6 +190,7 @@ export class TaskRunner {
                                     // Artifact Tracking
                                     if (args.path && !task.artifacts.includes(args.path)) {
                                         task.artifacts.push(args.path);
+                                        task.logs.push(`[Artifact Created]: ${args.path}`);
                                     }
                                     break;
                                 case 'list_files':
@@ -273,5 +274,9 @@ export class TaskRunner {
                 }
             }
         }
+    }
+
+    public getTask(taskId: string): AgentTask | undefined {
+        return this.tasks.get(taskId);
     }
 }

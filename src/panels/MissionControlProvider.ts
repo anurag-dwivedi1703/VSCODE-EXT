@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
+import * as path from 'path';
 import { TaskRunner } from '../engine/TaskRunner';
 
 export class MissionControlProvider {
@@ -143,11 +144,59 @@ export class MissionControlProvider {
                         return;
                     case 'openFile': {
                         const openPath = vscode.Uri.file(message.path);
-                        vscode.workspace.openTextDocument(openPath).then(doc => {
-                            vscode.window.showTextDocument(doc);
-                        }, err => {
-                            vscode.window.showErrorMessage(`Failed to open: ${err.message}`);
-                        });
+                        if (message.path.endsWith('.md')) {
+                            vscode.commands.executeCommand('markdown.showPreview', openPath).then(undefined, err => {
+                                vscode.window.showErrorMessage(`Failed to preview markdown: ${err.message}`);
+                                // Fallback to text editor
+                                vscode.workspace.openTextDocument(openPath).then(doc => vscode.window.showTextDocument(doc));
+                            });
+                        } else {
+                            vscode.workspace.openTextDocument(openPath).then(doc => {
+                                vscode.window.showTextDocument(doc);
+                            }, err => {
+                                vscode.window.showErrorMessage(`Failed to open: ${err.message}`);
+                            });
+                        }
+                        return;
+                    }
+                    case 'previewFile': {
+                        vscode.window.showInformationMessage(`[Debug] Preview Request: Path=${message.path}, TaskId=${message.taskId}`);
+
+                        const taskId = message.taskId;
+                        const relativePath = message.path;
+                        const task = this._taskRunner.getTask(taskId);
+
+                        if (task) {
+                            vscode.window.showInformationMessage(`[Debug] Task found. Worktree: ${task.worktreePath}`);
+                            if (task.worktreePath) {
+                                // Resolve path
+                                const fsPath = path.isAbsolute(relativePath)
+                                    ? relativePath
+                                    : path.join(task.worktreePath, relativePath);
+
+                                vscode.window.showInformationMessage(`[Debug] Resolved Path: ${fsPath}`);
+
+                                try {
+                                    if (fs.existsSync(fsPath)) {
+                                        const content = fs.readFileSync(fsPath, 'utf-8');
+                                        this._panel.webview.postMessage({
+                                            command: 'fileContent',
+                                            path: relativePath,
+                                            content: content
+                                        });
+                                        vscode.window.showInformationMessage(`[Debug] Sent content to webview (${content.length} bytes)`);
+                                    } else {
+                                        vscode.window.showErrorMessage(`[Debug] File not found at: ${fsPath}`);
+                                    }
+                                } catch (err: any) {
+                                    vscode.window.showErrorMessage(`[Debug] Error reading file: ${err.message}`);
+                                }
+                            } else {
+                                vscode.window.showErrorMessage("[Debug] Task has no worktree path.");
+                            }
+                        } else {
+                            vscode.window.showErrorMessage(`[Debug] Task not found for ID: ${taskId}`);
+                        }
                         return;
                     }
                 }
