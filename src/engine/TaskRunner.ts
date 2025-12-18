@@ -29,6 +29,10 @@ export class TaskRunner {
     private _onTaskUpdate = new vscode.EventEmitter<{ taskId: string, task: AgentTask }>();
     public readonly onTaskUpdate = this._onTaskUpdate.event;
 
+    public getTasks(): AgentTask[] {
+        return Array.from(this.tasks.values());
+    }
+
     constructor(private context: vscode.ExtensionContext) {
         // Retrieve API Key from settings
         const config = vscode.workspace.getConfiguration('antigravity');
@@ -39,9 +43,47 @@ export class TaskRunner {
         if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
             this.worktreeManager = new WorktreeManager(vscode.workspace.workspaceFolders[0].uri.fsPath);
         }
+
+        // Load tasks from disk
+        this.loadTasks();
     }
 
-    public async startTask(prompt: string): Promise<string> {
+    private get storageDir(): string {
+        const storageUri = this.context.globalStorageUri;
+        const missionsDir = path.join(storageUri.fsPath, 'missions');
+        if (!fs.existsSync(missionsDir)) {
+            fs.mkdirSync(missionsDir, { recursive: true });
+        }
+        return missionsDir;
+    }
+
+    private saveTask(task: AgentTask) {
+        try {
+            const taskPath = path.join(this.storageDir, `${task.id}.json`);
+            fs.writeFileSync(taskPath, JSON.stringify(task, null, 2));
+        } catch (error) {
+            console.error(`Failed to save task ${task.id}:`, error);
+        }
+    }
+
+    private loadTasks() {
+        try {
+            const dir = this.storageDir;
+            const files = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
+            for (const file of files) {
+                const content = fs.readFileSync(path.join(dir, file), 'utf-8');
+                const task = JSON.parse(content) as AgentTask;
+                this.tasks.set(task.id, task);
+
+                // Fire update so UI knows about it (if UI is listening already)
+                // Note: UI might not be ready yet in constructor, but MissionControlProvider pulls data on init anyway.
+            }
+        } catch (error) {
+            console.error("Failed to load tasks:", error);
+        }
+    }
+
+    public async startTask(prompt: string, worktreePath?: string): Promise<string> {
         const taskId = `agent-${Date.now()}`;
         const task: AgentTask = {
             id: taskId,
@@ -50,9 +92,11 @@ export class TaskRunner {
             progress: 0,
             logs: [],
             userMessages: [],
-            artifacts: []
+            artifacts: [],
+            worktreePath: worktreePath // Store it initially if provided
         };
         this.tasks.set(taskId, task);
+        this.saveTask(task); // Persist initial state
 
         // Start processing in background
         this.processTask(taskId);
@@ -67,13 +111,19 @@ export class TaskRunner {
         try {
             this.updateStatus(taskId, 'planning', 5, 'Initializing Agent...');
 
-            // Step 1: Use Active Workspace directly
-            if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
-                throw new Error("No workspace open.");
+            // Step 1: Determine Workspace
+            // Priority: Explicitly provided path > Active VS Code Workspace > Error
+            let workspaceRoot = task.worktreePath;
+
+            if (!workspaceRoot) {
+                if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+                    workspaceRoot = vscode.workspace.workspaceFolders[0].uri.fsPath;
+                } else {
+                    throw new Error("No workspace selected and no VS Code workspace open.");
+                }
             }
 
-            const workspaceRoot = vscode.workspace.workspaceFolders[0].uri.fsPath;
-            task.worktreePath = workspaceRoot; // We reuse this property to mean "Current Working Directory"
+            task.worktreePath = workspaceRoot; // Ensure it is set
 
             this.updateStatus(taskId, 'executing', 10, `Accessing Workspace: ${workspaceRoot}`);
             task.logs.push(`\n**Working Directory**: \`${workspaceRoot}\``);
@@ -301,6 +351,7 @@ export class TaskRunner {
                 task.logs.push(log);
             }
             this._onTaskUpdate.fire({ taskId, task });
+            this.saveTask(task); // Persist update
             console.log(`[${taskId}] ${status}: ${log}`);
         }
     }

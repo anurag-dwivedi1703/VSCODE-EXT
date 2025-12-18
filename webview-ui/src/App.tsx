@@ -167,6 +167,7 @@ function App() {
         };
         window.addEventListener('message', messageHandler);
         vscode.postMessage({ command: 'getWorkspaces' });
+        vscode.postMessage({ command: 'getTasks' });
         return () => window.removeEventListener('message', messageHandler);
     }, [expandedAgentId]);
 
@@ -176,6 +177,20 @@ function App() {
     }, [dynamicAgents]);
 
     const activeAgents = dynamicAgents;
+    const handleStartTask = (prompt: string) => {
+        if (!prompt.trim()) return;
+        vscode.postMessage({
+            command: 'startTask',
+            text: prompt,
+            workspaceId: selectedWorkspace // Pass selected workspace path
+        });
+        setShowNewAgentModal(false);
+    };
+
+    const handleAddWorkspace = () => {
+        vscode.postMessage({ command: 'addWorkspace' });
+    };
+
     const activeAgent = activeAgents.find(a => a.id === expandedAgentId) || activeAgents[0];
     const logGroups = activeAgent ? parseLogs(activeAgent.logs) : [];
 
@@ -186,31 +201,47 @@ function App() {
                 <div className="pane-header">ANTIGRAVITY</div>
 
                 <div className="sub-header">
-                    <span>ACTIVE WORKSPACE</span>
-                    <button className="icon-btn" onClick={() => vscode.postMessage({ command: 'addWorkspace' })}>+</button>
-                </div>
-                <div className="workspace-list">
-                    {workspaces.map(ws => (
-                        <div key={ws.id} className={`workspace-item ${selectedWorkspace === ws.id ? 'active' : ''}`}
-                            onClick={() => setSelectedWorkspace(ws.id)}>
-                            📂 {ws.name}
-                        </div>
-                    ))}
+                    <span>WORKSPACES</span>
+                    <button className="icon-btn" onClick={handleAddWorkspace} title="Add Workspace">+</button>
                 </div>
 
-                <div className="sub-header">
-                    <span>MISSIONS</span>
-                    <button className="icon-btn" onClick={() => setShowNewAgentModal(true)}>New Mission</button>
-                </div>
-                <div className="mission-list">
-                    {activeAgents.map(agent => (
-                        <div key={agent.id}
-                            className={`mission-item ${expandedAgentId === agent.id ? 'active' : ''}`}
-                            onClick={() => setExpandedAgentId(agent.id)}>
-                            <div className="mission-title">{agent.prompt.substring(0, 30)}...</div>
-                            <div className="mission-status">{agent.status}</div>
-                        </div>
-                    ))}
+                <div className="workspace-list">
+                    {workspaces.map(ws => {
+                        const wsAgents = activeAgents.filter(a => a.worktreePath === ws.id);
+                        return (
+                            <div key={ws.id} className="workspace-group">
+                                <div className="workspace-header">
+                                    <div className="workspace-info">
+                                        <span className="workspace-icon">📂</span>
+                                        <span className="workspace-name">{ws.name}</span>
+                                    </div>
+                                    <div className="workspace-actions">
+                                        <button className="icon-btn-small" onClick={(e) => {
+                                            e.stopPropagation();
+                                            setSelectedWorkspace(ws.id);
+                                            setShowNewAgentModal(true);
+                                        }} title="New Mission">
+                                            +
+                                        </button>
+                                    </div>
+                                </div>
+                                <div className="workspace-missions">
+                                    {wsAgents.length > 0 ? (
+                                        wsAgents.map(agent => (
+                                            <div key={agent.id}
+                                                className={`mission-item ${expandedAgentId === agent.id ? 'active' : ''}`}
+                                                onClick={() => setExpandedAgentId(agent.id)}>
+                                                <div className="mission-title">{agent.prompt.substring(0, 30)}...</div>
+                                                <div className="mission-status">{agent.status}</div>
+                                            </div>
+                                        ))
+                                    ) : (
+                                        <div className="empty-mission-placeholder">No active missions</div>
+                                    )}
+                                </div>
+                            </div>
+                        );
+                    })}
                 </div>
             </aside>
 
@@ -420,11 +451,7 @@ function App() {
                             <button onClick={() => setShowNewAgentModal(false)}>Cancel</button>
                             <button className="primary-btn" onClick={() => {
                                 const input = document.getElementById('taskInput') as HTMLInputElement;
-                                vscode.postMessage({
-                                    command: 'startTask',
-                                    text: input.value || 'Default Task'
-                                });
-                                setShowNewAgentModal(false);
+                                handleStartTask(input.value);
                             }}>Start Agent</button>
                         </div>
                     </div>

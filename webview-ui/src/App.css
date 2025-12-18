@@ -65,47 +65,116 @@
 }
 
 /* Lists */
-.workspace-item,
-.context-item {
-    padding: 6px 15px;
-    font-size: 13px;
-    cursor: pointer;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
+/* Lists */
+.workspace-list {
+    flex: 1;
+    overflow-y: auto;
+    padding-bottom: 20px;
 }
 
-.workspace-item:hover,
-.context-item:hover {
+.workspace-group {
+    margin-bottom: 5px;
+}
+
+.workspace-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 15px;
+    cursor: default;
+    /* user-select: none; */
+}
+
+.workspace-header:hover {
     background-color: var(--vscode-list-hoverBackground);
 }
 
-.workspace-item.active {
-    background-color: var(--vscode-list-activeSelectionBackground);
-    color: var(--vscode-list-activeSelectionForeground);
+.workspace-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+    font-size: 12px;
+    overflow: hidden;
+}
+
+.workspace-name {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.workspace-actions {
+    display: flex;
+    align-items: center;
+}
+
+.icon-btn-small {
+    background: none;
+    border: 1px solid transparent;
+    color: var(--vscode-icon-foreground);
+    border-radius: 4px;
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    padding: 0;
+}
+
+.icon-btn-small:hover {
+    background-color: var(--vscode-toolbar-hoverBackground);
+    color: var(--vscode-foreground);
+}
+
+.workspace-missions {
+    margin-left: 0;
 }
 
 .mission-item {
-    padding: 10px 15px;
+    padding: 8px 15px 8px 28px;
+    /* Indent missions */
     cursor: pointer;
     border-left: 3px solid transparent;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 12px;
+}
+
+.mission-item:hover {
+    background-color: var(--vscode-list-hoverBackground);
 }
 
 .mission-item.active {
     background-color: var(--vscode-list-activeSelectionBackground);
+    color: var(--vscode-list-activeSelectionForeground);
     border-left-color: var(--vscode-progressBar-background);
 }
 
 .mission-title {
-    font-size: 13px;
-    font-weight: 600;
-    margin-bottom: 2px;
+    font-weight: 400;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .mission-status {
-    font-size: 11px;
+    font-size: 10px;
     opacity: 0.7;
     text-transform: capitalize;
+    flex-shrink: 0;
+}
+
+.empty-mission-placeholder {
+    padding: 5px 15px 5px 28px;
+    font-size: 11px;
+    opacity: 0.5;
+    font-style: italic;
 }
 
 /* Main Content Area */

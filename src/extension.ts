@@ -10,7 +10,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Register command
     const disposable = vscode.commands.registerCommand('antigravity.openMissionControl', () => {
-        MissionControlProvider.createOrShow(context.extensionUri, taskRunner);
+        MissionControlProvider.createOrShow(context.extensionUri, taskRunner, context);
     });
 
     context.subscriptions.push(disposable);

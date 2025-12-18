@@ -3,17 +3,26 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { TaskRunner } from '../engine/TaskRunner';
 
+interface WorkspaceInfo {
+    id: string;
+    name: string;
+    status: 'Active';
+}
+
 export class MissionControlProvider {
     public static currentPanel: MissionControlProvider | undefined;
     private readonly _panel: vscode.WebviewPanel;
     private readonly _extensionUri: vscode.Uri;
     private _disposables: vscode.Disposable[] = [];
     private _taskRunner: TaskRunner;
+    private _workspaces: WorkspaceInfo[] = [];
+    private _context: vscode.ExtensionContext;
 
-    private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, taskRunner: TaskRunner) {
+    private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, taskRunner: TaskRunner, context: vscode.ExtensionContext) {
         this._panel = panel;
         this._extensionUri = extensionUri;
         this._taskRunner = taskRunner;
+        this._context = context;
 
         this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
 
@@ -21,17 +30,24 @@ export class MissionControlProvider {
 
         this._setWebviewMessageListener(this._panel.webview);
 
-        // Send current workspace info to webview
-        if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
-            this._panel.webview.postMessage({
-                command: 'updateWorkspaces',
-                workspaces: vscode.workspace.workspaceFolders.map(wf => ({
+        // Load workspaces from globalState
+        const savedWorkspaces = this._context.globalState.get<WorkspaceInfo[]>('antigravity.workspaces');
+        if (savedWorkspaces && savedWorkspaces.length > 0) {
+            this._workspaces = savedWorkspaces;
+        } else {
+            // Fallback: Initialize with current VS Code workspace if available
+            if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+                this._workspaces = vscode.workspace.workspaceFolders.map(wf => ({
                     id: wf.uri.fsPath,
                     name: wf.name,
                     status: 'Active'
-                }))
-            });
+                }));
+                this.saveWorkspaces();
+            }
         }
+
+        // Send initial list
+        this.sendWorkspaces();
 
         // Listen for updates from TaskRunner and forward to Webview
         this._taskRunner.onTaskUpdate((event) => {
@@ -41,9 +57,19 @@ export class MissionControlProvider {
                 task: event.task
             });
         });
+
+        // Send existing tasks (loaded from disk)
+        const existingTasks = this._taskRunner.getTasks();
+        existingTasks.forEach(task => {
+            this._panel.webview.postMessage({
+                command: 'taskUpdate',
+                taskId: task.id,
+                task: task
+            });
+        });
     }
 
-    public static createOrShow(extensionUri: vscode.Uri, taskRunner: TaskRunner) {
+    public static createOrShow(extensionUri: vscode.Uri, taskRunner: TaskRunner, context: vscode.ExtensionContext) {
         const column = vscode.window.activeTextEditor
             ? vscode.window.activeTextEditor.viewColumn
             : undefined;
@@ -68,7 +94,7 @@ export class MissionControlProvider {
             }
         );
 
-        MissionControlProvider.currentPanel = new MissionControlProvider(panel, extensionUri, taskRunner);
+        MissionControlProvider.currentPanel = new MissionControlProvider(panel, extensionUri, taskRunner, context);
     }
 
     public dispose() {
@@ -103,21 +129,31 @@ export class MissionControlProvider {
         const styleUri = webview.asWebviewUri(stylePathOnDisk);
 
         return `
-      <!DOCTYPE html>
-      <html lang="en">
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'unsafe-eval';">
-        <link rel="stylesheet" href="${styleUri}">
-        <title>Mission Control</title>
-      </head>
-      <body>
-        <div id="root"></div>
-        <script type="module" crossorigin src="${scriptUri}"></script>
-      </body>
-      </html>
-    `;
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <link rel="stylesheet" href="${styleUri}">
+                <title>Mission Control</title>
+            </head>
+            <body>
+                <div id="root"></div>
+                <script type="module" src="${scriptUri}"></script>
+            </body>
+            </html>
+        `;
+    }
+
+    private saveWorkspaces() {
+        this._context.globalState.update('antigravity.workspaces', this._workspaces);
+    }
+
+    private sendWorkspaces() {
+        this._panel.webview.postMessage({
+            command: 'updateWorkspaces',
+            workspaces: this._workspaces
+        });
     }
 
     private _setWebviewMessageListener(webview: vscode.Webview) {
@@ -128,16 +164,48 @@ export class MissionControlProvider {
 
                 switch (command) {
                     case 'startTask':
-                        this._taskRunner.startTask(text);
+                        // Pass workspaceId (path) to task runner
+                        const workspacePath = message.workspaceId;
+                        this._taskRunner.startTask(text, workspacePath);
                         return;
                     case 'hello':
                         vscode.window.showInformationMessage(text);
                         return;
                     case 'addWorkspace':
-                        vscode.commands.executeCommand('vscode.openFolder');
+                        // Use Dialog to select folder
+                        vscode.window.showOpenDialog({
+                            canSelectFiles: false,
+                            canSelectFolders: true,
+                            canSelectMany: false,
+                            openLabel: 'Add Workspace'
+                        }).then(uris => {
+                            if (uris && uris.length > 0) {
+                                const uri = uris[0];
+                                const existing = this._workspaces.find(w => w.id === uri.fsPath);
+                                if (!existing) {
+                                    this._workspaces.push({
+                                        id: uri.fsPath,
+                                        name: path.basename(uri.fsPath),
+                                        status: 'Active'
+                                    });
+                                    this.saveWorkspaces();
+                                    this.sendWorkspaces();
+                                }
+                            }
+                        });
                         return;
                     case 'getWorkspaces':
                         this.sendWorkspaces();
+                        return;
+                    case 'getTasks':
+                        const tasks = this._taskRunner.getTasks();
+                        tasks.forEach(t => {
+                            this._panel.webview.postMessage({
+                                command: 'taskUpdate',
+                                taskId: t.id,
+                                task: t
+                            });
+                        });
                         return;
                     case 'selectContext':
                         vscode.window.showOpenDialog({
@@ -175,42 +243,30 @@ export class MissionControlProvider {
                         return;
                     }
                     case 'previewFile': {
-                        vscode.window.showInformationMessage(`[Debug] Preview Request: Path=${message.path}, TaskId=${message.taskId}`);
-
+                        // In-webview preview for artifact cards
                         const taskId = message.taskId;
                         const relativePath = message.path;
                         const task = this._taskRunner.getTask(taskId);
 
-                        if (task) {
-                            vscode.window.showInformationMessage(`[Debug] Task found. Worktree: ${task.worktreePath}`);
-                            if (task.worktreePath) {
-                                // Resolve path
-                                const fsPath = path.isAbsolute(relativePath)
-                                    ? relativePath
-                                    : path.join(task.worktreePath, relativePath);
+                        if (task && task.worktreePath) {
+                            const fsPath = path.isAbsolute(relativePath)
+                                ? relativePath
+                                : path.join(task.worktreePath, relativePath);
 
-                                vscode.window.showInformationMessage(`[Debug] Resolved Path: ${fsPath}`);
-
-                                try {
-                                    if (fs.existsSync(fsPath)) {
-                                        const content = fs.readFileSync(fsPath, 'utf-8');
-                                        this._panel.webview.postMessage({
-                                            command: 'fileContent',
-                                            path: relativePath,
-                                            content: content
-                                        });
-                                        vscode.window.showInformationMessage(`[Debug] Sent content to webview (${content.length} bytes)`);
-                                    } else {
-                                        vscode.window.showErrorMessage(`[Debug] File not found at: ${fsPath}`);
-                                    }
-                                } catch (err: any) {
-                                    vscode.window.showErrorMessage(`[Debug] Error reading file: ${err.message}`);
+                            try {
+                                if (fs.existsSync(fsPath)) {
+                                    const content = fs.readFileSync(fsPath, 'utf-8');
+                                    this._panel.webview.postMessage({
+                                        command: 'fileContent',
+                                        path: relativePath,
+                                        content: content
+                                    });
+                                } else {
+                                    vscode.window.showErrorMessage(`File not found: ${fsPath}`);
                                 }
-                            } else {
-                                vscode.window.showErrorMessage("[Debug] Task has no worktree path.");
+                            } catch (err: any) {
+                                vscode.window.showErrorMessage(`Error reading file: ${err.message}`);
                             }
-                        } else {
-                            vscode.window.showErrorMessage(`[Debug] Task not found for ID: ${taskId}`);
                         }
                         return;
                     }
@@ -219,18 +275,5 @@ export class MissionControlProvider {
             undefined,
             this._disposables
         );
-    }
-
-    private sendWorkspaces() {
-        if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
-            this._panel.webview.postMessage({
-                command: 'updateWorkspaces',
-                workspaces: vscode.workspace.workspaceFolders.map(wf => ({
-                    id: wf.uri.fsPath,
-                    name: wf.name,
-                    status: 'Active'
-                }))
-            });
-        }
     }
 }
