@@ -597,3 +597,48 @@
 .icon-btn-add:hover {
     color: var(--text-primary);
 }
+/* Tab Switcher */
+.tab-switcher {
+    display: flex;
+    gap: 4px;
+    height: 100%;
+}
+
+.tab-btn {
+    background: none;
+    border: none;
+    color: var(--vscode-foreground);
+    opacity: 0.6;
+    cursor: pointer;
+    font-size: 11px;
+    text-transform: uppercase;
+    font-weight: 600;
+    padding: 0 8px;
+    height: 100%;
+    border-bottom: 2px solid transparent;
+}
+
+.tab-btn:hover {
+    opacity: 1;
+    background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.tab-btn.active {
+    opacity: 1;
+    border-bottom-color: var(--vscode-panelTitle-activeBorder);
+    color: var(--vscode-panelTitle-activeForeground);
+}
+
+/* Browser Preview Styles */
+.comment-overlay {
+    transition: background 0.2s ease;
+}
+
+.comment-popup {
+    animation: popIn 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+@keyframes popIn {
+    from { transform: translate(-50%, -90%) scale(0.9); opacity: 0; }
+    to { transform: translate(-50%, -100%) scale(1); opacity: 1; }
+}

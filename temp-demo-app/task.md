@@ -1,0 +1,3 @@
+- [x] Change button background color to red in index.html
+- [x] Update button hover color to a darker red
+- [x] Restart backend and frontend servers

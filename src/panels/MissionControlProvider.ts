@@ -128,12 +128,16 @@ export class MissionControlProvider {
         const scriptUri = webview.asWebviewUri(scriptPathOnDisk);
         const styleUri = webview.asWebviewUri(stylePathOnDisk);
 
+        // CSP: Allow scripts from our extension, styles, and frames from localhost for the browser preview
+        const csp = `default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'unsafe-eval'; frame-src http://localhost:* http://127.0.0.1:*;`;
+
         return `
             <!DOCTYPE html>
             <html lang="en">
             <head>
                 <meta charset="UTF-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <meta http-equiv="Content-Security-Policy" content="${csp}">
                 <link rel="stylesheet" href="${styleUri}">
                 <title>Mission Control</title>
             </head>
@@ -166,6 +170,7 @@ export class MissionControlProvider {
                     case 'startTask':
                         // Pass workspaceId (path) to task runner
                         const workspacePath = message.workspaceId;
+                        console.log(`[MissionControl] Starting task in workspace: ${workspacePath}`);
                         this._taskRunner.startTask(text, workspacePath);
                         return;
                     case 'hello':
@@ -202,6 +207,7 @@ export class MissionControlProvider {
                         tasks.forEach(t => {
                             this._panel.webview.postMessage({
                                 command: 'taskUpdate',
+                                output: '',
                                 taskId: t.id,
                                 task: t
                             });
@@ -224,6 +230,13 @@ export class MissionControlProvider {
                         return;
                     case 'replyToAgent':
                         this._taskRunner.replyToTask(message.taskId, message.text, message.attachments || []);
+                        return;
+                    case 'saveBrowserComment':
+                        // Inject the comment into the chat stream as if it were a user message
+                        // message: { command, taskId, comment, x, y, url }
+                        const commentMsg = `[Browser Comment on ${message.url} at (${message.x}, ${message.y})]: ${message.comment}`;
+                        this._taskRunner.replyToTask(message.taskId, commentMsg, []);
+                        vscode.window.showInformationMessage('Comment added to agent context');
                         return;
                     case 'openFile': {
                         const openPath = vscode.Uri.file(message.path);

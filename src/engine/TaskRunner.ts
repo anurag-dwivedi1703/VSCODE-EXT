@@ -29,6 +29,9 @@ export class TaskRunner {
     private _onTaskUpdate = new vscode.EventEmitter<{ taskId: string, task: AgentTask }>();
     public readonly onTaskUpdate = this._onTaskUpdate.event;
 
+    private _onReloadBrowser = new vscode.EventEmitter<void>();
+    public readonly onReloadBrowser = this._onReloadBrowser.event;
+
     public getTasks(): AgentTask[] {
         return Array.from(this.tasks.values());
     }
@@ -73,6 +76,13 @@ export class TaskRunner {
             for (const file of files) {
                 const content = fs.readFileSync(path.join(dir, file), 'utf-8');
                 const task = JSON.parse(content) as AgentTask;
+                // Detect and fix "zombie" tasks that were executing when the extension terminated
+                if (task.status === 'executing' || task.status === 'planning') {
+                    task.status = 'failed';
+                    task.logs.push("\n> [System]: Task execution interrupted by session termination (e.g. reload).");
+                    this.saveTask(task); // Persist the fix
+                }
+
                 this.tasks.set(task.id, task);
 
                 // Fire update so UI knows about it (if UI is listening already)
@@ -149,6 +159,7 @@ export class TaskRunner {
             - write_file(path, content): Write file content (auto-creates dirs).
             - list_files(path): List directory.
             - run_command(command): Execute shell command (git, npm, etc).
+            - reload_browser(): Reload the browser preview to verify changes. (Tool, NOT a shell command)
             
             CORE WORKFLOW (Follow strictly):
             1. EXPLORE: Use list_files/read_file to understand the codebase.
@@ -158,6 +169,9 @@ export class TaskRunner {
             3. ACT: Use write_file/run_command to implement the plan.
             4. UPDATE: After completing a step, OVERWRITE 'task.md' to mark the item as done (e.g., "- [x] Step 1").
             5. VERIFY: Run tests or checks.
+               - IMPORTANT: If making UI changes (HTML, CSS, JS), you MUST call 'reload_browser()' to verify the visual result.
+               - SERVER CHECK: Ensure the server is running. Use 'node restart.js' to safely restart both frontend/backend.
+               - If changing server-side code, assume mostly hot-reload but you can restart if needed.
             6. FINISH: Answer with "MISSION COMPLETE" when done.
             `;
 
@@ -195,8 +209,10 @@ export class TaskRunner {
                 this.updateStatus(taskId, 'executing', task.progress, `Turn ${i + 1}: Thinking...`);
 
                 // Check for user messages (High Priority)
-                // Check for user messages (High Priority)
-                if (task.userMessages.length > 0) {
+                const isToolResponse = Array.isArray(currentPrompt) && currentPrompt.some((p: any) => p.functionResponse);
+
+                // Check for user messages (High Priority) - ONLY if not currently sending a tool response
+                if (!isToolResponse && task.userMessages.length > 0) {
                     const userMsgObj = task.userMessages.shift();
                     const userText = userMsgObj?.text || '';
                     const attachments = userMsgObj?.attachments || [];
@@ -287,6 +303,15 @@ export class TaskRunner {
                                     break;
                                 case 'write_file':
                                     toolResult = await tools.writeFile(args.path as string, args.content as string);
+
+                                    // AUTO-RELOAD LOGIC:
+                                    // If we wrote a frontend file, trigger the browser reload automatically.
+                                    const p = (args.path as string).toLowerCase();
+                                    if (p.endsWith('.html') || p.endsWith('.css') || p.endsWith('.js') || p.endsWith('.jsx') || p.endsWith('.tsx')) {
+                                        this._onReloadBrowser.fire();
+                                        toolResult += "\n> [System]: Browser preview auto-reloaded.";
+                                    }
+
                                     // Artifact Tracking
                                     if (args.path && !task.artifacts.includes(args.path)) {
                                         task.artifacts.push(args.path);
@@ -297,7 +322,18 @@ export class TaskRunner {
                                     toolResult = await tools.listFiles(args.path as string);
                                     break;
                                 case 'run_command':
-                                    toolResult = await tools.runCommand(args.command as string);
+                                    const cmd = (args.command as string || '').trim();
+                                    // Aggressive check: if command mentions 'reload_browser', just do it.
+                                    if (cmd.toLowerCase().includes('reload_browser')) {
+                                        this._onReloadBrowser.fire();
+                                        toolResult = "Browser reload triggered (via auto-correction).";
+                                    } else {
+                                        toolResult = await tools.runCommand(cmd);
+                                    }
+                                    break;
+                                case 'reload_browser':
+                                    this._onReloadBrowser.fire();
+                                    toolResult = "Browser reload triggered.";
                                     break;
                                 default:
                                     toolResult = `Error: Unknown tool ${fnName}`;
@@ -323,7 +359,13 @@ export class TaskRunner {
                 } else {
                     if (!text.includes("MISSION COMPLETE")) {
                         // If the model provides a text response without tools, it's likely asking for input or explaining something.
-                        // We should STOP the loop and wait for the user to reply.
+                        // However, if we have pending user messages, we should continue processing them immediately.
+                        if (task.userMessages.length > 0) {
+                            currentPrompt = "Proceed.";
+                            continue;
+                        }
+
+                        // Otherwise, we STOP the loop and wait for the user to reply.
                         currentPrompt = "Proceed."; // Default for next time, but we break now.
                         break;
                     } else {
@@ -366,14 +408,45 @@ export class TaskRunner {
             this.updateStatus(taskId, task.status, task.progress, `User queued reply${contextMsg}: "${message}"`);
 
             // If completed, resume!
-            if (task.status === 'completed') {
-                const session = this.sessions.get(taskId);
+            if (task.status === 'completed' || task.status === 'failed') {
+                let session = this.sessions.get(taskId);
                 const worktreePath = task.worktreePath;
+
+                if (!session && worktreePath) {
+                    // Session lost (restart/reload), attempt to "restart" it
+                    task.logs.push(`> [System]: Session restored. Starting new conversation context.`);
+
+                    const systemPrompt = `You are resuming a previous mission.
+                    Your Mission: ${task.prompt}
+                    
+                    The user has provided feedback or new instructions.
+                    Use your tools to explore the current state of the code if needed.
+                    
+                    Available Tools:
+                    - read_file(path): Read file content.
+                    - write_file(path, content): Write file content (auto-creates dirs).
+                    - list_files(path): List directory.
+                    - run_command(command): Execute shell command (git, npm, etc).
+                    - reload_browser(): Reload the browser preview to verify changes. (Tool, NOT a shell command)
+
+                    UI VERIFICATION RULE:
+                    If you make ANY changes to the Frontend (HTML/CSS/JS), you MUST execute 'reload_browser()' right after.
+                    
+                    SERVER MANAGEMENT RULE:
+                    Always check if the server is running if the user mentions "start", "app", or "server".
+                    PREFERRED: If 'restart.js' exists, run it: 'run_command("node restart.js")'. It handles killing old processes and starting new ones safely.
+                    If no script, use 'run_command("npm start &")'.
+                    `;
+
+                    session = this.gemini.startSession(systemPrompt, 'high');
+                    this.sessions.set(taskId, session);
+                }
+
                 if (session && worktreePath) {
                     const tools = new AgentTools(worktreePath, terminalManager);
                     this.runExecutionLoop(taskId, session, tools);
                 } else {
-                    task.logs.push("Error: Cannot resume session. Session expired or lost.");
+                    task.logs.push("Error: Cannot resume session. Worktree path missing.");
                     this._onTaskUpdate.fire({ taskId, task });
                 }
             }

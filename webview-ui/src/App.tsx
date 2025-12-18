@@ -3,6 +3,7 @@ import { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import './App.css';
 import { vscode } from './utilities/vscode';
+import { BrowserPreview } from './components/BrowserPreview';
 
 // Mock Data
 const DEFAULT_WORKSPACES = [
@@ -129,6 +130,9 @@ function App() {
     // Preview State
     const [previewContent, setPreviewContent] = useState<string | null>(null);
     const [previewPath, setPreviewPath] = useState<string | null>(null);
+
+    // Right Pane Tab State
+    const [rightPaneTab, setRightPaneTab] = useState<'context' | 'browser'>('context');
 
     // Context State
     const [contextFiles, setContextFiles] = useState<string[]>([]);
@@ -347,7 +351,6 @@ function App() {
                         </div>
 
                         {/* Reply Footer */}
-                        {/* Reply Footer */}
                         <footer className="reply-footer">
                             {contextFiles.length > 0 && (
                                 <div className="context-chips">
@@ -395,7 +398,25 @@ function App() {
             {/* RIGHT PANE: CONTEXT & ARTIFACTS OR PREVIEW */}
             <aside className="pane-context">
                 <div className="pane-header">
-                    <span>{previewContent ? 'PREVIEW' : 'REVIEW CONTEXT'}</span>
+                    {previewContent ? (
+                        <span>PREVIEW</span>
+                    ) : (
+                        <div className="tab-switcher">
+                            <button
+                                className={`tab-btn ${rightPaneTab === 'context' ? 'active' : ''}`}
+                                onClick={() => setRightPaneTab('context')}
+                            >
+                                Context
+                            </button>
+                            <button
+                                className={`tab-btn ${rightPaneTab === 'browser' ? 'active' : ''}`}
+                                onClick={() => setRightPaneTab('browser')}
+                            >
+                                Browser
+                            </button>
+                        </div>
+                    )}
+
                     {previewContent && (
                         <button className="icon-btn" style={{ marginLeft: 'auto' }} onClick={() => {
                             setPreviewContent(null);
@@ -410,34 +431,42 @@ function App() {
                         <ReactMarkdown>{previewContent}</ReactMarkdown>
                     </div>
                 ) : (
-                    <div className="context-list">
-                        {activeAgent && activeAgent.worktreePath && (
-                            <div className="context-item">
-                                <strong>Worktree:</strong><br />
-                                <code style={{ wordBreak: 'break-all' }}>{activeAgent.worktreePath}</code>
-                            </div>
-                        )}
+                    <>
+                        {/* CONTEXT TAB */}
+                        <div className="context-list" style={{ display: rightPaneTab === 'context' ? 'flex' : 'none' }}>
+                            {activeAgent && activeAgent.worktreePath && (
+                                <div className="context-item">
+                                    <strong>Worktree:</strong><br />
+                                    <code style={{ wordBreak: 'break-all' }}>{activeAgent.worktreePath}</code>
+                                </div>
+                            )}
 
-                        {/* ARTIFACTS LIST */}
-                        {activeAgent && activeAgent.artifacts && activeAgent.artifacts.length > 0 && (
-                            <div>
-                                <div className="sub-header">Created Artifacts</div>
-                                {activeAgent.artifacts.map((path: string, i: number) => (
-                                    <div key={i} className="context-item artifact-item"
-                                        onClick={() => vscode.postMessage({ command: 'previewFile', path, taskId: activeAgent.id })}>
-                                        <span style={{ marginRight: '5px' }}>📄</span>
-                                        <span>{path.split(/[\\/]/).pop()}</span>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
+                            {/* ARTIFACTS LIST */}
+                            {activeAgent && activeAgent.artifacts && activeAgent.artifacts.length > 0 && (
+                                <div>
+                                    <div className="sub-header">Created Artifacts</div>
+                                    {activeAgent.artifacts.map((path: string, i: number) => (
+                                        <div key={i} className="context-item artifact-item"
+                                            onClick={() => vscode.postMessage({ command: 'previewFile', path, taskId: activeAgent.id })}>
+                                            <span style={{ marginRight: '5px' }}>📄</span>
+                                            <span>{path.split(/[\\/]/).pop()}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
 
-                        {(!activeAgent || !activeAgent.artifacts || activeAgent.artifacts.length === 0) && (
-                            <div className="context-item empty-context" >
-                                No artifacts created yet.
-                            </div>
-                        )}
-                    </div>
+                            {(!activeAgent || !activeAgent.artifacts || activeAgent.artifacts.length === 0) && (
+                                <div className="context-item empty-context" >
+                                    No artifacts created yet.
+                                </div>
+                            )}
+                        </div>
+
+                        {/* BROWSER TAB (Always rendered but hidden if not active to persist state) */}
+                        <div style={{ display: rightPaneTab === 'browser' ? 'block' : 'none', flex: 1, overflow: 'hidden' }}>
+                            <BrowserPreview taskId={activeAgent ? activeAgent.id : 'unknown'} />
+                        </div>
+                    </>
                 )}
             </aside>
 

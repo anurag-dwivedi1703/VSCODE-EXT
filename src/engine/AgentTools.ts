@@ -69,14 +69,24 @@ export class AgentTools {
                 this.terminalManager.print(`\x1b[36m> ${command}\x1b[0m\n`); // Cyan prompt
             }
 
+            // Detect background execution request
+            const isBackground = command.trim().endsWith('&');
+
             // Spawn Process
-            const [cmd, ...args] = this.splitCommand(command);
             const child = cp.spawn(command, {
                 cwd: this.worktreeRoot,
                 shell: true
             });
 
             let combinedOutput = '';
+            let resolved = false;
+
+            const safeResolve = (msg: string) => {
+                if (!resolved) {
+                    resolved = true;
+                    resolve(msg);
+                }
+            };
 
             child.stdout.on('data', (data) => {
                 const text = data.toString();
@@ -91,18 +101,28 @@ export class AgentTools {
             });
 
             child.on('close', (code) => {
-                if (code !== 0) {
-                    combinedOutput += `\n(Process exited with code ${code})`;
+                if (!resolved) {
+                    if (code !== 0) {
+                        combinedOutput += `\n(Process exited with code ${code})`;
+                    }
+                    safeResolve(combinedOutput || '(No Output)');
                 }
-                resolve(combinedOutput || '(No Output)');
             });
 
             child.on('error', (err) => {
                 const errorMsg = `Error spawning process: ${err.message}`;
                 combinedOutput += errorMsg;
                 if (this.terminalManager) this.terminalManager.print(`\x1b[31m${errorMsg}\x1b[0m\n`);
-                resolve(combinedOutput);
+                safeResolve(combinedOutput);
             });
+
+            // If background, resolve early to prevent blocking
+            if (isBackground) {
+                setTimeout(() => {
+                    child.unref();
+                    safeResolve(`(Background Process Started) Output so far:\n${combinedOutput}`);
+                }, 2000); // Wait 2s to catch immediate startup errors
+            }
         });
     }
 
