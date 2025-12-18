@@ -1,0 +1,27 @@
+{
+    "name": "webview-ui",
+    "private": true,
+    "version": "0.0.0",
+    "type": "module",
+    "scripts": {
+        "dev": "vite",
+        "build": "tsc --noEmit && node build.js",
+        "preview": "vite preview"
+    },
+    "dependencies": {
+        "@vscode/webview-ui-toolkit": "^1.4.0",
+        "lucide-react": "^0.303.0",
+        "react": "^18.2.0",
+        "react-dom": "^18.2.0",
+        "react-markdown": "^10.1.0",
+        "remark-gfm": "^4.0.1"
+    },
+    "devDependencies": {
+        "@types/react": "^18.2.43",
+        "@types/react-dom": "^18.2.17",
+        "@vitejs/plugin-react": "^4.2.1",
+        "esbuild": "^0.27.2",
+        "typescript": "^5.2.2",
+        "vite": "^5.0.8"
+    }
+}
