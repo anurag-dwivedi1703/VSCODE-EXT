@@ -141,12 +141,15 @@ export class MissionControlProvider {
                     case 'replyToAgent':
                         this._taskRunner.replyToTask(message.taskId, message.text);
                         return;
-                    case 'openFile':
+                    case 'openFile': {
                         const openPath = vscode.Uri.file(message.path);
                         vscode.workspace.openTextDocument(openPath).then(doc => {
                             vscode.window.showTextDocument(doc);
+                        }, err => {
+                            vscode.window.showErrorMessage(`Failed to open: ${err.message}`);
                         });
                         return;
+                    }
                 }
             },
             undefined,
