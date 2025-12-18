@@ -139,8 +139,23 @@ export class MissionControlProvider {
                     case 'getWorkspaces':
                         this.sendWorkspaces();
                         return;
+                    case 'selectContext':
+                        vscode.window.showOpenDialog({
+                            canSelectFiles: true,
+                            canSelectFolders: false,
+                            canSelectMany: true,
+                            openLabel: 'Attach Context'
+                        }).then(uris => {
+                            if (uris && uris.length > 0) {
+                                this._panel.webview.postMessage({
+                                    command: 'contextSelected',
+                                    paths: uris.map(u => u.fsPath)
+                                });
+                            }
+                        });
+                        return;
                     case 'replyToAgent':
-                        this._taskRunner.replyToTask(message.taskId, message.text);
+                        this._taskRunner.replyToTask(message.taskId, message.text, message.attachments || []);
                         return;
                     case 'openFile': {
                         const openPath = vscode.Uri.file(message.path);

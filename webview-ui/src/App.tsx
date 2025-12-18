@@ -130,6 +130,9 @@ function App() {
     const [previewContent, setPreviewContent] = useState<string | null>(null);
     const [previewPath, setPreviewPath] = useState<string | null>(null);
 
+    // Context State
+    const [contextFiles, setContextFiles] = useState<string[]>([]);
+
     // Auto-scroll logic
     const logsEndRef = useRef<HTMLDivElement>(null);
 
@@ -157,6 +160,9 @@ function App() {
             if (message.command === 'fileContent') {
                 setPreviewContent(message.content);
                 setPreviewPath(message.path);
+            }
+            if (message.command === 'contextSelected') {
+                setContextFiles(prev => [...prev, ...message.paths]);
             }
         };
         window.addEventListener('message', messageHandler);
@@ -310,25 +316,41 @@ function App() {
                         </div>
 
                         {/* Reply Footer */}
+                        {/* Reply Footer */}
                         <footer className="reply-footer">
-                            <input
-                                className="reply-input"
-                                type="text"
-                                placeholder="Reply to agent..."
-                                onKeyDown={(e) => {
-                                    if (e.key === 'Enter') {
-                                        const input = e.target as HTMLInputElement;
-                                        if (input.value.trim()) {
-                                            vscode.postMessage({
-                                                command: 'replyToAgent',
-                                                text: input.value,
-                                                taskId: activeAgent.id
-                                            });
-                                            input.value = '';
+                            {contextFiles.length > 0 && (
+                                <div className="context-chips">
+                                    {contextFiles.map((f, idx) => (
+                                        <div key={idx} className="chip">
+                                            <span>{f.split(/[\\/]/).pop()}</span>
+                                            <span className="chip-remove" onClick={() => setContextFiles(prev => prev.filter((_, i) => i !== idx))}>×</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                            <div className="input-row">
+                                <button className="icon-btn-add" title="Add Context" onClick={() => vscode.postMessage({ command: 'selectContext' })}>+</button>
+                                <input
+                                    className="reply-input"
+                                    type="text"
+                                    placeholder="Reply to agent..."
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                            const input = e.target as HTMLInputElement;
+                                            if (input.value.trim()) {
+                                                vscode.postMessage({
+                                                    command: 'replyToAgent',
+                                                    text: input.value,
+                                                    taskId: activeAgent.id,
+                                                    attachments: contextFiles
+                                                });
+                                                input.value = '';
+                                                setContextFiles([]); // Clear context after send
+                                            }
                                         }
-                                    }
-                                }}
-                            />
+                                    }}
+                                />
+                            </div>
                         </footer>
                     </>
                 ) : (

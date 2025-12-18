@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { GeminiClient, ISession } from '../ai/GeminiClient';
+import { Part } from '@google/generative-ai';
 import { WorktreeManager } from './WorktreeManager';
 import { AgentTools } from './AgentTools';
 import { TerminalManager } from './TerminalManager';
@@ -16,7 +17,7 @@ interface AgentTask {
     logs: string[];
     worktreePath?: string;
     branchName?: string;
-    userMessages: string[];
+    userMessages: { text: string, attachments: string[] }[];
     artifacts: string[];
 }
 
@@ -144,14 +145,63 @@ export class TaskRunner {
                 this.updateStatus(taskId, 'executing', task.progress, `Turn ${i + 1}: Thinking...`);
 
                 // Check for user messages (High Priority)
+                // Check for user messages (High Priority)
                 if (task.userMessages.length > 0) {
-                    const userMsg = task.userMessages.shift();
-                    task.logs.push(`\n**User**: ${userMsg}`);
+                    const userMsgObj = task.userMessages.shift();
+                    const userText = userMsgObj?.text || '';
+                    const attachments = userMsgObj?.attachments || [];
 
-                    if (typeof currentPrompt === 'string') {
-                        currentPrompt += `\n\n[USER REPLY]: ${userMsg}`;
-                    } else {
-                        (currentPrompt as any[]).push({ text: `\n[USER REPLY]: ${userMsg}` });
+                    task.logs.push(`\n**User**: ${userText}`);
+
+                    // Build Multi-modal Prompt
+                    const promptParts: Part[] = [];
+                    promptParts.push({ text: `\n[USER REPLY]: ${userText}` });
+
+                    if (attachments.length > 0) {
+                        task.logs.push(`> [Context]: processing ${attachments.length} attachments...`);
+
+                        for (const filePath of attachments) {
+                            try {
+                                if (fs.existsSync(filePath)) {
+                                    const ext = path.extname(filePath).toLowerCase();
+                                    const isImage = ['.png', '.jpg', '.jpeg', '.webp'].includes(ext);
+
+                                    if (isImage) {
+                                        const fileData = fs.readFileSync(filePath);
+                                        const base64Data = fileData.toString('base64');
+                                        // Simple mime mapping
+                                        let mimeType = 'image/png';
+                                        if (ext === '.jpg' || ext === '.jpeg') mimeType = 'image/jpeg';
+                                        if (ext === '.webp') mimeType = 'image/webp';
+
+                                        promptParts.push({
+                                            inlineData: {
+                                                mimeType: mimeType,
+                                                data: base64Data
+                                            }
+                                        });
+                                        task.logs.push(`> [Attachment]: Added image ${path.basename(filePath)}`);
+                                    } else {
+                                        // Text file
+                                        const textContent = fs.readFileSync(filePath, 'utf-8');
+                                        promptParts.push({
+                                            text: `\n\n--- FILE ATTACHMENT: ${path.basename(filePath)} ---\n${textContent}\n--- END ATTACHMENT ---`
+                                        });
+                                        task.logs.push(`> [Attachment]: Added text file ${path.basename(filePath)}`);
+                                    }
+                                }
+                            } catch (e) {
+                                task.logs.push(`> [Error]: Failed to read attachment ${filePath}`);
+                            }
+                        }
+                    }
+
+                    // Append to current prompt
+                    if (Array.isArray(currentPrompt)) {
+                        (currentPrompt as Part[]).push(...promptParts);
+                    } else if (typeof currentPrompt === 'string') {
+                        // If current prompt was string, upgrade it to parts
+                        currentPrompt = [{ text: currentPrompt }, ...promptParts];
                     }
                 }
 
@@ -255,16 +305,19 @@ export class TaskRunner {
         }
     }
 
-    public replyToTask(taskId: string, message: string) {
+    public async replyToTask(taskId: string, message: string, attachments: string[] = []) {
         const task = this.tasks.get(taskId);
         if (task) {
-            task.userMessages.push(message);
-            this.updateStatus(taskId, task.status, task.progress, `User queued reply: "${message}"`);
+            task.userMessages.push({ text: message, attachments });
+
+            // Log with context notice
+            const contextMsg = attachments.length > 0 ? ` (with ${attachments.length} attachments)` : '';
+            this.updateStatus(taskId, task.status, task.progress, `User queued reply${contextMsg}: "${message}"`);
 
             // If completed, resume!
             if (task.status === 'completed') {
                 const session = this.sessions.get(taskId);
-                const worktreePath = task.worktreePath; // Should exist if completed successfully
+                const worktreePath = task.worktreePath;
                 if (session && worktreePath) {
                     const tools = new AgentTools(worktreePath, terminalManager);
                     this.runExecutionLoop(taskId, session, tools);
@@ -275,6 +328,9 @@ export class TaskRunner {
             }
         }
     }
+
+    // We need to handle the TYPE change of userMessages.
+    // Let's look at the file content again to see `AgentTask` interface.
 
     public getTask(taskId: string): AgentTask | undefined {
         return this.tasks.get(taskId);
