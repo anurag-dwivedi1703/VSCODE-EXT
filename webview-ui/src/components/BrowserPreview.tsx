@@ -65,7 +65,7 @@ export function BrowserPreview({ taskId }: BrowserPreviewProps) {
     };
 
     return (
-        <div className="browser-preview-container" style={{ display: 'flex', flexDirection: 'column', height: '100%', position: 'relative' }}>
+        <div className="browser-preview-container" style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, position: 'relative' }}>
             {/* Toolbar */}
             <div className="browser-toolbar" style={{ display: 'flex', padding: '8px', borderBottom: '1px solid var(--vscode-panel-border)', gap: '8px', alignItems: 'center' }}>
                 <input
