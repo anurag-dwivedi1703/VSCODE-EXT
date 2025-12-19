@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import './App.css';
 import { vscode } from './utilities/vscode';
 import { BrowserPreview } from './components/BrowserPreview';
+import { ResizableLayout } from './components/ResizableLayout';
 
 // Mock Data
 const DEFAULT_WORKSPACES = [
@@ -211,316 +212,322 @@ function App() {
     };
 
     return (
-        <div className="layout-container">
-            {/* LEFT PANE: WORKSPACE & MISSIONS */}
-            <aside className="pane-sidebar">
-                <div className="pane-header">ANTIGRAVITY</div>
+        <div className="app-container">
+            <ResizableLayout
+                left={
+                    /* LEFT PANE: WORKSPACE & MISSIONS */
+                    <aside className="pane-sidebar">
+                        <div className="pane-header">ANTIGRAVITY</div>
 
-                <div className="sub-header">
-                    <span>WORKSPACES</span>
-                    <button className="icon-btn" onClick={handleAddWorkspace} title="Add Workspace">+</button>
-                </div>
+                        <div className="sub-header">
+                            <span>WORKSPACES</span>
+                            <button className="icon-btn" onClick={handleAddWorkspace} title="Add Workspace">+</button>
+                        </div>
 
-                <div className="workspace-list">
-                    {workspaces.map(ws => {
-                        const wsAgents = activeAgents.filter(a => a.worktreePath === ws.id);
-                        return (
-                            <div key={ws.id} className="workspace-group">
-                                <div className="workspace-header">
-                                    <div className="workspace-info">
-                                        <span className="workspace-icon">📂</span>
-                                        <span className="workspace-name">{ws.name}</span>
+                        <div className="workspace-list">
+                            {workspaces.map(ws => {
+                                const wsAgents = activeAgents.filter(a => a.worktreePath === ws.id);
+                                return (
+                                    <div key={ws.id} className="workspace-group">
+                                        <div className="workspace-header">
+                                            <div className="workspace-info">
+                                                <span className="workspace-icon">📂</span>
+                                                <span className="workspace-name">{ws.name}</span>
+                                            </div>
+                                            <div className="workspace-actions">
+                                                <button className="icon-btn-small" onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setSelectedWorkspace(ws.id);
+                                                    handleNewChat();
+                                                }} title="New Mission">
+                                                    +
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <div className="workspace-missions">
+                                            {wsAgents.length > 0 ? (
+                                                wsAgents.map(agent => (
+                                                    <div key={agent.id}
+                                                        className={`mission-item ${expandedAgentId === agent.id ? 'active' : ''}`}
+                                                        onClick={() => {
+                                                            setExpandedAgentId(agent.id);
+                                                            if (agent.worktreePath) setSelectedWorkspace(agent.worktreePath);
+                                                        }}>
+                                                        <div className="mission-title">{agent.prompt.substring(0, 30)}...</div>
+                                                        <div className="mission-status">{agent.status}</div>
+                                                    </div>
+                                                ))
+                                            ) : (
+                                                <div className="empty-mission-placeholder">No active missions</div>
+                                            )}
+                                        </div>
                                     </div>
-                                    <div className="workspace-actions">
-                                        <button className="icon-btn-small" onClick={(e) => {
-                                            e.stopPropagation();
-                                            setSelectedWorkspace(ws.id);
-                                            handleNewChat();
-                                        }} title="New Mission">
-                                            +
+                                );
+                            })}
+                        </div>
+                    </aside>
+                }
+                center={
+                    /* MIDDLE PANE: MAIN AGENT VIEW */
+                    <main className="pane-main">
+                        {activeAgent && expandedAgentId ? (
+                            <>
+                                <div className="pane-header custom-pane-header">
+                                    <span className="agent-uid">AGENT-{activeAgent.id.substring(activeAgent.id.length - 6)}</span>
+                                    <span className={`agent-status-badge ${activeAgent.status.toUpperCase()}`}>{activeAgent.status}</span>
+                                    <button className="icon-btn" style={{ marginLeft: 'auto' }} onClick={handleNewChat} title="New Chat">➕ New</button>
+                                </div>
+                                <div className="agent-view">
+                                    <div className="agent-header-large">
+                                        <h1 className="agent-title">{activeAgent.prompt}</h1>
+                                        {activeAgent.branchName && (
+                                            <div className="agent-meta">Branch: <code>{activeAgent.branchName}</code></div>
+                                        )}
+                                    </div>
+
+                                    <div className="agent-logs-container">
+                                        {logGroups.map((group, i) => {
+                                            if (group.type === 'system') {
+                                                return (
+                                                    <div key={i} className="msg-system">
+                                                        <details>
+                                                            <summary>⚙️ {group.content}</summary>
+                                                            <div className="system-details">
+                                                                {group.details?.map((d, di) => (
+                                                                    <div key={di}>{d}</div>
+                                                                ))}
+                                                            </div>
+                                                        </details>
+                                                    </div>
+                                                );
+                                            }
+                                            if (group.type === 'user') {
+                                                return (
+                                                    <div key={i} className="msg-row msg-row-user">
+                                                        <div className="msg-bubble msg-user">
+                                                            <div className="msg-content">{group.content}</div>
+                                                        </div>
+                                                        <div className="msg-avatar">👤</div>
+                                                    </div>
+                                                );
+                                            }
+                                            if (group.type === 'agent') {
+                                                return (
+                                                    <div key={i} className="msg-row msg-row-agent">
+                                                        <div className="msg-avatar">🤖</div>
+                                                        <div className="msg-bubble msg-agent">
+                                                            <div className="msg-content markdown-body">
+                                                                <ReactMarkdown>{group.content}</ReactMarkdown>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            }
+                                            if (group.type === 'tool') {
+                                                return (
+                                                    <div key={i} className="msg-tool">
+                                                        <details>
+                                                            <summary>🛠️ Used Tool: <code>{group.content.split('(')[0]}...</code></summary>
+                                                            <div className="tool-details">
+                                                                <div className="tool-call">{group.content}</div>
+                                                                {group.details?.map((d, di) => (
+                                                                    <div key={di} className="tool-result">{d}</div>
+                                                                ))}
+                                                            </div>
+                                                        </details>
+                                                    </div>
+                                                );
+                                            }
+                                            if (group.type === 'artifact') {
+                                                return (
+                                                    <div key={i} className="msg-artifact-card">
+                                                        <div className="artifact-icon">📄</div>
+                                                        <div className="artifact-info">
+                                                            <div className="artifact-name">{group.content.split(/[\\/]/).pop()}</div>
+                                                            <div className="artifact-desc">Information Artifact</div>
+                                                        </div>
+                                                        <button className="artifact-open-btn"
+                                                            onClick={() => vscode.postMessage({ command: 'previewFile', path: group.content, taskId: activeAgent.id })}>
+                                                            OPEN
+                                                        </button>
+                                                    </div>
+                                                );
+                                            }
+                                            if (group.type === 'error') {
+                                                return <div key={i} className="msg-error">⚠️ {group.content}</div>;
+                                            }
+                                            // Handle alerts especially
+                                            if (group.content.includes('[!IMPORTANT]')) {
+                                                return (
+                                                    <div key={i} className="msg-alert">
+                                                        <ReactMarkdown>{group.content}</ReactMarkdown>
+                                                    </div>
+                                                );
+                                            }
+                                            return <div key={i} className="msg-info">{group.content}</div>;
+                                        })}
+                                        <div ref={logsEndRef} />
+                                    </div>
+                                </div>
+
+                                {/* Reply Footer */}
+                                <footer className="reply-footer">
+                                    {contextFiles.length > 0 && (
+                                        <div className="context-chips">
+                                            {contextFiles.map((f, idx) => (
+                                                <div key={idx} className="chip">
+                                                    <span>{f.split(/[\\/]/).pop()}</span>
+                                                    <span className="chip-remove" onClick={() => setContextFiles(prev => prev.filter((_, i) => i !== idx))}>×</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                    <div className="input-row">
+                                        <button className="icon-btn-add" title="Add Context" onClick={() => vscode.postMessage({ command: 'selectContext' })}>+</button>
+                                        <input
+                                            className="reply-input"
+                                            type="text"
+                                            placeholder="Reply to agent..."
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter') {
+                                                    const input = e.target as HTMLInputElement;
+                                                    if (input.value.trim()) {
+                                                        vscode.postMessage({
+                                                            command: 'replyToAgent',
+                                                            text: input.value,
+                                                            taskId: activeAgent.id,
+                                                            attachments: contextFiles
+                                                        });
+                                                        input.value = '';
+                                                        setContextFiles([]); // Clear context after send
+                                                    }
+                                                }
+                                            }}
+                                        />
+                                    </div>
+                                </footer>
+                            </>
+                        ) : (
+                            <div className="composer-container">
+                                <div className="composer-header">
+                                    <h1>What can I do for you?</h1>
+                                    <div style={{ textAlign: 'center', fontSize: '12px', opacity: 0.7, marginTop: '5px' }}>
+                                        Working in: <strong>{workspaces.find(w => w.id === selectedWorkspace)?.name || 'Unknown Workspace'}</strong>
+                                    </div>
+                                </div>
+
+                                <div className="composer-controls">
+                                    {/* Mode Selector */}
+                                    <div className="control-group">
+                                        <div className="control-label">Mode</div>
+                                        <div className="mode-selector">
+                                            <div
+                                                className={`mode-option ${composerMode === 'planning' ? 'selected' : ''}`}
+                                                onClick={() => setComposerMode('planning')}
+                                                title="Agent creates a plan (task.md) before execution."
+                                            >
+                                                <span className="mode-icon">📋</span>
+                                                <div className="mode-info">
+                                                    <div className="mode-title">Planning</div>
+                                                    <div className="mode-desc">Best for complex tasks. Creates a plan first.</div>
+                                                </div>
+                                            </div>
+                                            <div
+                                                className={`mode-option ${composerMode === 'fast' ? 'selected' : ''}`}
+                                                onClick={() => setComposerMode('fast')}
+                                                title="Agent executes directly without creating a plan."
+                                            >
+                                                <span className="mode-icon">⚡</span>
+                                                <div className="mode-info">
+                                                    <div className="mode-title">Fast</div>
+                                                    <div className="mode-desc">Best for quick fixes. Executes immediately.</div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Model Selector */}
+                                    <div className="control-group">
+                                        <div className="control-label">Model</div>
+                                        <select
+                                            className="model-select"
+                                            value={composerModel}
+                                            onChange={(e) => setComposerModel(e.target.value as any)}
+                                        >
+                                            <option value="gemini-3-pro-preview">Gemini 3 Pro (Reasoning)</option>
+                                            <option value="gemini-3-flash-preview">Gemini 3 Flash (Speed)</option>
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <div className="composer-input-area">
+                                    <textarea
+                                        className="composer-textarea"
+                                        placeholder="Describe your task..."
+                                        onKeyDown={(e) => {
+                                            if (e.key === 'Enter' && !e.shiftKey) {
+                                                e.preventDefault();
+                                                handleStartTask((e.target as HTMLTextAreaElement).value);
+                                            }
+                                        }}
+                                    />
+                                    <div className="composer-actions">
+                                        <button className="primary-btn" onClick={(e) => {
+                                            const textarea = (e.target as HTMLElement).closest('.composer-input-area')?.querySelector('textarea');
+                                            if (textarea) handleStartTask(textarea.value);
+                                        }}>
+                                            Start Mission 🚀
                                         </button>
                                     </div>
                                 </div>
-                                <div className="workspace-missions">
-                                    {wsAgents.length > 0 ? (
-                                        wsAgents.map(agent => (
-                                            <div key={agent.id}
-                                                className={`mission-item ${expandedAgentId === agent.id ? 'active' : ''}`}
-                                                onClick={() => {
-                                                    setExpandedAgentId(agent.id);
-                                                    if (agent.worktreePath) setSelectedWorkspace(agent.worktreePath);
-                                                }}>
-                                                <div className="mission-title">{agent.prompt.substring(0, 30)}...</div>
-                                                <div className="mission-status">{agent.status}</div>
-                                            </div>
-                                        ))
-                                    ) : (
-                                        <div className="empty-mission-placeholder">No active missions</div>
-                                    )}
-                                </div>
-                            </div>
-                        );
-                    })}
-                </div>
-            </aside>
-
-            {/* MIDDLE PANE: MAIN AGENT VIEW */}
-            <main className="pane-main">
-                {activeAgent && expandedAgentId ? (
-                    <>
-                        <div className="pane-header custom-pane-header">
-                            <span className="agent-uid">AGENT-{activeAgent.id.substring(activeAgent.id.length - 6)}</span>
-                            <span className={`agent-status-badge ${activeAgent.status.toUpperCase()}`}>{activeAgent.status}</span>
-                            <button className="icon-btn" style={{ marginLeft: 'auto' }} onClick={handleNewChat} title="New Chat">➕ New</button>
-                        </div>
-                        <div className="agent-view">
-                            <div className="agent-header-large">
-                                <h1 className="agent-title">{activeAgent.prompt}</h1>
-                                {activeAgent.branchName && (
-                                    <div className="agent-meta">Branch: <code>{activeAgent.branchName}</code></div>
-                                )}
-                            </div>
-
-                            <div className="agent-logs-container">
-                                {logGroups.map((group, i) => {
-                                    if (group.type === 'system') {
-                                        return (
-                                            <div key={i} className="msg-system">
-                                                <details>
-                                                    <summary>⚙️ {group.content}</summary>
-                                                    <div className="system-details">
-                                                        {group.details?.map((d, di) => (
-                                                            <div key={di}>{d}</div>
-                                                        ))}
-                                                    </div>
-                                                </details>
-                                            </div>
-                                        );
-                                    }
-                                    if (group.type === 'user') {
-                                        return (
-                                            <div key={i} className="msg-row msg-row-user">
-                                                <div className="msg-bubble msg-user">
-                                                    <div className="msg-content">{group.content}</div>
-                                                </div>
-                                                <div className="msg-avatar">👤</div>
-                                            </div>
-                                        );
-                                    }
-                                    if (group.type === 'agent') {
-                                        return (
-                                            <div key={i} className="msg-row msg-row-agent">
-                                                <div className="msg-avatar">🤖</div>
-                                                <div className="msg-bubble msg-agent">
-                                                    <div className="msg-content markdown-body">
-                                                        <ReactMarkdown>{group.content}</ReactMarkdown>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        );
-                                    }
-                                    if (group.type === 'tool') {
-                                        return (
-                                            <div key={i} className="msg-tool">
-                                                <details>
-                                                    <summary>🛠️ Used Tool: <code>{group.content.split('(')[0]}...</code></summary>
-                                                    <div className="tool-details">
-                                                        <div className="tool-call">{group.content}</div>
-                                                        {group.details?.map((d, di) => (
-                                                            <div key={di} className="tool-result">{d}</div>
-                                                        ))}
-                                                    </div>
-                                                </details>
-                                            </div>
-                                        );
-                                    }
-                                    if (group.type === 'artifact') {
-                                        return (
-                                            <div key={i} className="msg-artifact-card">
-                                                <div className="artifact-icon">📄</div>
-                                                <div className="artifact-info">
-                                                    <div className="artifact-name">{group.content.split(/[\\/]/).pop()}</div>
-                                                    <div className="artifact-desc">Information Artifact</div>
-                                                </div>
-                                                <button className="artifact-open-btn"
-                                                    onClick={() => vscode.postMessage({ command: 'previewFile', path: group.content, taskId: activeAgent.id })}>
-                                                    OPEN
-                                                </button>
-                                            </div>
-                                        );
-                                    }
-                                    if (group.type === 'error') {
-                                        return <div key={i} className="msg-error">⚠️ {group.content}</div>;
-                                    }
-                                    // Handle alerts especially
-                                    if (group.content.includes('[!IMPORTANT]')) {
-                                        return (
-                                            <div key={i} className="msg-alert">
-                                                <ReactMarkdown>{group.content}</ReactMarkdown>
-                                            </div>
-                                        );
-                                    }
-                                    return <div key={i} className="msg-info">{group.content}</div>;
-                                })}
-                                <div ref={logsEndRef} />
-                            </div>
-                        </div>
-
-                        {/* Reply Footer */}
-                        <footer className="reply-footer">
-                            {contextFiles.length > 0 && (
-                                <div className="context-chips">
-                                    {contextFiles.map((f, idx) => (
-                                        <div key={idx} className="chip">
-                                            <span>{f.split(/[\\/]/).pop()}</span>
-                                            <span className="chip-remove" onClick={() => setContextFiles(prev => prev.filter((_, i) => i !== idx))}>×</span>
-                                        </div>
-                                    ))}
-                                </div>
-                            )}
-                            <div className="input-row">
-                                <button className="icon-btn-add" title="Add Context" onClick={() => vscode.postMessage({ command: 'selectContext' })}>+</button>
-                                <input
-                                    className="reply-input"
-                                    type="text"
-                                    placeholder="Reply to agent..."
-                                    onKeyDown={(e) => {
-                                        if (e.key === 'Enter') {
-                                            const input = e.target as HTMLInputElement;
-                                            if (input.value.trim()) {
-                                                vscode.postMessage({
-                                                    command: 'replyToAgent',
-                                                    text: input.value,
-                                                    taskId: activeAgent.id,
-                                                    attachments: contextFiles
-                                                });
-                                                input.value = '';
-                                                setContextFiles([]); // Clear context after send
-                                            }
-                                        }
-                                    }}
-                                />
-                            </div>
-                        </footer>
-                    </>
-                ) : (
-                    <div className="composer-container">
-                        <div className="composer-header">
-                            <h1>What can I do for you?</h1>
-                            <div style={{ textAlign: 'center', fontSize: '12px', opacity: 0.7, marginTop: '5px' }}>
-                                Working in: <strong>{workspaces.find(w => w.id === selectedWorkspace)?.name || 'Unknown Workspace'}</strong>
-                            </div>
-                        </div>
-
-                        <div className="composer-controls">
-                            {/* Mode Selector */}
-                            <div className="control-group">
-                                <div className="control-label">Mode</div>
-                                <div className="mode-selector">
-                                    <div
-                                        className={`mode-option ${composerMode === 'planning' ? 'selected' : ''}`}
-                                        onClick={() => setComposerMode('planning')}
-                                        title="Agent creates a plan (task.md) before execution."
-                                    >
-                                        <span className="mode-icon">📋</span>
-                                        <div className="mode-info">
-                                            <div className="mode-title">Planning</div>
-                                            <div className="mode-desc">Best for complex tasks. Creates a plan first.</div>
-                                        </div>
-                                    </div>
-                                    <div
-                                        className={`mode-option ${composerMode === 'fast' ? 'selected' : ''}`}
-                                        onClick={() => setComposerMode('fast')}
-                                        title="Agent executes directly without creating a plan."
-                                    >
-                                        <span className="mode-icon">⚡</span>
-                                        <div className="mode-info">
-                                            <div className="mode-title">Fast</div>
-                                            <div className="mode-desc">Best for quick fixes. Executes immediately.</div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-
-                            {/* Model Selector */}
-                            <div className="control-group">
-                                <div className="control-label">Model</div>
-                                <select
-                                    className="model-select"
-                                    value={composerModel}
-                                    onChange={(e) => setComposerModel(e.target.value as any)}
-                                >
-                                    <option value="gemini-3-pro-preview">Gemini 3 Pro (Reasoning)</option>
-                                    <option value="gemini-3-flash-preview">Gemini 3 Flash (Speed)</option>
-                                </select>
-                            </div>
-                        </div>
-
-                        <div className="composer-input-area">
-                            <textarea
-                                className="composer-textarea"
-                                placeholder="Describe your task..."
-                                onKeyDown={(e) => {
-                                    if (e.key === 'Enter' && !e.shiftKey) {
-                                        e.preventDefault();
-                                        handleStartTask((e.target as HTMLTextAreaElement).value);
-                                    }
-                                }}
-                            />
-                            <div className="composer-actions">
-                                <button className="primary-btn" onClick={(e) => {
-                                    const textarea = (e.target as HTMLElement).closest('.composer-input-area')?.querySelector('textarea');
-                                    if (textarea) handleStartTask(textarea.value);
-                                }}>
-                                    Start Mission 🚀
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                )}
-            </main>
-
-            {/* RIGHT PANE: CONTEXT & BROWSER */}
-            <aside className="pane-context">
-                <div className="tab-switcher">
-                    <button
-                        className={`tab-btn ${rightPaneTab === 'context' ? 'active' : ''}`}
-                        onClick={() => setRightPaneTab('context')}>
-                        CONTEXT
-                    </button>
-                    <button
-                        className={`tab-btn ${rightPaneTab === 'browser' ? 'active' : ''}`}
-                        onClick={() => setRightPaneTab('browser')}>
-                        BROWSER
-                    </button>
-                </div>
-
-                {rightPaneTab === 'context' ? (
-                    <div className="context-list">
-                        {previewContent ? (
-                            <div className="file-preview">
-                                <div className="preview-header">
-                                    <span className="preview-filename">{previewPath?.split(/[\\/]/).pop()}</span>
-                                    <button className="icon-btn-small" onClick={() => setPreviewContent(null)}>×</button>
-                                </div>
-                                <div className="preview-body markdown-body">
-                                    {previewPath?.endsWith('.md') ? (
-                                        <ReactMarkdown>{previewContent}</ReactMarkdown>
-                                    ) : (
-                                        <pre>{previewContent}</pre>
-                                    )}
-                                </div>
-                            </div>
-                        ) : (
-                            <div className="empty-state">
-                                <div>No artifacts open. Click OPEN on an artifact card to view.</div>
                             </div>
                         )}
-                    </div>
-                ) : (
-                    <BrowserPreview taskId={activeAgent?.id || ''} />
-                )}
-            </aside>
+                    </main>
+                }
+                right={
+                    /* RIGHT PANE: CONTEXT & BROWSER */
+                    <aside className="pane-context">
+                        <div className="tab-switcher">
+                            <button
+                                className={`tab-btn ${rightPaneTab === 'context' ? 'active' : ''}`}
+                                onClick={() => setRightPaneTab('context')}>
+                                CONTEXT
+                            </button>
+                            <button
+                                className={`tab-btn ${rightPaneTab === 'browser' ? 'active' : ''}`}
+                                onClick={() => setRightPaneTab('browser')}>
+                                BROWSER
+                            </button>
+                        </div>
+
+                        {rightPaneTab === 'context' ? (
+                            <div className="context-list">
+                                {previewContent ? (
+                                    <div className="file-preview">
+                                        <div className="preview-header">
+                                            <span className="preview-filename">{previewPath?.split(/[\\/]/).pop()}</span>
+                                            <button className="icon-btn-small" onClick={() => setPreviewContent(null)}>×</button>
+                                        </div>
+                                        <div className="preview-body markdown-body">
+                                            {previewPath?.endsWith('.md') ? (
+                                                <ReactMarkdown>{previewContent}</ReactMarkdown>
+                                            ) : (
+                                                <pre>{previewContent}</pre>
+                                            )}
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="empty-state">
+                                        <div>No artifacts open. Click OPEN on an artifact card to view.</div>
+                                    </div>
+                                )}
+                            </div>
+                        ) : (
+                            <BrowserPreview taskId={activeAgent?.id || ''} />
+                        )}
+                    </aside>
+                }
+            />
         </div>
     );
 }

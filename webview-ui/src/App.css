@@ -1,18 +1,70 @@
 /* Basic Layout */
-.layout-container {
-    display: flex;
+.app-container {
     height: 100vh;
+    width: 100vw;
     background-color: var(--vscode-editor-background);
     color: var(--vscode-editor-foreground);
     font-family: var(--vscode-font-family);
     overflow: hidden;
 }
 
+/* Resizable Layout */
+.resizable-container {
+    display: flex;
+    height: 100%;
+    width: 100%;
+}
+
+.pane-left,
+.pane-right {
+    height: 100%;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.pane-center {
+    height: 100%;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-width: 200px;
+}
+
+.resizer-handle {
+    width: 8px;
+    /* Hit area */
+    cursor: col-resize;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    position: relative;
+    z-index: 10;
+    margin: 0 -3px;
+    /* visual overlap */
+}
+
+.resizer-handle:hover .resizer-line,
+.resizer-handle:active .resizer-line {
+    background-color: var(--vscode-focusBorder);
+    opacity: 1;
+}
+
+.resizer-line {
+    width: 1px;
+    height: 100%;
+    background-color: var(--vscode-panel-border);
+    transition: background-color 0.2s;
+}
+
+
 /* Three Pane Grid */
 .pane-sidebar {
-    width: 260px;
+    /* width: 260px; Removed for ResizableLayout */
+    height: 100%;
     background-color: var(--vscode-sideBar-background);
-    border-right: 1px solid var(--vscode-panel-border);
+    /* border-right: 1px solid var(--vscode-panel-border); handled by resizer */
     display: flex;
     flex-direction: column;
 }
@@ -26,9 +78,10 @@
 }
 
 .pane-context {
-    width: 320px;
+    /* width: 320px; Removed for ResizableLayout */
+    height: 100%;
     background-color: var(--vscode-sideBar-background);
-    border-left: 1px solid var(--vscode-panel-border);
+    /* border-left: 1px solid var(--vscode-panel-border); handled by resizer */
     display: flex;
     flex-direction: column;
 }
