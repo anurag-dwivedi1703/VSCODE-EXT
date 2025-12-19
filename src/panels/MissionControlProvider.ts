@@ -168,10 +168,12 @@ export class MissionControlProvider {
 
                 switch (command) {
                     case 'startTask':
-                        // Pass workspaceId (path) to task runner
+                        // Pass workspaceId (path), mode, and model to task runner
                         const workspacePath = message.workspaceId;
-                        console.log(`[MissionControl] Starting task in workspace: ${workspacePath}`);
-                        this._taskRunner.startTask(text, workspacePath);
+                        const mode = message.mode;
+                        const model = message.model;
+                        console.log(`[MissionControl] Starting task in workspace: ${workspacePath} [${mode}] [${model}]`);
+                        this._taskRunner.startTask(text, workspacePath, mode, model);
                         return;
                     case 'hello':
                         vscode.window.showInformationMessage(text);
@@ -258,28 +260,34 @@ export class MissionControlProvider {
                     case 'previewFile': {
                         // In-webview preview for artifact cards
                         const taskId = message.taskId;
-                        const relativePath = message.path;
                         const task = this._taskRunner.getTask(taskId);
 
                         if (task && task.worktreePath) {
-                            const fsPath = path.isAbsolute(relativePath)
-                                ? relativePath
-                                : path.join(task.worktreePath, relativePath);
+                            // Normalize path
+                            let fsPath = message.path;
+                            if (!path.isAbsolute(fsPath)) {
+                                fsPath = path.join(task.worktreePath, fsPath);
+                            }
+
+                            console.log(`[MissionControl] Previewing artifact: ${fsPath}`);
 
                             try {
                                 if (fs.existsSync(fsPath)) {
                                     const content = fs.readFileSync(fsPath, 'utf-8');
                                     this._panel.webview.postMessage({
                                         command: 'fileContent',
-                                        path: relativePath,
+                                        path: fsPath,
                                         content: content
                                     });
                                 } else {
                                     vscode.window.showErrorMessage(`File not found: ${fsPath}`);
+                                    console.error(`[MissionControl] Artifact not found at ${fsPath}`);
                                 }
                             } catch (err: any) {
                                 vscode.window.showErrorMessage(`Error reading file: ${err.message}`);
                             }
+                        } else {
+                            vscode.window.showErrorMessage(`Cannot open artifact. Task or Worktree path missing.`);
                         }
                         return;
                     }

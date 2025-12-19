@@ -11,10 +11,11 @@ export interface ISession {
 
 export class GeminiClient {
     private genAI: GoogleGenerativeAI;
-    private modelName: string = 'gemini-3-pro-preview'; // User requested preview model
+    private modelName: string;
 
-    constructor(apiKey: string) {
+    constructor(apiKey: string, modelName: string = 'gemini-3-pro-preview') {
         this.genAI = new GoogleGenerativeAI(apiKey);
+        this.modelName = modelName;
     }
 
     public startSession(systemPrompt: string, thinkingLevel: 'low' | 'high' = 'high'): ISession {
@@ -79,6 +80,17 @@ export class GeminiClient {
                                 },
                                 required: ["command"]
                             }
+                        },
+                        {
+                            name: "search_web",
+                            description: "Search the web for documentation or solutions",
+                            parameters: {
+                                type: "OBJECT" as any,
+                                properties: {
+                                    query: { type: "STRING" as any, description: "Search query" }
+                                },
+                                required: ["query"]
+                            }
                         }
                     ]
                 }
@@ -109,5 +121,24 @@ export class GeminiClient {
                 };
             }
         };
+    }
+
+    public async research(query: string): Promise<string> {
+        try {
+            const model = this.genAI.getGenerativeModel({
+                model: 'gemini-3-flash-preview', // Unifying search model as requested
+                tools: [
+                    {
+                        googleSearch: {}
+                    } as any
+                ]
+            });
+
+            const result = await model.generateContent(query);
+            const response = result.response;
+            return response.text();
+        } catch (error: any) {
+            return `Search failed: ${error.message}`;
+        }
     }
 }

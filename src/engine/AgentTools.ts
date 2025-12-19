@@ -2,11 +2,13 @@ import * as vscode from 'vscode';
 import * as cp from 'child_process';
 import * as path from 'path';
 import { TerminalManager } from './TerminalManager';
+import { GeminiClient } from '../ai/GeminiClient';
 
 export class AgentTools {
     constructor(
         private readonly worktreeRoot: string,
-        private readonly terminalManager?: TerminalManager
+        private readonly terminalManager?: TerminalManager,
+        private readonly geminiClient?: GeminiClient
     ) { }
 
     private getUri(relativePath: string): vscode.Uri {
@@ -55,6 +57,13 @@ export class AgentTools {
         }
     }
 
+    async searchWeb(query: string): Promise<string> {
+        if (!this.geminiClient) {
+            return "Error: Web Search (GeminiClient) not available in this context.";
+        }
+        return await this.geminiClient.research(query);
+    }
+
     async runCommand(command: string): Promise<string> {
         return new Promise((resolve) => {
             // Basic safety check
@@ -77,6 +86,22 @@ export class AgentTools {
                 cwd: this.worktreeRoot,
                 shell: true
             });
+
+            // 1. TIMEOUT LOGIC
+            // If not background, force resolve after 15 seconds to prevent hanging (e.g., interactive 'date' command)
+            if (!isBackground) {
+                setTimeout(() => {
+                    if (!resolved) {
+                        child.kill(); // Kill the stuck process
+                        combinedOutput += "\n[System]: Command timed out after 15s. It may have been waiting for input.";
+                        safeResolve(combinedOutput);
+                    }
+                }, 15000);
+            }
+
+            // 2. PREVENT INTERACTIVE HANGS
+            // Immediately end stdin so commands waiting for input (like 'date') fail or exit instead of hanging
+            child.stdin.end();
 
             let combinedOutput = '';
             let resolved = false;

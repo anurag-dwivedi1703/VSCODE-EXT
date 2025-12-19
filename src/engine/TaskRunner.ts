@@ -19,6 +19,8 @@ interface AgentTask {
     branchName?: string;
     userMessages: { text: string, attachments: string[] }[];
     artifacts: string[];
+    mode?: 'planning' | 'fast';
+    model?: string;
 }
 
 export class TaskRunner {
@@ -93,7 +95,7 @@ export class TaskRunner {
         }
     }
 
-    public async startTask(prompt: string, worktreePath?: string): Promise<string> {
+    public async startTask(prompt: string, worktreePath?: string, mode: 'planning' | 'fast' = 'planning', model: string = 'gemini-3-pro-preview'): Promise<string> {
         const taskId = `agent-${Date.now()}`;
         const task: AgentTask = {
             id: taskId,
@@ -103,7 +105,9 @@ export class TaskRunner {
             logs: [],
             userMessages: [],
             artifacts: [],
-            worktreePath: worktreePath // Store it initially if provided
+            worktreePath: worktreePath, // Store it initially if provided
+            mode,
+            model
         };
         this.tasks.set(taskId, task);
         this.saveTask(task); // Persist initial state
@@ -119,6 +123,13 @@ export class TaskRunner {
         if (!task) return;
 
         try {
+
+            // REFRESH SETTINGS: Always get latest API key
+            const config = vscode.workspace.getConfiguration('antigravity');
+            const apiKey = config.get<string>('geminiApiKey') || '';
+            // Use selected model or default to pro
+            this.gemini = new GeminiClient(apiKey, task.model || 'gemini-3-pro-preview');
+
             this.updateStatus(taskId, 'planning', 5, 'Initializing Agent...');
 
             // Step 1: Determine Workspace
@@ -145,11 +156,12 @@ export class TaskRunner {
             task.branchName = 'current-branch';
 
             // Step 2: Initialize Tools for this Workspace
-            const tools = new AgentTools(workspaceRoot, terminalManager);
+            const tools = new AgentTools(workspaceRoot, terminalManager, this.gemini);
 
             // Step 3: Start Gemini Session
             this.updateStatus(taskId, 'planning', 20, 'Consulting Gemini...');
-            const systemPrompt = `You are an expert software engineer connected to a real file system.
+
+            let systemPrompt = `You are an expert software engineer connected to a real file system.
             You are working DIRECTLY in the user's workspace.
             
             Your Mission: ${task.prompt}
@@ -160,20 +172,33 @@ export class TaskRunner {
             - list_files(path): List directory.
             - run_command(command): Execute shell command (git, npm, etc).
             - reload_browser(): Reload the browser preview to verify changes. (Tool, NOT a shell command)
-            
-            CORE WORKFLOW (Follow strictly):
+            - search_web(query): Search the web for documentation, solutions, or new concepts.
+            `;
+
+            if (task.mode === 'planning') {
+                systemPrompt += `
+            CORE WORKFLOW (PLANNING MODE):
             1. EXPLORE: Use list_files/read_file to understand the codebase.
-            2. PLAN (Mandatory for complex tasks):
-               - Create a file named 'task.md'. This must be a Markdown checklist of steps (e.g., "- [ ] Step 1").
-               - Create a file named 'implementation_plan.md'. This must detail your technical approach.
+            2. PLAN (Mandatory):
+                - Create a file named 'task.md'. This must be a Markdown checklist of steps (e.g., "- [ ] Step 1").
+                - Create a file named 'implementation_plan.md'. This must detail your technical approach.
             3. ACT: Use write_file/run_command to implement the plan.
             4. UPDATE: After completing a step, OVERWRITE 'task.md' to mark the item as done (e.g., "- [x] Step 1").
             5. VERIFY: Run tests or checks.
-               - IMPORTANT: If making UI changes (HTML, CSS, JS), you MUST call 'reload_browser()' to verify the visual result.
-               - SERVER CHECK: Ensure the server is running. Use 'node restart.js' to safely restart both frontend/backend.
-               - If changing server-side code, assume mostly hot-reload but you can restart if needed.
+                - IMPORTANT: If making UI changes (HTML, CSS, JS), you MUST call 'reload_browser()' to verify the visual result.
             6. FINISH: Answer with "MISSION COMPLETE" when done.
             `;
+            } else {
+                // FAST MODE
+                systemPrompt += `
+            CORE WORKFLOW (FAST MODE):
+            1. ACT: Execute the request immediately.
+            2. NO PLANNING DOCS: Do NOT create 'task.md' or 'implementation_plan.md' unless explicitly asked.
+            3. EXPLORE (optional): Only if needed to locate files.
+            4. VERIFY: If making UI changes, call 'reload_browser()'.
+            5. FINISH: Answer with "MISSION COMPLETE" when done.
+            `;
+            }
 
             const chat = this.gemini.startSession(systemPrompt, 'high');
             this.sessions.set(taskId, chat);
@@ -335,6 +360,9 @@ export class TaskRunner {
                                     this._onReloadBrowser.fire();
                                     toolResult = "Browser reload triggered.";
                                     break;
+                                case 'search_web':
+                                    toolResult = await tools.searchWeb(args.query as string);
+                                    break;
                                 default:
                                     toolResult = `Error: Unknown tool ${fnName}`;
                             }
@@ -416,6 +444,11 @@ export class TaskRunner {
                     // Session lost (restart/reload), attempt to "restart" it
                     task.logs.push(`> [System]: Session restored. Starting new conversation context.`);
 
+                    // REFRESH SETTINGS: Always get latest API key
+                    const config = vscode.workspace.getConfiguration('antigravity');
+                    const apiKey = config.get<string>('geminiApiKey') || '';
+                    this.gemini = new GeminiClient(apiKey);
+
                     const systemPrompt = `You are resuming a previous mission.
                     Your Mission: ${task.prompt}
                     
@@ -428,6 +461,7 @@ export class TaskRunner {
                     - list_files(path): List directory.
                     - run_command(command): Execute shell command (git, npm, etc).
                     - reload_browser(): Reload the browser preview to verify changes. (Tool, NOT a shell command)
+                    - search_web(query): Search the web for documentation, solutions, or new concepts.
 
                     UI VERIFICATION RULE:
                     If you make ANY changes to the Frontend (HTML/CSS/JS), you MUST execute 'reload_browser()' right after.
@@ -443,7 +477,7 @@ export class TaskRunner {
                 }
 
                 if (session && worktreePath) {
-                    const tools = new AgentTools(worktreePath, terminalManager);
+                    const tools = new AgentTools(worktreePath, terminalManager, this.gemini);
                     this.runExecutionLoop(taskId, session, tools);
                 } else {
                     task.logs.push("Error: Cannot resume session. Worktree path missing.");

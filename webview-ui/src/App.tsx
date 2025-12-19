@@ -157,9 +157,10 @@ function App() {
             }
             if (message.command === 'updateWorkspaces') {
                 setWorkspaces(message.workspaces);
-                if (message.workspaces.length > 0) {
-                    setSelectedWorkspace(message.workspaces[0].id);
-                }
+                setSelectedWorkspace(prev => {
+                    const exists = message.workspaces.find((w: any) => w.id === prev);
+                    return exists ? prev : (message.workspaces[0]?.id || '');
+                });
             }
             if (message.command === 'fileContent') {
                 setPreviewContent(message.content);
@@ -181,14 +182,20 @@ function App() {
     }, [dynamicAgents]);
 
     const activeAgents = dynamicAgents;
+    // State for New Agent Composer
+    const [composerMode, setComposerMode] = useState<'planning' | 'fast'>('planning');
+    const [composerModel, setComposerModel] = useState<'gemini-3-pro-preview' | 'gemini-3-flash-preview'>('gemini-3-pro-preview');
+
     const handleStartTask = (prompt: string) => {
         if (!prompt.trim()) return;
         vscode.postMessage({
             command: 'startTask',
             text: prompt,
-            workspaceId: selectedWorkspace // Pass selected workspace path
+            workspaceId: selectedWorkspace,
+            mode: composerMode,
+            model: composerModel
         });
-        setShowNewAgentModal(false);
+        // Optional: Reset composer or switch view
     };
 
     const handleAddWorkspace = () => {
@@ -197,6 +204,11 @@ function App() {
 
     const activeAgent = activeAgents.find(a => a.id === expandedAgentId) || activeAgents[0];
     const logGroups = activeAgent ? parseLogs(activeAgent.logs) : [];
+
+    // Helper to start new chat
+    const handleNewChat = () => {
+        setExpandedAgentId(null); // Deselect current agent to show Composer
+    };
 
     return (
         <div className="layout-container">
@@ -223,7 +235,7 @@ function App() {
                                         <button className="icon-btn-small" onClick={(e) => {
                                             e.stopPropagation();
                                             setSelectedWorkspace(ws.id);
-                                            setShowNewAgentModal(true);
+                                            handleNewChat();
                                         }} title="New Mission">
                                             +
                                         </button>
@@ -234,7 +246,10 @@ function App() {
                                         wsAgents.map(agent => (
                                             <div key={agent.id}
                                                 className={`mission-item ${expandedAgentId === agent.id ? 'active' : ''}`}
-                                                onClick={() => setExpandedAgentId(agent.id)}>
+                                                onClick={() => {
+                                                    setExpandedAgentId(agent.id);
+                                                    if (agent.worktreePath) setSelectedWorkspace(agent.worktreePath);
+                                                }}>
                                                 <div className="mission-title">{agent.prompt.substring(0, 30)}...</div>
                                                 <div className="mission-status">{agent.status}</div>
                                             </div>
@@ -251,11 +266,12 @@ function App() {
 
             {/* MIDDLE PANE: MAIN AGENT VIEW */}
             <main className="pane-main">
-                {activeAgent ? (
+                {activeAgent && expandedAgentId ? (
                     <>
                         <div className="pane-header custom-pane-header">
-                            {activeAgent.id}
+                            <span className="agent-uid">AGENT-{activeAgent.id.substring(activeAgent.id.length - 6)}</span>
                             <span className={`agent-status-badge ${activeAgent.status.toUpperCase()}`}>{activeAgent.status}</span>
+                            <button className="icon-btn" style={{ marginLeft: 'auto' }} onClick={handleNewChat} title="New Chat">➕ New</button>
                         </div>
                         <div className="agent-view">
                             <div className="agent-header-large">
@@ -388,104 +404,123 @@ function App() {
                         </footer>
                     </>
                 ) : (
-                    <div className="empty-state">
-                        <h2>No Active Agents</h2>
-                        <p>Select a mission or spin up a new agent.</p>
+                    <div className="composer-container">
+                        <div className="composer-header">
+                            <h1>What can I do for you?</h1>
+                            <div style={{ textAlign: 'center', fontSize: '12px', opacity: 0.7, marginTop: '5px' }}>
+                                Working in: <strong>{workspaces.find(w => w.id === selectedWorkspace)?.name || 'Unknown Workspace'}</strong>
+                            </div>
+                        </div>
+
+                        <div className="composer-controls">
+                            {/* Mode Selector */}
+                            <div className="control-group">
+                                <div className="control-label">Mode</div>
+                                <div className="mode-selector">
+                                    <div
+                                        className={`mode-option ${composerMode === 'planning' ? 'selected' : ''}`}
+                                        onClick={() => setComposerMode('planning')}
+                                        title="Agent creates a plan (task.md) before execution."
+                                    >
+                                        <span className="mode-icon">📋</span>
+                                        <div className="mode-info">
+                                            <div className="mode-title">Planning</div>
+                                            <div className="mode-desc">Best for complex tasks. Creates a plan first.</div>
+                                        </div>
+                                    </div>
+                                    <div
+                                        className={`mode-option ${composerMode === 'fast' ? 'selected' : ''}`}
+                                        onClick={() => setComposerMode('fast')}
+                                        title="Agent executes directly without creating a plan."
+                                    >
+                                        <span className="mode-icon">⚡</span>
+                                        <div className="mode-info">
+                                            <div className="mode-title">Fast</div>
+                                            <div className="mode-desc">Best for quick fixes. Executes immediately.</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Model Selector */}
+                            <div className="control-group">
+                                <div className="control-label">Model</div>
+                                <select
+                                    className="model-select"
+                                    value={composerModel}
+                                    onChange={(e) => setComposerModel(e.target.value as any)}
+                                >
+                                    <option value="gemini-3-pro-preview">Gemini 3 Pro (Reasoning)</option>
+                                    <option value="gemini-3-flash-preview">Gemini 3 Flash (Speed)</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div className="composer-input-area">
+                            <textarea
+                                className="composer-textarea"
+                                placeholder="Describe your task..."
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter' && !e.shiftKey) {
+                                        e.preventDefault();
+                                        handleStartTask((e.target as HTMLTextAreaElement).value);
+                                    }
+                                }}
+                            />
+                            <div className="composer-actions">
+                                <button className="primary-btn" onClick={(e) => {
+                                    const textarea = (e.target as HTMLElement).closest('.composer-input-area')?.querySelector('textarea');
+                                    if (textarea) handleStartTask(textarea.value);
+                                }}>
+                                    Start Mission 🚀
+                                </button>
+                            </div>
+                        </div>
                     </div>
                 )}
             </main>
 
-            {/* RIGHT PANE: CONTEXT & ARTIFACTS OR PREVIEW */}
+            {/* RIGHT PANE: CONTEXT & BROWSER */}
             <aside className="pane-context">
-                <div className="pane-header">
-                    {previewContent ? (
-                        <span>PREVIEW</span>
-                    ) : (
-                        <div className="tab-switcher">
-                            <button
-                                className={`tab-btn ${rightPaneTab === 'context' ? 'active' : ''}`}
-                                onClick={() => setRightPaneTab('context')}
-                            >
-                                Context
-                            </button>
-                            <button
-                                className={`tab-btn ${rightPaneTab === 'browser' ? 'active' : ''}`}
-                                onClick={() => setRightPaneTab('browser')}
-                            >
-                                Browser
-                            </button>
-                        </div>
-                    )}
-
-                    {previewContent && (
-                        <button className="icon-btn" style={{ marginLeft: 'auto' }} onClick={() => {
-                            setPreviewContent(null);
-                            setPreviewPath(null);
-                        }}>❌ Close</button>
-                    )}
+                <div className="tab-switcher">
+                    <button
+                        className={`tab-btn ${rightPaneTab === 'context' ? 'active' : ''}`}
+                        onClick={() => setRightPaneTab('context')}>
+                        CONTEXT
+                    </button>
+                    <button
+                        className={`tab-btn ${rightPaneTab === 'browser' ? 'active' : ''}`}
+                        onClick={() => setRightPaneTab('browser')}>
+                        BROWSER
+                    </button>
                 </div>
 
-                {previewContent ? (
-                    <div className="markdown-body" style={{ padding: '20px', overflowY: 'auto', flex: 1 }}>
-                        <h3>{previewPath?.split(/[\\/]/).pop()}</h3>
-                        <ReactMarkdown>{previewContent}</ReactMarkdown>
+                {rightPaneTab === 'context' ? (
+                    <div className="context-list">
+                        {previewContent ? (
+                            <div className="file-preview">
+                                <div className="preview-header">
+                                    <span className="preview-filename">{previewPath?.split(/[\\/]/).pop()}</span>
+                                    <button className="icon-btn-small" onClick={() => setPreviewContent(null)}>×</button>
+                                </div>
+                                <div className="preview-body markdown-body">
+                                    {previewPath?.endsWith('.md') ? (
+                                        <ReactMarkdown>{previewContent}</ReactMarkdown>
+                                    ) : (
+                                        <pre>{previewContent}</pre>
+                                    )}
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="empty-state">
+                                <div>No artifacts open. Click OPEN on an artifact card to view.</div>
+                            </div>
+                        )}
                     </div>
                 ) : (
-                    <>
-                        {/* CONTEXT TAB */}
-                        <div className="context-list" style={{ display: rightPaneTab === 'context' ? 'flex' : 'none' }}>
-                            {activeAgent && activeAgent.worktreePath && (
-                                <div className="context-item">
-                                    <strong>Worktree:</strong><br />
-                                    <code style={{ wordBreak: 'break-all' }}>{activeAgent.worktreePath}</code>
-                                </div>
-                            )}
-
-                            {/* ARTIFACTS LIST */}
-                            {activeAgent && activeAgent.artifacts && activeAgent.artifacts.length > 0 && (
-                                <div>
-                                    <div className="sub-header">Created Artifacts</div>
-                                    {activeAgent.artifacts.map((path: string, i: number) => (
-                                        <div key={i} className="context-item artifact-item"
-                                            onClick={() => vscode.postMessage({ command: 'previewFile', path, taskId: activeAgent.id })}>
-                                            <span style={{ marginRight: '5px' }}>📄</span>
-                                            <span>{path.split(/[\\/]/).pop()}</span>
-                                        </div>
-                                    ))}
-                                </div>
-                            )}
-
-                            {(!activeAgent || !activeAgent.artifacts || activeAgent.artifacts.length === 0) && (
-                                <div className="context-item empty-context" >
-                                    No artifacts created yet.
-                                </div>
-                            )}
-                        </div>
-
-                        {/* BROWSER TAB (Always rendered but hidden if not active to persist state) */}
-                        <div style={{ display: rightPaneTab === 'browser' ? 'block' : 'none', flex: 1, overflow: 'hidden' }}>
-                            <BrowserPreview taskId={activeAgent ? activeAgent.id : 'unknown'} />
-                        </div>
-                    </>
+                    <BrowserPreview taskId={activeAgent?.id || ''} />
                 )}
             </aside>
-
-            {/* Modal */}
-            {showNewAgentModal && (
-                <div className="modal-overlay">
-                    <div className="modal">
-                        <h2>New Agent Task</h2>
-                        <input id="taskInput" type="text" placeholder="Describe the task..." autoFocus />
-                        <div className="modal-actions">
-                            <button onClick={() => setShowNewAgentModal(false)}>Cancel</button>
-                            <button className="primary-btn" onClick={() => {
-                                const input = document.getElementById('taskInput') as HTMLInputElement;
-                                handleStartTask(input.value);
-                            }}>Start Agent</button>
-                        </div>
-                    </div>
-                </div>
-            )}
         </div>
     );
 }
