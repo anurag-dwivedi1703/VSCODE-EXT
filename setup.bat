@@ -1,6 +1,6 @@
 @echo off
 echo ==========================================
-echo    Antigravity Extension Setup Assistant
+echo    VibeArchitect Extension Setup Assistant
 echo ==========================================
 echo.
 

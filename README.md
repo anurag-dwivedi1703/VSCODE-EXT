@@ -1,11 +1,11 @@
-# Antigravity Agent Manager
+# VibeArchitect Agent Manager
 
-**Mimics Google's Antigravity Agent Manager for VS Code.**
+**VibeArchitect - AI Agent Manager for VS Code.**
 
 ## Features
 
 - **Mission Control**: A React-based webview dashboard to monitor agents.
-- **Project Antigravity**: Background task runner using isolated Git Worktrees.
+- **VibeArchitect**: Background task runner using isolated Git Worktrees.
 - **Gemini 3 Pro Integration**: AI-powered coding agents.
 
 ## Setup
@@ -27,7 +27,7 @@
 
 3. **Run**:
    - Press `F5` in VS Code to launch the extension.
-   - Run command: `Antigravity: Open Mission Control`.
+   - Run command: `VibeArchitect: Open Mission Control`.
 
 ## Requirements
 

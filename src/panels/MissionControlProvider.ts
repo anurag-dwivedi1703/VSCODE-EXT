@@ -31,7 +31,7 @@ export class MissionControlProvider {
         this._setWebviewMessageListener(this._panel.webview);
 
         // Load workspaces from globalState
-        const savedWorkspaces = this._context.globalState.get<WorkspaceInfo[]>('antigravity.workspaces');
+        const savedWorkspaces = this._context.globalState.get<WorkspaceInfo[]>('vibearchitect.workspaces');
         if (savedWorkspaces && savedWorkspaces.length > 0) {
             this._workspaces = savedWorkspaces;
         } else {
@@ -156,7 +156,7 @@ export class MissionControlProvider {
     }
 
     private saveWorkspaces() {
-        this._context.globalState.update('antigravity.workspaces', this._workspaces);
+        this._context.globalState.update('vibearchitect.workspaces', this._workspaces);
     }
 
     private sendWorkspaces() {

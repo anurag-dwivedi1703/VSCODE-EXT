@@ -1,7 +1,7 @@
 {
-    "name": "antigravity-manager",
-    "displayName": "Antigravity Agent Manager",
-    "description": "Google's Antigravity Agent Manager Extension",
+    "name": "vibearchitect",
+    "displayName": "VibeArchitect Agent Manager",
+    "description": "VibeArchitect - AI Agent Manager Extension",
     "version": "0.0.1",
     "engines": {
         "vscode": "^1.85.0"
@@ -10,20 +10,20 @@
         "Other"
     ],
     "activationEvents": [
-        "onCommand:antigravity.openMissionControl"
+        "onCommand:vibearchitect.openMissionControl"
     ],
     "main": "./dist/extension.js",
     "contributes": {
         "commands": [
             {
-                "command": "antigravity.openMissionControl",
-                "title": "Antigravity: Open Mission Control"
+                "command": "vibearchitect.openMissionControl",
+                "title": "VibeArchitect: Open Mission Control"
             }
         ],
         "configuration": {
-            "title": "Antigravity",
+            "title": "VibeArchitect",
             "properties": {
-                "antigravity.geminiApiKey": {
+                "vibearchitect.geminiApiKey": {
                     "type": "string",
                     "default": "",
                     "description": "Google GenAI API Key for Gemini 3 Pro"

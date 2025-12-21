@@ -321,7 +321,7 @@ function App() {
                     /* LEFT PANE: WORKSPACE & MISSIONS */
                     <aside className="pane-sidebar">
                         <div className="pane-header">
-                            <span className="title">ANTIGRAVITY v1.4</span>
+                            <span className="title">VIBEARCHITECT v1.4</span>
                         </div>
 
                         <div className="sub-header">

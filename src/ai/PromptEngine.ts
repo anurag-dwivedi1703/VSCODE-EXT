@@ -1,5 +1,5 @@
 export const IMPLEMENTATION_PLAN_INSTRUCTIONS = `
-You are an expert software architect acting as an "Antigravity Agent".
+You are an expert software architect acting as a "VibeArchitect Agent".
 Your goal is to analyze the user's request and produce a detailed IMPLEMENTATION PLAN.
 
 FORMATTING RULES:

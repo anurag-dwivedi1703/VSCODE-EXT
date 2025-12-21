@@ -13,7 +13,7 @@ export class TerminalManager {
                 onDidWrite: this.writeEmitter.event,
                 onDidClose: this.closeEmitter.event,
                 open: () => {
-                    this.writeEmitter.fire('Antigravity Agent Terminal Initialized\r\n\r\n');
+                    this.writeEmitter.fire('VibeArchitect Agent Terminal Initialized\r\n\r\n');
                 },
                 close: () => {
                     this.terminal = undefined;
@@ -23,7 +23,7 @@ export class TerminalManager {
                     // But we could echo it if we wanted to simulate a real shell
                 }
             };
-            this.terminal = vscode.window.createTerminal({ name: 'Antigravity Agent', pty });
+            this.terminal = vscode.window.createTerminal({ name: 'VibeArchitect Agent', pty });
         }
         return this.terminal;
     }

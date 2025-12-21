@@ -45,7 +45,7 @@ export class TaskRunner {
 
     constructor(private context: vscode.ExtensionContext) {
         // Retrieve API Key from settings
-        const config = vscode.workspace.getConfiguration('antigravity');
+        const config = vscode.workspace.getConfiguration('vibearchitect');
         const apiKey = config.get<string>('geminiApiKey') || '';
         this.gemini = new GeminiClient(apiKey);
 
@@ -130,7 +130,7 @@ export class TaskRunner {
         try {
 
             // REFRESH SETTINGS: Always get latest API key
-            const config = vscode.workspace.getConfiguration('antigravity');
+            const config = vscode.workspace.getConfiguration('vibearchitect');
             const apiKey = config.get<string>('geminiApiKey') || '';
             // Use selected model or default to pro
             this.gemini = new GeminiClient(apiKey, task.model || 'gemini-3-pro-preview');

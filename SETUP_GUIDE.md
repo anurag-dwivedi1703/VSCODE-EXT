@@ -1,6 +1,6 @@
-# 🚀 Antigravity Setup Guide
+# 🚀 VibeArchitect Setup Guide
 
-Follow these steps to set up the **Antigravity Manager** extension on a new computer.
+Follow these steps to set up the **VibeArchitect** extension on a new computer.
 
 ## Prerequisites
 1.  **VS Code**: Install from [code.visualstudio.com](https://code.visualstudio.com/).
@@ -32,8 +32,8 @@ You need a Google Gemini API Key.
 1.  Get a key from [Google AI Studio](https://aistudio.google.com/).
 2.  Open VS Code in the project folder (`code .`).
 3.  Go to **File > Preferences > Settings** (`Ctrl+,`).
-4.  Search for `Antigravity`.
-5.  Enter your key in **Antigravity: Gemini Api Key**.
+4.  Search for `VibeArchitect`.
+5.  Enter your key in **VibeArchitect: Gemini Api Key**.
     *   *Note: Since you are in development mode, you might need to add this to `.vscode/settings.json` or just set it when debugging.*
 
 ## Step 4: Build and Run
@@ -49,7 +49,7 @@ You need a Google Gemini API Key.
 
 ## Step 5: Verify
 1.  In the new window, press `Ctrl+Shift+P`.
-2.  Type `Antigravity: Open Mission Control`.
+2.  Type `VibeArchitect: Open Mission Control`.
 3.  The dashboard should appear!
 
 ## Troubleshooting
