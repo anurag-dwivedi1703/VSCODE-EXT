@@ -11,7 +11,7 @@ const DEFAULT_WORKSPACES = [
     { id: '1', name: 'No Workspace Open', status: 'Idle' }
 ];
 
-type LogType = 'user' | 'agent' | 'tool' | 'error' | 'info' | 'system' | 'artifact';
+type LogType = 'user' | 'agent' | 'tool' | 'error' | 'info' | 'system' | 'artifact' | 'completion';
 
 interface LogGroup {
     type: LogType | 'step';
@@ -32,10 +32,14 @@ function parseLogs(logs: string[], checkpoints: { id: string, message: string }[
 
     const commitStep = () => {
         if (currentStep) {
-            // Determine title if not set
-            if (!currentStep.title) {
-                const firstLine = currentStep.markdown?.split('\n')[0] || 'Processing...';
-                currentStep.title = firstLine.length > 60 ? firstLine.substring(0, 60) + '...' : firstLine;
+            // Determine title if not set or generic
+            if (!currentStep.title || currentStep.title.startsWith('Thinking')) {
+                if (currentStep.markdown) {
+                    // Use first sentence of markdown as title
+                    const firstLine = currentStep.markdown.split('\n')[0].replace(/\*\*/g, '').trim();
+                    const shortTitle = firstLine.length > 80 ? firstLine.substring(0, 80) + '...' : firstLine;
+                    if (shortTitle) currentStep.title = `💭 ${shortTitle}`;
+                }
             }
             groups.push(currentStep);
             currentStep = null;
@@ -52,6 +56,15 @@ function parseLogs(logs: string[], checkpoints: { id: string, message: string }[
     for (const log of logs) {
         // Skip duplicate mission complete usually at end
         if (log.toLowerCase() === 'mission complete' && groups.length > 0 && groups[groups.length - 1].content.includes('MISSION COMPLETE')) continue;
+
+        // Mission Summary Special Log
+        if (log.startsWith('[MISSION_COMPLETE_SUMMARY]:')) {
+            commitStep();
+            commitSystem();
+            const summaryText = log.replace('[MISSION_COMPLETE_SUMMARY]:', '').trim();
+            groups.push({ type: 'completion', content: summaryText });
+            continue;
+        }
 
         // User Message
         if (log.startsWith('**User**:')) {
@@ -77,10 +90,10 @@ function parseLogs(logs: string[], checkpoints: { id: string, message: string }[
                 status: 'running'
             };
         }
-        // Agent Message
-        else if (log.startsWith('**Gemini**:')) {
+        // Agent Message (matches **Gemini**: or similar variations)
+        else if (log.match(/^\*{0,2}\s*Gemini\s*\*{0,2}:/i)) {
             commitSystem();
-            const text = log.replace('**Gemini**:', '').trim();
+            const text = log.replace(/^\*{0,2}\s*Gemini\s*\*{0,2}:\s*/i, '').trim();
 
             if (!currentStep) {
                 // If text comes without "Thinking" (e.g. Planning mode reply), create step
@@ -98,10 +111,23 @@ function parseLogs(logs: string[], checkpoints: { id: string, message: string }[
                 if (currentStep.markdown) currentStep.markdown += '\n\n' + text;
                 else currentStep.markdown = text;
 
-                // If text contains "Mission Complete", mark step?
-                // Actually we just display text.
+                // FIX: Aggressively update title from first sentence if it's currently generic
+                // We rely on the fact that 'text' here uses the cleaned log content
+                if (currentStep.title && currentStep.title.includes('Thinking')) {
+                    const cleanText = text.replace(/\*\*/g, '').trim();
+                    if (cleanText.length > 5) {
+                        let firstSentence = cleanText.split(/[.?!]/, 1)[0].trim().replace(/\n/g, ' ');
+                        if (firstSentence.length > 60) {
+                            firstSentence = firstSentence.substring(0, 60) + '...';
+                        }
+                        if (firstSentence.length > 0) {
+                            currentStep.title = `💭 ${firstSentence}`;
+                        }
+                    }
+                }
             }
         }
+
         // Tool Call
         else if (log.includes('[Tool Call]:')) {
             commitSystem();
@@ -179,13 +205,7 @@ function parseLogs(logs: string[], checkpoints: { id: string, message: string }[
         }
         else {
             // Misc logs
-            if (currentStep) {
-                // Maybe append to markdown if it looks like text?
-                if (!log.startsWith('>')) {
-                    // currentStep.markdown += '\n' + log; 
-                    // Actually, be careful not to pollute markdown with debug noise.
-                }
-            } else if (systemGroup) {
+            if (systemGroup) {
                 systemGroup.details?.push(log);
             }
         }
@@ -213,6 +233,9 @@ function App() {
 
     // Context State
     const [contextFiles, setContextFiles] = useState<string[]>([]);
+
+    // Browser Reload State
+    const [browserReloadTrigger, setBrowserReloadTrigger] = useState(0);
 
     // Auto-scroll logic
     const logsEndRef = useRef<HTMLDivElement>(null);
@@ -245,6 +268,10 @@ function App() {
             }
             if (message.command === 'contextSelected') {
                 setContextFiles(prev => [...prev, ...message.paths]);
+            }
+            if (message.command === 'reloadBrowser') {
+                setRightPaneTab('browser');
+                setBrowserReloadTrigger(Date.now());
             }
         };
         window.addEventListener('message', messageHandler);
@@ -293,7 +320,9 @@ function App() {
                 left={
                     /* LEFT PANE: WORKSPACE & MISSIONS */
                     <aside className="pane-sidebar">
-                        <div className="pane-header">ANTIGRAVITY</div>
+                        <div className="pane-header">
+                            <span className="title">ANTIGRAVITY v1.4</span>
+                        </div>
 
                         <div className="sub-header">
                             <span>WORKSPACES</span>
@@ -449,6 +478,7 @@ function App() {
                                                     </div>
                                                 );
                                             }
+
                                             if (group.type === 'artifact') {
                                                 return (
                                                     <div key={i} className="msg-artifact-card">
@@ -461,6 +491,19 @@ function App() {
                                                             onClick={() => vscode.postMessage({ command: 'previewFile', path: group.content, taskId: activeAgent.id })}>
                                                             OPEN
                                                         </button>
+                                                    </div>
+                                                );
+                                            }
+                                            if (group.type === 'completion') {
+                                                return (
+                                                    <div key={i} className="msg-completion-card">
+                                                        <div className="completion-header">
+                                                            <span className="icon">🚀</span>
+                                                            <span className="title">Mission Complete</span>
+                                                        </div>
+                                                        <div className="completion-body markdown-body">
+                                                            <ReactMarkdown>{group.content}</ReactMarkdown>
+                                                        </div>
                                                     </div>
                                                 );
                                             }
@@ -584,12 +627,13 @@ function App() {
                                     </div>
                                 </div>
                             </div>
-                        )}
-                    </main>
+                        )
+                        }
+                    </main >
                 }
                 right={
                     /* RIGHT PANE: CONTEXT & BROWSER */
-                    <aside className="pane-context">
+                    < aside className="pane-context" >
                         <div className="tab-switcher">
                             <button
                                 className={`tab-btn ${rightPaneTab === 'context' ? 'active' : ''}`}
@@ -603,35 +647,37 @@ function App() {
                             </button>
                         </div>
 
-                        {rightPaneTab === 'context' ? (
-                            <div className="context-list">
-                                {previewContent ? (
-                                    <div className="file-preview">
-                                        <div className="preview-header">
-                                            <span className="preview-filename">{previewPath?.split(/[\\/]/).pop()}</span>
-                                            <button className="icon-btn-small" onClick={() => setPreviewContent(null)}>×</button>
+                        {
+                            rightPaneTab === 'context' ? (
+                                <div className="context-list">
+                                    {previewContent ? (
+                                        <div className="file-preview">
+                                            <div className="preview-header">
+                                                <span className="preview-filename">{previewPath?.split(/[\\/]/).pop()}</span>
+                                                <button className="icon-btn-small" onClick={() => setPreviewContent(null)}>×</button>
+                                            </div>
+                                            <div className="preview-body markdown-body">
+                                                {previewPath?.endsWith('.md') ? (
+                                                    <ReactMarkdown>{previewContent}</ReactMarkdown>
+                                                ) : (
+                                                    <pre>{previewContent}</pre>
+                                                )}
+                                            </div>
                                         </div>
-                                        <div className="preview-body markdown-body">
-                                            {previewPath?.endsWith('.md') ? (
-                                                <ReactMarkdown>{previewContent}</ReactMarkdown>
-                                            ) : (
-                                                <pre>{previewContent}</pre>
-                                            )}
+                                    ) : (
+                                        <div className="empty-state">
+                                            <div>No artifacts open. Click OPEN on an artifact card to view.</div>
                                         </div>
-                                    </div>
-                                ) : (
-                                    <div className="empty-state">
-                                        <div>No artifacts open. Click OPEN on an artifact card to view.</div>
-                                    </div>
-                                )}
-                            </div>
-                        ) : (
-                            <BrowserPreview taskId={activeAgent?.id || ''} />
-                        )}
-                    </aside>
+                                    )}
+                                </div>
+                            ) : (
+                                <BrowserPreview taskId={activeAgent?.id || ''} />
+                            )
+                        }
+                    </aside >
                 }
             />
-        </div>
+        </div >
     );
 }
 

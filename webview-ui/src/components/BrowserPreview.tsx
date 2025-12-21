@@ -4,9 +4,10 @@ import { vscode } from '../utilities/vscode';
 
 interface BrowserPreviewProps {
     taskId: string;
+    reloadTrigger?: number; // Timestamp or counter
 }
 
-export function BrowserPreview({ taskId }: BrowserPreviewProps) {
+export function BrowserPreview({ taskId, reloadTrigger }: BrowserPreviewProps) {
     const [url, setUrl] = useState('http://localhost:3000');
     const [inputUrl, setInputUrl] = useState('http://localhost:3000');
     const [isCommenting, setIsCommenting] = useState(false);
@@ -14,15 +15,22 @@ export function BrowserPreview({ taskId }: BrowserPreviewProps) {
     const [commentText, setCommentText] = useState('');
     const [reloadKey, setReloadKey] = useState(0);
 
+    // Watch for external reload trigger
+    useEffect(() => {
+        if (reloadTrigger) {
+            setReloadKey(prev => prev + 1);
+            setUrl(currentUrl => {
+                const cleanUrl = currentUrl.split('?')[0];
+                return `${cleanUrl}?t=${Date.now()}`;
+            });
+        }
+    }, [reloadTrigger]);
+
     useEffect(() => {
         const messageHandler = (event: MessageEvent) => {
             if (event.data.command === 'reloadBrowser') {
-                // Force reload by appending/updating timestamp
+                // Fallback for direct messages if still used
                 setReloadKey(prev => prev + 1);
-                setUrl(currentUrl => {
-                    const cleanUrl = currentUrl.split('?')[0];
-                    return `${cleanUrl}?t=${Date.now()}`;
-                });
             }
         };
         window.addEventListener('message', messageHandler);

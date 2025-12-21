@@ -1,3 +1,3 @@
-- [x] Change button color to red in index.html
-- [x] Update button hover color in index.html
-- [x] Run the app and verify the changes
+- [x] Kill process on port 3000
+- [x] Kill process on port 3001
+- [x] Verify ports are free

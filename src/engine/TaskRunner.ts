@@ -171,7 +171,12 @@ export class TaskRunner {
             task.branchName = 'current-branch';
 
             // Step 2: Initialize Tools for this Workspace
-            const tools = new AgentTools(workspaceRoot, terminalManager, this.gemini);
+            const tools = new AgentTools(
+                workspaceRoot,
+                terminalManager,
+                this.gemini,
+                () => { this._onReloadBrowser.fire(); }
+            );
 
             // Step 3: Start Gemini Session
             this.updateStatus(taskId, 'planning', 20, 'Consulting Gemini...');
@@ -188,30 +193,55 @@ export class TaskRunner {
             - run_command(command): Execute shell command (git, npm, etc).
             - reload_browser(): Reload the browser preview to verify changes. (Tool, NOT a shell command)
             - search_web(query): Search the web for documentation, solutions, or new concepts.
+
+            CRITICAL RULES:
+            1. **VERIFY EVERYTHING**: Never assume code works. Run it.
+               - If it's a script, run it.
+               - If it's a web app, start the server and use 'reload_browser()' to show it to the user.
+               - **IMPORTANT**: If a server is already running on a port (e.g. 3000), you must KILL it first or use a different port.
+            2. **COMMUNICATE**: Do not just say "Done". Explain what you did.
+            3. **CLEAN UP**: Stop any background processes you started if they are verified (unless it's a server meant to stay running).
+            4. **PYTHON RULES**:
+               - NEVER install globally.
+               - Create a venv: 'python -m venv venv'.
+               - Install packages using the venv executable: 'venv/Scripts/pip install ...' (Windows) or 'venv/bin/pip ...' (Mac/Linux).
+               - Run scripts using the venv executable: 'venv/Scripts/python app.py' (Windows) or 'venv/bin/python app.py' (Mac/Linux).
+            5. **REASONING**: Before calling ANY tool, you MUST explain your plan in 1-2 sentences. This will be displayed to the user as your "Thought".
             `;
+
 
             if (task.mode === 'planning') {
                 systemPrompt += `
-            CORE WORKFLOW (PLANNING MODE):
-            1. EXPLORE: Use list_files/read_file to understand the codebase.
-            2. PLAN (Mandatory):
-                - Create a file named 'task.md'. This must be a Markdown checklist of steps (e.g., "- [ ] Step 1").
-                - Create a file named 'implementation_plan.md'. This must detail your technical approach.
-            3. ACT: Use write_file/run_command to implement the plan.
+            CORE WORKFLOW(PLANNING MODE):
+            1. EXPLORE: Use list_files / read_file to understand the codebase.
+            2. PLAN(Mandatory):
+            - Create a file named 'task.md'.This must be a Markdown checklist of steps(e.g., "- [ ] Step 1").
+                - Create a file named 'implementation_plan.md'.This must detail your technical approach.
+            3. ACT: Use write_file / run_command to implement the plan.
             4. UPDATE: After completing a step, OVERWRITE 'task.md' to mark the item as done (e.g., "- [x] Step 1").
-            5. VERIFY: Run tests or checks.
-                - IMPORTANT: If making UI changes (HTML, CSS, JS), you MUST call 'reload_browser()' to verify the visual result.
-            6. FINISH: Answer with "MISSION COMPLETE" when done.
+            5. VERIFY(MANDATORY):
+            - Run tests or verification scripts.
+                - ** Web Apps **: You MUST start the server(e.g. 'npm run dev') and call 'reload_browser()' to refresh the internal preview.
+                - ** Check Ports **: Ensure you are viewing the correct port.If the preview shows old content, the old server might still be running.Kill it.
+                - Confirm the output is correct.
+                - If verification fails, FIX IT before marking as complete.
+            6. FINISH:
+            - You MUST create a file named "mission_summary.md" in the root.
+            - Write a detailed summary of changes and verification instructions in it.
+            - Answer with "MISSION COMPLETE" only after creating this file.
             `;
             } else {
                 // FAST MODE
                 systemPrompt += `
-            CORE WORKFLOW (FAST MODE):
+            CORE WORKFLOW(FAST MODE):
             1. ACT: Execute the request immediately.
             2. NO PLANNING DOCS: Do NOT create 'task.md' or 'implementation_plan.md' unless explicitly asked.
-            3. EXPLORE (optional): Only if needed to locate files.
-            4. VERIFY: If making UI changes, call 'reload_browser()'.
-            5. FINISH: Answer with "MISSION COMPLETE" when done.
+            3. EXPLORE(optional): Only if needed to locate files.
+            4. VERIFY(MANDATORY):
+            - Run the code or start the server.
+                - ** Web Apps **: Call 'reload_browser()' to refresh the preview.
+            5. FINISH:
+                - Answer with "MISSION COMPLETE" at the end.
             `;
             }
 
@@ -222,8 +252,8 @@ export class TaskRunner {
             await this.runExecutionLoop(taskId, chat, tools);
 
         } catch (error: any) {
-            this.updateStatus(taskId, 'failed', 0, `Error: ${error.message}`);
-            vscode.window.showErrorMessage(`Agent Failed: ${error.message}`);
+            this.updateStatus(taskId, 'failed', 0, `Error: ${error.message} `);
+            vscode.window.showErrorMessage(`Agent Failed: ${error.message} `);
         }
     }
 
@@ -243,7 +273,7 @@ export class TaskRunner {
         }
 
         try {
-            const maxTurns = 15;
+            const maxTurns = 30;
             for (let i = 0; i < maxTurns; i++) {
                 // If the user interrupted or we are just continuing
                 this.updateStatus(taskId, 'executing', task.progress, `Turn ${i + 1}: Thinking...`);
@@ -257,11 +287,11 @@ export class TaskRunner {
                     const userText = userMsgObj?.text || '';
                     const attachments = userMsgObj?.attachments || [];
 
-                    task.logs.push(`\n**User**: ${userText}`);
+                    task.logs.push(`> [System]: Processing user reply...`);
 
                     // Build Multi-modal Prompt
                     const promptParts: Part[] = [];
-                    promptParts.push({ text: `\n[USER REPLY]: ${userText}` });
+                    promptParts.push({ text: `\n[USER REPLY]: ${userText} ` });
 
                     if (attachments.length > 0) {
                         task.logs.push(`> [Context]: processing ${attachments.length} attachments...`);
@@ -286,18 +316,18 @@ export class TaskRunner {
                                                 data: base64Data
                                             }
                                         });
-                                        task.logs.push(`> [Attachment]: Added image ${path.basename(filePath)}`);
+                                        task.logs.push(`> [Attachment]: Added image ${path.basename(filePath)} `);
                                     } else {
                                         // Text file
                                         const textContent = fs.readFileSync(filePath, 'utf-8');
                                         promptParts.push({
-                                            text: `\n\n--- FILE ATTACHMENT: ${path.basename(filePath)} ---\n${textContent}\n--- END ATTACHMENT ---`
+                                            text: `\n\n-- - FILE ATTACHMENT: ${path.basename(filePath)} ---\n${textContent} \n-- - END ATTACHMENT-- - `
                                         });
-                                        task.logs.push(`> [Attachment]: Added text file ${path.basename(filePath)}`);
+                                        task.logs.push(`> [Attachment]: Added text file ${path.basename(filePath)} `);
                                     }
                                 }
                             } catch (e) {
-                                task.logs.push(`> [Error]: Failed to read attachment ${filePath}`);
+                                task.logs.push(`> [Error]: Failed to read attachment ${filePath} `);
                             }
                         }
                     }
@@ -316,7 +346,14 @@ export class TaskRunner {
                 const text = response.text();
 
                 if (text) {
-                    task.logs.push(`**Gemini**: ${text}`);
+                    // FIXED: Remove spaces to match App.tsx expectation matches '**Gemini**:'
+                    task.logs.push(`**Gemini**: ${text} `);
+
+                    // Add debug logging for summary extraction
+                    if (text.toLowerCase().includes("mission summary")) {
+                        console.log(`[TaskRunner] Potential summary detected in response: ${text.substring(0, 50)}...`);
+                    }
+
                     if (text.includes("MISSION COMPLETE")) {
                         // We do NOT return immediately, we break the loop to handle completion logic
                         // But if there are still user messages, we might want to continue?
@@ -333,7 +370,7 @@ export class TaskRunner {
                     for (const call of functionCalls) {
                         const fnName = call.name;
                         const args = call.args;
-                        task.logs.push(`> [Tool Call]: ${fnName}(${JSON.stringify(args)})`);
+                        task.logs.push(`> [Tool Call]: ${fnName} (${JSON.stringify(args)})`);
 
                         let toolResult = '';
                         try {
@@ -341,7 +378,7 @@ export class TaskRunner {
                             if (this.shadowRepo) {
                                 // Only checkpoint for state-changing tools
                                 if (['write_file', 'run_command'].includes(fnName)) {
-                                    const snapMsg = `Pre-Tool: ${fnName}(${JSON.stringify(args)})`;
+                                    const snapMsg = `Pre - Tool: ${fnName} (${JSON.stringify(args)})`;
                                     const snapHash = await this.shadowRepo.snapshot(snapMsg);
                                     if (task.checkpoints) {
                                         task.checkpoints.push({ id: snapHash, message: snapMsg, timestamp: Date.now() });
@@ -369,7 +406,7 @@ export class TaskRunner {
                                     // Artifact Tracking
                                     if (args.path && !task.artifacts.includes(args.path)) {
                                         task.artifacts.push(args.path);
-                                        task.logs.push(`[Artifact Created]: ${args.path}`);
+                                        task.logs.push(`[Artifact Created]: ${args.path} `);
                                     }
                                     break;
                                 case 'list_files':
@@ -393,14 +430,14 @@ export class TaskRunner {
                                     toolResult = await tools.searchWeb(args.query as string);
                                     break;
                                 default:
-                                    toolResult = `Error: Unknown tool ${fnName}`;
+                                    toolResult = `Error: Unknown tool ${fnName} `;
                             }
                         } catch (err: any) {
-                            toolResult = `Error executing ${fnName}: ${err.message}`;
+                            toolResult = `Error executing ${fnName}: ${err.message} `;
                         }
 
                         const preview = toolResult.length > 500 ? toolResult.substring(0, 500) + '... (truncated)' : toolResult;
-                        task.logs.push(`> [Result]: ${preview}`);
+                        task.logs.push(`> [Result]: ${preview} `);
 
                         toolParts.push({
                             functionResponse: {
@@ -426,15 +463,85 @@ export class TaskRunner {
                         currentPrompt = "Proceed."; // Default for next time, but we break now.
                         break;
                     } else {
+                        // "MISSION COMPLETE" detected
                         break;
                     }
                 }
             }
 
-            this.updateStatus(taskId, 'completed', 100, 'Mission Complete');
+            // RE-ATTEMPT with minimal change to just the END of the function
 
-            // Helpful message for the user - merge no longer needed, changes are live
-            task.logs.push(`\n> [!IMPORTANT]\n> **Direct Execution**: Changes have been applied directly to \`${task.worktreePath}\`.\n> Please review your git status.`);
+            // ... (previous replacement block logic was mostly fine but let's be precise)
+
+            const lastLog = task.logs[task.logs.length - 1] || "";
+            const isMissionComplete = lastLog.includes("MISSION COMPLETE");
+            // If the loop finished naturally (not break), we executed maxTurns.
+            // But we can't easily know if it broke or finished without a flag.
+
+            // However, if it IS "MISSION COMPLETE", we are good.
+            if (isMissionComplete) {
+                this.updateStatus(taskId, 'completed', 100, 'Mission Complete');
+                task.logs.push(`\n > [!IMPORTANT]\n > ** Direct Execution **: Changes have been applied directly to \`${task.worktreePath}\`.\n> Please review your git status.`);
+
+                // Extract Mission Summary for UI Card
+                // FILE-BASED SUMMARY EXTRACTION
+                // The agent is now instructed to create 'mission_summary.md'
+                let summaryText = '';
+
+                if (task.worktreePath) {
+                    const summaryPath = path.join(task.worktreePath, 'mission_summary.md');
+                    if (fs.existsSync(summaryPath)) {
+                        try {
+                            summaryText = fs.readFileSync(summaryPath, 'utf-8');
+                            console.log(`[TaskRunner] Found mission_summary.md: ${summaryText.substring(0, 50)}...`);
+                        } catch (err) {
+                            console.error(`[TaskRunner] Failed to read mission_summary.md:`, err);
+                        }
+                    } else {
+                        console.log(`[TaskRunner] mission_summary.md not found in worktree.`);
+                    }
+                }
+
+                // Fallback: Scan logs if file missing or verification failed
+                if (!summaryText) {
+                    console.log(`[TaskRunner] Falling back to log scan.`);
+                    // Fallback: Scan logs if file missing
+                    const outputRegex = /(?:\*\*|#|\s)*MISSION SUMMARY(?:\*\*|#|:|\s)*([\s\S]*?)(?:(?:\*\*|#|\s)*MISSION COMPLETE|$)/i;
+                    for (let j = task.logs.length - 1; j >= Math.max(0, task.logs.length - 10); j--) {
+                        const log = task.logs[j].replace(/\*\*Gemini\*\*:/g, '').replace(/\*\* Gemini \*\*:/g, '');
+                        const match = log.match(outputRegex);
+                        if (match && match[1] && match[1].trim().length > 10) {
+                            summaryText = match[1].trim();
+                            break;
+                        }
+                    }
+                }
+
+                if (summaryText) {
+                    console.log(`[TaskRunner] Emitting Mission Summary Log.`);
+                    task.logs.push(`[MISSION_COMPLETE_SUMMARY]: ${summaryText}`);
+                    // CRITICAL: Notify UI of the new log entry
+                    this._onTaskUpdate.fire({ taskId, task });
+                    this.saveTask(task);
+                }
+            } else {
+                // Did we stop because of user input?
+                // If the last thing was "Proceed", likely user input or just a break?
+                // Actually, I set currentPrompt="Proceed." in line 450.
+
+                // If currentPrompt is "Proceed." and NOT complete...
+                // Actually, I set currentPrompt="Proceed." in line 450.
+
+                if (currentPrompt === "Proceed.") {
+                    // Paused for user interaction (implicit or explicit)
+                    this.updateStatus(taskId, 'completed', task.progress, 'Waiting for user input...');
+                } else {
+                    // TIMEOUT (Loop finished without setting currentPrompt="Proceed." and without Mission Complete)
+                    this.updateStatus(taskId, 'failed', 100, 'Task paused (Max turns reached). Ask agent to continue.');
+                    task.logs.push(`\n> [System]: **Maximum turns reached.** The agent has paused to prevent infinite loops. You can reply "Continue" to resume.`);
+                }
+            }
+
 
         } catch (error: any) {
             this.updateStatus(taskId, 'failed', 0, `Error: ${error.message}`);
@@ -462,7 +569,7 @@ export class TaskRunner {
 
             // Log with context notice
             const contextMsg = attachments.length > 0 ? ` (with ${attachments.length} attachments)` : '';
-            this.updateStatus(taskId, task.status, task.progress, `User queued reply${contextMsg}: "${message}"`);
+            this.updateStatus(taskId, task.status, task.progress, `**User**: ${message}${contextMsg}`);
 
             // If completed, resume!
             if (task.status === 'completed' || task.status === 'failed') {

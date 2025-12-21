@@ -58,6 +58,12 @@ export class MissionControlProvider {
             });
         });
 
+        this._taskRunner.onReloadBrowser(() => {
+            this._panel.webview.postMessage({
+                command: 'reloadBrowser'
+            });
+        });
+
         // Send existing tasks (loaded from disk)
         const existingTasks = this._taskRunner.getTasks();
         existingTasks.forEach(task => {

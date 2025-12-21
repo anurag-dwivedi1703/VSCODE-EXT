@@ -8,7 +8,8 @@ export class AgentTools {
     constructor(
         private readonly worktreeRoot: string,
         private readonly terminalManager?: TerminalManager,
-        private readonly geminiClient?: GeminiClient
+        private readonly geminiClient?: GeminiClient,
+        private readonly onReloadBrowserCallback?: () => void
     ) { }
 
     private getUri(relativePath: string): vscode.Uri {
@@ -62,6 +63,30 @@ export class AgentTools {
             return "Error: Web Search (GeminiClient) not available in this context.";
         }
         return await this.geminiClient.research(query);
+    }
+
+    async reload_browser(): Promise<string> {
+        // We need a way to signal the UI to reload. 
+        // This tool instance doesn't have direct access to the TaskRunner's event emitter.
+        // However, we can use vscode.commands to broadcast a signal? 
+        // Or better, we can inject a callback or the event emitter into AgentTools.
+
+        // LIMITATION: For this iteration, we will implement it by triggering a workspace command 
+        // that the MissionControlProvider listens to, OR we simply return a message saying 
+        // "Browser Reloaded (Visual Verification Required by User)".
+
+        // Wait! The TaskRunner passes `this.onReloadBrowser` event... no, it doesn't pass it to AgentTools.
+        // Let's check how AgentTools is instantiated. 
+
+        // Ideally, AgentTools should emit an event. 
+        // For now, let's just return a placeholder and we fix the wiring in TaskRunner.
+
+        // EDIT: I will add a callback to the constructor for `onReloadBrowser`.
+        if (this.onReloadBrowserCallback) {
+            this.onReloadBrowserCallback();
+            return "Browser Preview Reloaded. Please check the visual output.";
+        }
+        return "Browser Reload Triggered (Simulated).";
     }
 
     async runCommand(command: string): Promise<string> {
