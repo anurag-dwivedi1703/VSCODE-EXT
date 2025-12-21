@@ -90,10 +90,10 @@ function parseLogs(logs: string[], checkpoints: { id: string, message: string }[
                 status: 'running'
             };
         }
-        // Agent Message (matches **Gemini**: or similar variations)
-        else if (log.match(/^\*{0,2}\s*Gemini\s*\*{0,2}:/i)) {
+        // Agent Message (matches **Gemini**: or **Claude**: or similar variations)
+        else if (log.match(/^\*{0,2}\s*(Gemini|Claude)\s*\*{0,2}:/i)) {
             commitSystem();
-            const text = log.replace(/^\*{0,2}\s*Gemini\s*\*{0,2}:\s*/i, '').trim();
+            const text = log.replace(/^\*{0,2}\s*(Gemini|Claude)\s*\*{0,2}:\s*/i, '').trim();
 
             if (!currentStep) {
                 // If text comes without "Thinking" (e.g. Planning mode reply), create step
@@ -551,6 +551,23 @@ function App() {
                                             }}
                                         />
                                     </div>
+                                    <div className="model-selector-bar">
+                                        <span className="mode-pill">← {activeAgent.mode === 'planning' ? 'Planning' : 'Fast'}</span>
+                                        <select
+                                            className="model-dropdown"
+                                            value={activeAgent.model || 'gemini-3-pro-preview'}
+                                            onChange={(e) => vscode.postMessage({
+                                                command: 'changeModel',
+                                                taskId: activeAgent.id,
+                                                model: e.target.value
+                                            })}
+                                        >
+                                            <option value="gemini-3-pro-preview">Gemini 3 Pro</option>
+                                            <option value="gemini-3-flash-preview">Gemini 3 Flash</option>
+                                            <option value="claude-opus-4-5-20251101">Claude Opus 4.5</option>
+                                        </select>
+                                        <span className="submit-arrow">→</span>
+                                    </div>
                                 </footer>
                             </>
                         ) : (
@@ -602,6 +619,7 @@ function App() {
                                         >
                                             <option value="gemini-3-pro-preview">Gemini 3 Pro (Reasoning)</option>
                                             <option value="gemini-3-flash-preview">Gemini 3 Flash (Speed)</option>
+                                            <option value="claude-opus-4-5-20251101">Claude Opus 4.5 (Thinking)</option>
                                         </select>
                                     </div>
                                 </div>

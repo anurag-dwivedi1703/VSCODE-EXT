@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { GeminiClient, ISession } from '../ai/GeminiClient';
+import { ClaudeClient } from '../ai/ClaudeClient';
 import { Part } from '@google/generative-ai';
 import { WorktreeManager } from './WorktreeManager';
 import { AgentTools } from './AgentTools';
@@ -30,6 +31,7 @@ export class TaskRunner {
     private tasks: Map<string, AgentTask> = new Map();
     private sessions: Map<string, ISession> = new Map(); // Keep sessions alive
     private gemini: GeminiClient;
+    private claude: ClaudeClient | undefined;
     private worktreeManager: WorktreeManager | undefined;
     private shadowRepo: ShadowRepository | undefined;
     private revertManager: RevertManager | undefined;
@@ -123,19 +125,75 @@ export class TaskRunner {
         return taskId;
     }
 
+    // Change model mid-task - will take effect on next message exchange
+    public changeModel(taskId: string, newModel: string) {
+        const task = this.tasks.get(taskId);
+        if (!task) {
+            console.log(`[TaskRunner] changeModel: task ${taskId} not found`);
+            return;
+        }
+
+        const oldModel = task.model || 'gemini-3-pro-preview';
+        task.model = newModel;
+        task.logs.push(`**System**: Model changed from ${oldModel} to ${newModel}`);
+
+        // Re-initialize client for the new model
+        const config = vscode.workspace.getConfiguration('vibearchitect');
+        const isClaudeModel = newModel.startsWith('claude');
+
+        if (isClaudeModel) {
+            const claudeApiKey = config.get<string>('claudeApiKey') || '';
+            if (!claudeApiKey) {
+                task.logs.push(`**System**: Error - Claude API key not configured`);
+            } else {
+                this.claude = new ClaudeClient(claudeApiKey, newModel);
+            }
+        } else {
+            const geminiApiKey = config.get<string>('geminiApiKey') || '';
+            if (!geminiApiKey) {
+                task.logs.push(`**System**: Error - Gemini API key not configured`);
+            } else {
+                this.gemini = new GeminiClient(geminiApiKey, newModel);
+            }
+        }
+
+        // Clear old session so next message creates new one with new model
+        this.sessions.delete(taskId);
+
+        this._onTaskUpdate.fire({ taskId, task });
+        this.saveTask(task);
+    }
+
     private async processTask(taskId: string) {
         const task = this.tasks.get(taskId);
         if (!task) return;
 
         try {
 
-            // REFRESH SETTINGS: Always get latest API key
+            // REFRESH SETTINGS: Always get latest API keys
             const config = vscode.workspace.getConfiguration('vibearchitect');
-            const apiKey = config.get<string>('geminiApiKey') || '';
-            // Use selected model or default to pro
-            this.gemini = new GeminiClient(apiKey, task.model || 'gemini-3-pro-preview');
+            const geminiApiKey = config.get<string>('geminiApiKey') || '';
+            const claudeApiKey = config.get<string>('claudeApiKey') || '';
 
-            this.updateStatus(taskId, 'planning', 5, 'Initializing Agent...');
+            // Select AI client based on model
+            const modelId = task.model || 'gemini-3-pro-preview';
+            const isClaudeModel = modelId.startsWith('claude');
+
+            if (isClaudeModel) {
+                // Use Claude client
+                if (!claudeApiKey) {
+                    throw new Error('Claude API key not configured. Go to Settings > VibeArchitect > Claude Api Key');
+                }
+                this.claude = new ClaudeClient(claudeApiKey, modelId);
+            } else {
+                // Use Gemini client
+                if (!geminiApiKey) {
+                    throw new Error('Gemini API key not configured. Go to Settings > VibeArchitect > Gemini Api Key');
+                }
+                this.gemini = new GeminiClient(geminiApiKey, modelId);
+            }
+
+            this.updateStatus(taskId, 'planning', 5, `Initializing ${isClaudeModel ? 'Claude' : 'Gemini'} Agent...`);
 
             // Step 1: Determine Workspace
             // Priority: Explicitly provided path > Active VS Code Workspace > Error
@@ -245,7 +303,10 @@ export class TaskRunner {
             `;
             }
 
-            const chat = this.gemini.startSession(systemPrompt, 'high');
+            // Start session with selected model
+            const chat = isClaudeModel
+                ? this.claude!.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low')
+                : this.gemini.startSession(systemPrompt, 'high');
             this.sessions.set(taskId, chat);
 
             // Step 4: Start Execution Loop
@@ -341,13 +402,44 @@ export class TaskRunner {
                     }
                 }
 
+                // Check if session was invalidated (e.g., by model switch)
+                // If so, recreate the session with the new model
+                let activeChat = this.sessions.get(taskId);
+                console.log(`[TaskRunner] Session check - exists: ${!!activeChat}, task.model: ${task.model}`);
+                if (!activeChat) {
+                    // Session was deleted (model switch) - recreate with new model
+                    task.logs.push(`> [System]: Model changed mid-task, creating new session with ${task.model}...`);
+                    const config = vscode.workspace.getConfiguration('vibearchitect');
+                    const modelId = task.model || 'gemini-3-pro-preview';
+                    console.log(`[TaskRunner] Recreating session with modelId: ${modelId}`);
+                    const isClaudeModel = modelId.startsWith('claude');
+
+                    // Rebuild system prompt (simplified version for continuation)
+                    const continuationPrompt = `You are continuing a task. Previous context is included. ${task.prompt}`;
+
+                    if (isClaudeModel) {
+                        const claudeApiKey = config.get<string>('claudeApiKey') || '';
+                        if (!claudeApiKey) throw new Error('Claude API key not configured');
+                        this.claude = new ClaudeClient(claudeApiKey, modelId);
+                        activeChat = this.claude.startSession(continuationPrompt, task.mode === 'planning' ? 'high' : 'low');
+                    } else {
+                        const geminiApiKey = config.get<string>('geminiApiKey') || '';
+                        if (!geminiApiKey) throw new Error('Gemini API key not configured');
+                        this.gemini = new GeminiClient(geminiApiKey, modelId);
+                        activeChat = this.gemini.startSession(continuationPrompt, 'high');
+                    }
+                    this.sessions.set(taskId, activeChat);
+                    chat = activeChat;
+                }
+
                 const result = await chat.sendMessage(currentPrompt);
                 const response = await result.response;
                 const text = response.text();
 
                 if (text) {
-                    // FIXED: Remove spaces to match App.tsx expectation matches '**Gemini**:'
-                    task.logs.push(`**Gemini**: ${text} `);
+                    // Use model-aware prefix for log parsing (Gemini or Claude)
+                    const modelPrefix = (task.model || '').startsWith('claude') ? '**Claude**' : '**Gemini**';
+                    task.logs.push(`${modelPrefix}: ${text} `);
 
                     // Add debug logging for summary extraction
                     if (text.toLowerCase().includes("mission summary")) {
@@ -578,12 +670,12 @@ export class TaskRunner {
 
                 if (!session && worktreePath) {
                     // Session lost (restart/reload), attempt to "restart" it
-                    task.logs.push(`> [System]: Session restored. Starting new conversation context.`);
+                    task.logs.push(`> [System]: Session restored with ${task.model || 'gemini-3-pro-preview'}. Starting new conversation context.`);
 
-                    // REFRESH SETTINGS: Always get latest API key
-                    const config = vscode.workspace.getConfiguration('antigravity');
-                    const apiKey = config.get<string>('geminiApiKey') || '';
-                    this.gemini = new GeminiClient(apiKey);
+                    // REFRESH SETTINGS: Always get latest API keys
+                    const config = vscode.workspace.getConfiguration('vibearchitect');
+                    const modelId = task.model || 'gemini-3-pro-preview';
+                    const isClaudeModel = modelId.startsWith('claude');
 
                     const systemPrompt = `You are resuming a previous mission.
                     Your Mission: ${task.prompt}
@@ -608,7 +700,23 @@ export class TaskRunner {
                     If no script, use 'run_command("npm start &")'.
                     `;
 
-                    session = this.gemini.startSession(systemPrompt, 'high');
+                    if (isClaudeModel) {
+                        const claudeApiKey = config.get<string>('claudeApiKey') || '';
+                        if (!claudeApiKey) {
+                            task.logs.push('> [Error]: Claude API key not configured');
+                            return;
+                        }
+                        this.claude = new ClaudeClient(claudeApiKey, modelId);
+                        session = this.claude.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
+                    } else {
+                        const geminiApiKey = config.get<string>('geminiApiKey') || '';
+                        if (!geminiApiKey) {
+                            task.logs.push('> [Error]: Gemini API key not configured');
+                            return;
+                        }
+                        this.gemini = new GeminiClient(geminiApiKey, modelId);
+                        session = this.gemini.startSession(systemPrompt, 'high');
+                    }
                     this.sessions.set(taskId, session);
                 }
 

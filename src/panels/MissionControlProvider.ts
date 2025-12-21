@@ -250,6 +250,10 @@ export class MissionControlProvider {
                         // message: { command, taskId, checkpointId }
                         this._taskRunner.revertTask(message.taskId, message.checkpointId);
                         return;
+                    case 'changeModel':
+                        // message: { command, taskId, model }
+                        this._taskRunner.changeModel(message.taskId, message.model);
+                        return;
                     case 'openFile': {
                         const openPath = vscode.Uri.file(message.path);
                         if (message.path.endsWith('.md')) {
