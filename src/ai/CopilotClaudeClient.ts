@@ -1,0 +1,251 @@
+import * as vscode from 'vscode';
+import { ISession } from './GeminiClient';
+
+/**
+ * Claude client using VS Code's Language Model API (vscode.lm)
+ * This leverages the user's GitHub Copilot subscription for Claude access
+ */
+export class CopilotClaudeClient {
+    private model: vscode.LanguageModelChat | undefined;
+
+    constructor() {
+        // Model will be selected when session starts
+    }
+
+    public async initialize(): Promise<boolean> {
+        try {
+            // First, list ALL available models to debug
+            const allModels = await vscode.lm.selectChatModels({});
+            console.log('[CopilotClaudeClient] All available models:');
+            allModels.forEach(m => {
+                console.log(`  - id: ${m.id}, name: ${m.name}, vendor: ${m.vendor}, family: ${m.family}`);
+            });
+
+            // Try to find Claude model - prefer opus if available
+            let claudeModel = allModels.find(m =>
+                m.id.toLowerCase().includes('claude-opus')
+            );
+
+            // Fallback to any Claude model
+            if (!claudeModel) {
+                claudeModel = allModels.find(m =>
+                    m.id.toLowerCase().includes('claude') ||
+                    m.name.toLowerCase().includes('claude') ||
+                    m.family.toLowerCase().includes('claude')
+                );
+            }
+
+            if (claudeModel) {
+                this.model = claudeModel;
+                console.log(`[CopilotClaudeClient] Found Claude model: ${this.model.id} (${this.model.name})`);
+                return true;
+            }
+
+            // Fallback: try specific family filters that might work
+            const familyAttempts = ['claude', 'anthropic', 'claude-3', 'claude-opus'];
+            for (const family of familyAttempts) {
+                const models = await vscode.lm.selectChatModels({ family });
+                if (models.length > 0) {
+                    this.model = models[0];
+                    console.log(`[CopilotClaudeClient] Found Claude model via family '${family}': ${this.model.id}`);
+                    return true;
+                }
+            }
+
+            console.error('[CopilotClaudeClient] No Claude models found. Available models:', allModels.map(m => m.id).join(', '));
+            return false;
+        } catch (error: any) {
+            console.error('[CopilotClaudeClient] Error initializing:', error.message);
+            return false;
+        }
+    }
+
+    public startSession(systemPrompt: string, _thinkingLevel: 'low' | 'high' = 'high'): ISession {
+        const messages: vscode.LanguageModelChatMessage[] = [];
+        const model = this.model;
+
+        // Inject tool call format instructions since vscode.lm doesn't support native function calling
+        const toolCallInstructions = `
+
+CRITICAL - TOOL CALL FORMAT:
+Since you're running through VS Code's Language Model API, you MUST output tool calls in this EXACT format:
+
+\`\`\`tool_call
+{"name": "tool_name", "args": {"param1": "value1", "param2": "value2"}}
+\`\`\`
+
+Available tools and their formats:
+- \`\`\`tool_call
+{"name": "list_files", "args": {"path": "."}}
+\`\`\`
+- \`\`\`tool_call
+{"name": "read_file", "args": {"path": "path/to/file"}}
+\`\`\`
+- \`\`\`tool_call
+{"name": "write_file", "args": {"path": "path/to/file", "content": "file content"}}
+\`\`\`
+- \`\`\`tool_call
+{"name": "run_command", "args": {"command": "npm start"}}
+\`\`\`
+- \`\`\`tool_call
+{"name": "reload_browser", "args": {}}
+\`\`\`
+- \`\`\`tool_call
+{"name": "navigate_browser", "args": {"url": "http://localhost:3000"}}
+\`\`\`
+- \`\`\`tool_call
+{"name": "search_web", "args": {"query": "search query"}}
+\`\`\`
+
+You MUST use this exact format. Do NOT just describe what you want to do - actually output the tool_call block!
+`;
+
+        // Add system context as first user message (vscode.lm may not support system role)
+        messages.push(vscode.LanguageModelChatMessage.User(`[SYSTEM CONTEXT]\n${systemPrompt}\n${toolCallInstructions}\n[END SYSTEM CONTEXT]`));
+
+        return {
+            sendMessage: async (prompt: string | any[]) => {
+                if (!model) {
+                    return {
+                        response: {
+                            text: () => 'Error: Copilot Claude model not initialized. Ensure GitHub Copilot is installed and you have an active subscription.',
+                            functionCalls: () => undefined
+                        }
+                    };
+                }
+
+                try {
+                    // Handle prompt - could be string or array of parts (for tool results)
+                    let userMessage = '';
+
+                    if (typeof prompt === 'string') {
+                        userMessage = prompt;
+                    } else if (Array.isArray(prompt)) {
+                        // Check if this is a tool response
+                        const toolResponses = prompt.filter((p: any) => p.functionResponse);
+                        if (toolResponses.length > 0) {
+                            // Format tool responses as text (vscode.lm doesn't support native tool_use)
+                            userMessage = toolResponses.map((tr: any) =>
+                                `[TOOL RESULT: ${tr.functionResponse.name}]\n${JSON.stringify(tr.functionResponse.response, null, 2)}\n[END TOOL RESULT]`
+                            ).join('\n\n');
+                        } else {
+                            // Regular text parts
+                            userMessage = prompt.map((p: any) => p.text || '').join('\n');
+                        }
+                    }
+
+                    if (userMessage) {
+                        messages.push(vscode.LanguageModelChatMessage.User(userMessage));
+                    }
+
+                    // Send request to model
+                    const response = await model.sendRequest(
+                        messages,
+                        {},
+                        new vscode.CancellationTokenSource().token
+                    );
+
+                    // Collect response text
+                    let responseText = '';
+                    for await (const fragment of response.text) {
+                        responseText += fragment;
+                    }
+
+                    // Add assistant response to history
+                    messages.push(vscode.LanguageModelChatMessage.Assistant(responseText));
+
+                    // Parse for tool calls (text-based parsing since vscode.lm doesn't support native tool_use)
+                    const functionCalls = this.parseToolCalls(responseText);
+
+                    return {
+                        response: {
+                            text: () => responseText,
+                            functionCalls: () => functionCalls.length > 0 ? functionCalls : undefined
+                        }
+                    };
+                } catch (error: any) {
+                    console.error('[CopilotClaudeClient] API Error:', error.message);
+
+                    // Check for consent error
+                    if (error.message?.includes('consent') || error.message?.includes('permission')) {
+                        return {
+                            response: {
+                                text: () => `Error: Copilot access denied. Please grant permission when prompted, or use API mode instead.\n\nDetails: ${error.message}`,
+                                functionCalls: () => undefined
+                            }
+                        };
+                    }
+
+                    return {
+                        response: {
+                            text: () => `Error: ${error.message}`,
+                            functionCalls: () => undefined
+                        }
+                    };
+                }
+            }
+        };
+    }
+
+    /**
+     * Parse tool calls from text response
+     * Model is instructed to output tool calls in a specific format
+     */
+    private parseToolCalls(text: string): { name: string; args: any }[] {
+        const calls: { name: string; args: any }[] = [];
+
+        // Method 1: Look for fenced code blocks with tool_call
+        // Format: ```tool_call\n{"name": "tool_name", "args": {...}}\n```
+        const fencedRegex = /```tool_call\s*\n?([\s\S]*?)\n?```/g;
+        let match;
+
+        while ((match = fencedRegex.exec(text)) !== null) {
+            try {
+                const parsed = JSON.parse(match[1].trim());
+                if (parsed.name) {
+                    calls.push({
+                        name: parsed.name,
+                        args: parsed.args || parsed.arguments || {}
+                    });
+                    console.log(`[CopilotClaudeClient] Parsed fenced tool call: ${parsed.name}`);
+                }
+            } catch (e) {
+                console.warn('[CopilotClaudeClient] Failed to parse fenced tool call:', match[1]);
+            }
+        }
+
+        // Method 2: Look for inline JSON with "name" field (the model might not use code fences)
+        // Format: {"name": "tool_name", "args": {...}}
+        if (calls.length === 0) {
+            const inlineRegex = /\{"name"\s*:\s*"([^"]+)"\s*,\s*"args"\s*:\s*(\{[^}]*\})\s*\}/g;
+            while ((match = inlineRegex.exec(text)) !== null) {
+                try {
+                    const name = match[1];
+                    const args = JSON.parse(match[2]);
+                    calls.push({ name, args });
+                    console.log(`[CopilotClaudeClient] Parsed inline tool call: ${name}`);
+                } catch (e) {
+                    console.warn('[CopilotClaudeClient] Failed to parse inline tool call');
+                }
+            }
+        }
+
+        // Method 3: Look for tool calls with nested objects in args (like command with nested object)
+        if (calls.length === 0) {
+            const nestedRegex = /\{"name"\s*:\s*"([^"]+)"\s*,\s*"args"\s*:\s*(\{[\s\S]*?\})\s*\}(?:\]|\)|$|[,\s])/g;
+            while ((match = nestedRegex.exec(text)) !== null) {
+                try {
+                    const name = match[1];
+                    const args = JSON.parse(match[2]);
+                    calls.push({ name, args });
+                    console.log(`[CopilotClaudeClient] Parsed nested tool call: ${name}`);
+                } catch (e) {
+                    // Skip malformed
+                }
+            }
+        }
+
+        console.log(`[CopilotClaudeClient] Total tool calls found: ${calls.length}`);
+        return calls;
+    }
+}

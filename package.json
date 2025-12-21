@@ -32,6 +32,11 @@
                     "type": "string",
                     "default": "",
                     "description": "Anthropic API Key for Claude Opus 4.5"
+                },
+                "vibearchitect.useCopilotForClaude": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Use GitHub Copilot subscription for Claude instead of API key (requires Copilot extensions)"
                 }
             }
         }

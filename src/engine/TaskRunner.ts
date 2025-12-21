@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { GeminiClient, ISession } from '../ai/GeminiClient';
 import { ClaudeClient } from '../ai/ClaudeClient';
+import { CopilotClaudeClient } from '../ai/CopilotClaudeClient';
 import { Part } from '@google/generative-ai';
 import { WorktreeManager } from './WorktreeManager';
 import { AgentTools } from './AgentTools';
@@ -32,6 +33,7 @@ export class TaskRunner {
     private sessions: Map<string, ISession> = new Map(); // Keep sessions alive
     private gemini: GeminiClient;
     private claude: ClaudeClient | undefined;
+    private copilotClaude: CopilotClaudeClient | undefined;
     private worktreeManager: WorktreeManager | undefined;
     private shadowRepo: ShadowRepository | undefined;
     private revertManager: RevertManager | undefined;
@@ -143,13 +145,21 @@ export class TaskRunner {
         // Re-initialize client for the new model
         const config = vscode.workspace.getConfiguration('vibearchitect');
         const isClaudeModel = newModel.startsWith('claude');
+        const useCopilotForClaude = config.get<boolean>('useCopilotForClaude') || false;
 
         if (isClaudeModel) {
-            const claudeApiKey = config.get<string>('claudeApiKey') || '';
-            if (!claudeApiKey) {
-                task.logs.push(`**System**: Error - Claude API key not configured`);
+            if (useCopilotForClaude) {
+                // Use Copilot Claude
+                task.logs.push(`**System**: Switching to Claude via Copilot...`);
+                this.copilotClaude = new CopilotClaudeClient();
+                // Note: initialize() will be called when session is created
             } else {
-                this.claude = new ClaudeClient(claudeApiKey, newModel);
+                const claudeApiKey = config.get<string>('claudeApiKey') || '';
+                if (!claudeApiKey) {
+                    task.logs.push(`**System**: Error - Claude API key not configured`);
+                } else {
+                    this.claude = new ClaudeClient(claudeApiKey, newModel);
+                }
             }
         } else {
             const geminiApiKey = config.get<string>('geminiApiKey') || '';
@@ -181,13 +191,24 @@ export class TaskRunner {
             // Select AI client based on model
             const modelId = task.model || 'gemini-3-pro-preview';
             const isClaudeModel = modelId.startsWith('claude');
+            const useCopilotForClaude = config.get<boolean>('useCopilotForClaude') || false;
 
             if (isClaudeModel) {
-                // Use Claude client
-                if (!claudeApiKey) {
-                    throw new Error('Claude API key not configured. Go to Settings > VibeArchitect > Claude Api Key');
+                if (useCopilotForClaude) {
+                    // Use Copilot Claude via vscode.lm API
+                    task.logs.push(`> [System]: Using Claude via GitHub Copilot subscription`);
+                    this.copilotClaude = new CopilotClaudeClient();
+                    const initialized = await this.copilotClaude.initialize();
+                    if (!initialized) {
+                        throw new Error('Failed to initialize Claude via Copilot. Ensure GitHub Copilot extensions are installed and you have an active subscription. Or disable "Use Copilot for Claude" in settings.');
+                    }
+                } else {
+                    // Use Claude API directly
+                    if (!claudeApiKey) {
+                        throw new Error('Claude API key not configured. Go to Settings > VibeArchitect > Claude Api Key. Or enable "Use Copilot for Claude" if you have a Copilot subscription.');
+                    }
+                    this.claude = new ClaudeClient(claudeApiKey, modelId);
                 }
-                this.claude = new ClaudeClient(claudeApiKey, modelId);
             } else {
                 // Use Gemini client
                 if (!geminiApiKey) {
@@ -309,9 +330,14 @@ export class TaskRunner {
             }
 
             // Start session with selected model
-            const chat = isClaudeModel
-                ? this.claude!.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low')
-                : this.gemini.startSession(systemPrompt, 'high');
+            let chat: ISession;
+            if (isClaudeModel && useCopilotForClaude && this.copilotClaude) {
+                chat = this.copilotClaude.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
+            } else if (isClaudeModel && this.claude) {
+                chat = this.claude.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
+            } else {
+                chat = this.gemini.startSession(systemPrompt, 'high');
+            }
             this.sessions.set(taskId, chat);
 
             // Step 4: Start Execution Loop
@@ -418,11 +444,16 @@ export class TaskRunner {
                     const modelId = task.model || 'gemini-3-pro-preview';
                     console.log(`[TaskRunner] Recreating session with modelId: ${modelId}`);
                     const isClaudeModel = modelId.startsWith('claude');
+                    const useCopilotForClaude = config.get<boolean>('useCopilotForClaude') || false;
 
                     // Rebuild system prompt (simplified version for continuation)
                     const continuationPrompt = `You are continuing a task. Previous context is included. ${task.prompt}`;
 
-                    if (isClaudeModel) {
+                    if (isClaudeModel && useCopilotForClaude) {
+                        this.copilotClaude = new CopilotClaudeClient();
+                        await this.copilotClaude.initialize();
+                        activeChat = this.copilotClaude.startSession(continuationPrompt, task.mode === 'planning' ? 'high' : 'low');
+                    } else if (isClaudeModel) {
                         const claudeApiKey = config.get<string>('claudeApiKey') || '';
                         if (!claudeApiKey) throw new Error('Claude API key not configured');
                         this.claude = new ClaudeClient(claudeApiKey, modelId);
@@ -710,7 +741,18 @@ export class TaskRunner {
                     If no script, use 'run_command("npm start &")'.
                     `;
 
-                    if (isClaudeModel) {
+                    const useCopilotForClaude = config.get<boolean>('useCopilotForClaude') || false;
+
+                    if (isClaudeModel && useCopilotForClaude) {
+                        task.logs.push('> [System]: Resuming with Claude via Copilot...');
+                        this.copilotClaude = new CopilotClaudeClient();
+                        const initialized = await this.copilotClaude.initialize();
+                        if (!initialized) {
+                            task.logs.push('> [Error]: Failed to initialize Claude via Copilot');
+                            return;
+                        }
+                        session = this.copilotClaude.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
+                    } else if (isClaudeModel) {
                         const claudeApiKey = config.get<string>('claudeApiKey') || '';
                         if (!claudeApiKey) {
                             task.logs.push('> [Error]: Claude API key not configured');
