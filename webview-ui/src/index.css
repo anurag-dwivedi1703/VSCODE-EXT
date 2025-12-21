@@ -3,3 +3,172 @@ body {
     margin: 0;
     padding: 0;
 }
+
+/* Tool Header to align button */
+.tool-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    width: 100%;
+}
+
+.tool-header details {
+    flex: 1;
+}
+
+.revert-btn {
+    background: transparent;
+    border: 1px solid #dba642;
+    /* Warning color */
+    color: #dba642;
+    padding: 2px 6px;
+    font-size: 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    margin-left: 8px;
+    opacity: 0.7;
+    transition: all 0.2s;
+}
+
+.revert-btn:hover {
+    background: rgba(219, 166, 66, 0.1);
+    opacity: 1;
+}
+
+/* Step Cards */
+.msg-step-card {
+    background-color: var(--vscode-editor-background);
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 8px;
+    margin-bottom: 24px;
+    overflow: hidden;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.step-header {
+    background-color: var(--vscode-editor-lineHighlightBackground);
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border-bottom: 1px solid var(--vscode-panel-border);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.step-icon {
+    font-size: 16px;
+}
+
+.step-title {
+    opacity: 0.9;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.step-body {
+    padding: 16px;
+}
+
+.step-markdown {
+    font-size: 14px;
+    line-height: 1.6;
+    margin-bottom: 16px;
+}
+
+/* Artifacts in Step */
+.step-artifacts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 16px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--vscode-input-border);
+}
+
+.mini-artifact-card {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background-color: var(--vscode-textBlockQuote-background);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    border: 1px solid transparent;
+}
+
+.mini-artifact-card:hover {
+    border-color: var(--vscode-focusBorder);
+}
+
+/* Updates (Tools) */
+.step-updates {
+    font-size: 12px;
+}
+
+.step-updates summary {
+    cursor: pointer;
+    opacity: 0.7;
+    margin-bottom: 8px;
+    font-weight: 600;
+    user-select: none;
+}
+
+.step-updates summary:hover {
+    opacity: 1;
+}
+
+.step-updates-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-left: 10px;
+    border-left: 2px solid var(--vscode-panel-border);
+}
+
+.step-tool-item {
+    background-color: rgba(0, 0, 0, 0.1);
+    border-radius: 4px;
+    padding: 8px;
+}
+
+.tool-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 4px;
+    font-weight: 500;
+}
+
+.revert-btn-small {
+    background: transparent;
+    border: 1px solid #dba642;
+    color: #dba642;
+    padding: 2px 6px;
+    font-size: 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    opacity: 0.7;
+}
+
+.revert-btn-small:hover {
+    background: rgba(219, 166, 66, 0.1);
+    opacity: 1;
+}
+
+.tool-args {
+    font-family: monospace;
+    opacity: 0.7;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.tool-result-mini {
+    margin-top: 4px;
+    opacity: 0.5;
+    font-style: italic;
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+    padding-top: 4px;
+}

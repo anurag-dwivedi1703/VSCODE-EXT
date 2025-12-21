@@ -240,6 +240,10 @@ export class MissionControlProvider {
                         this._taskRunner.replyToTask(message.taskId, commentMsg, []);
                         vscode.window.showInformationMessage('Comment added to agent context');
                         return;
+                    case 'requestRevert':
+                        // message: { command, taskId, checkpointId }
+                        this._taskRunner.revertTask(message.taskId, message.checkpointId);
+                        return;
                     case 'openFile': {
                         const openPath = vscode.Uri.file(message.path);
                         if (message.path.endsWith('.md')) {

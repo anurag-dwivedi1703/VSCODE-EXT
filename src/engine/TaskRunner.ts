@@ -8,6 +8,8 @@ const terminalManager = new TerminalManager(); // Singleton for the extension se
 // For now, singleton is simpler to manage one visible terminal window.
 import * as path from 'path';
 import * as fs from 'fs';
+import { ShadowRepository } from '../services/ShadowRepository';
+import { RevertManager } from '../services/RevertManager';
 
 interface AgentTask {
     id: string;
@@ -21,6 +23,7 @@ interface AgentTask {
     artifacts: string[];
     mode?: 'planning' | 'fast';
     model?: string;
+    checkpoints?: { id: string, message: string, timestamp: number }[];
 }
 
 export class TaskRunner {
@@ -28,6 +31,8 @@ export class TaskRunner {
     private sessions: Map<string, ISession> = new Map(); // Keep sessions alive
     private gemini: GeminiClient;
     private worktreeManager: WorktreeManager | undefined;
+    private shadowRepo: ShadowRepository | undefined;
+    private revertManager: RevertManager | undefined;
     private _onTaskUpdate = new vscode.EventEmitter<{ taskId: string, task: AgentTask }>();
     public readonly onTaskUpdate = this._onTaskUpdate.event;
 
@@ -148,6 +153,16 @@ export class TaskRunner {
 
             this.updateStatus(taskId, 'executing', 10, `Accessing Workspace: ${workspaceRoot}`);
             task.logs.push(`\n**Working Directory**: \`${workspaceRoot}\``);
+
+            // INITIALIZE SHADOW REPO
+            this.shadowRepo = new ShadowRepository(this.context, workspaceRoot);
+            await this.shadowRepo.initialize();
+            this.revertManager = new RevertManager(this.shadowRepo);
+            task.checkpoints = []; // Reset checkpoints for new run (or maybe load existing if persistent? For now reset)
+
+            // Initial Snapshot
+            const initialHash = await this.shadowRepo.snapshot("Task Started");
+            task.checkpoints.push({ id: initialHash, message: "Task Started", timestamp: Date.now() });
 
             // We set a branch name just for reference or if we add git features later, 
             // but we don't switch branches automatically anymore to be safe? 
@@ -322,6 +337,20 @@ export class TaskRunner {
 
                         let toolResult = '';
                         try {
+                            // CHECKPOINT BEFORE ACTION
+                            if (this.shadowRepo) {
+                                // Only checkpoint for state-changing tools
+                                if (['write_file', 'run_command'].includes(fnName)) {
+                                    const snapMsg = `Pre-Tool: ${fnName}(${JSON.stringify(args)})`;
+                                    const snapHash = await this.shadowRepo.snapshot(snapMsg);
+                                    if (task.checkpoints) {
+                                        task.checkpoints.push({ id: snapHash, message: snapMsg, timestamp: Date.now() });
+                                        // Update UI immediately about checkpoint
+                                        this._onTaskUpdate.fire({ taskId, task });
+                                    }
+                                }
+                            }
+
                             switch (fnName) {
                                 case 'read_file':
                                     toolResult = await tools.readFile(args.path as string);
@@ -492,5 +521,53 @@ export class TaskRunner {
 
     public getTask(taskId: string): AgentTask | undefined {
         return this.tasks.get(taskId);
+    }
+
+    public async revertTask(taskId: string, checkpointId: string) {
+        const task = this.tasks.get(taskId);
+        if (!task) {
+            console.error(`[TaskRunner] Revert failed: Task ${taskId} not found.`);
+            return;
+        }
+
+        // Lazy init ShadowRepo/RevertManager if missing (e.g. after reload)
+        if (!this.shadowRepo || !this.revertManager) {
+            if (task.worktreePath) {
+                console.log(`[TaskRunner] Re-initializing ShadowRepo for ${task.worktreePath}`);
+                this.shadowRepo = new ShadowRepository(this.context, task.worktreePath);
+                // We assume it was already init'd before, but we might need to ensure it's loaded?
+                // simple-git just needs the path.
+                this.revertManager = new RevertManager(this.shadowRepo);
+            } else {
+                console.error(`[TaskRunner] Revert failed: No worktree path for task ${taskId}`);
+                return;
+            }
+        }
+
+        task.logs.push(`\n> [System]: Reverting to checkpoint ${checkpointId.substring(0, 7)}...`);
+        this._onTaskUpdate.fire({ taskId, task });
+
+        try {
+            const success = await this.revertManager.revertToCheckpoint(checkpointId);
+
+            if (success) {
+                task.logs.push(`> [System]: Revert successful.`);
+
+                // Truncate future checkpoints
+                if (task.checkpoints) {
+                    const idx = task.checkpoints.findIndex(c => c.id === checkpointId);
+                    if (idx !== -1) {
+                        task.checkpoints = task.checkpoints.slice(0, idx + 1);
+                    }
+                }
+            } else {
+                task.logs.push(`> [System]: Revert cancelled or failed.`);
+            }
+        } catch (err: any) {
+            console.error(`[TaskRunner] Revert exception:`, err);
+            task.logs.push(`> [System]: Error during revert: ${err.message}`);
+        }
+
+        this._onTaskUpdate.fire({ taskId, task });
     }
 }

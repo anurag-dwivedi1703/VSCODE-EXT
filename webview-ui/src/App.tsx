@@ -14,110 +14,186 @@ const DEFAULT_WORKSPACES = [
 type LogType = 'user' | 'agent' | 'tool' | 'error' | 'info' | 'system' | 'artifact';
 
 interface LogGroup {
-    type: LogType;
+    type: LogType | 'step';
     content: string;
-    details?: string[]; // For tools or system logs
-    isOpen?: boolean;
+    details?: string[]; // For system logs
+    // For Step
+    title?: string;
+    markdown?: string;
+    tools?: { name: string, call: string, result?: string, checkpointId?: string }[];
+    artifacts?: string[];
+    status?: 'running' | 'completed' | 'failed';
 }
 
-function parseLogs(logs: string[]): LogGroup[] {
+function parseLogs(logs: string[], checkpoints: { id: string, message: string }[] = []): LogGroup[] {
     const groups: LogGroup[] = [];
-    let currentGroup: LogGroup | null = null;
+    let currentStep: LogGroup | null = null;
     let systemGroup: LogGroup | null = null;
 
+    const commitStep = () => {
+        if (currentStep) {
+            // Determine title if not set
+            if (!currentStep.title) {
+                const firstLine = currentStep.markdown?.split('\n')[0] || 'Processing...';
+                currentStep.title = firstLine.length > 60 ? firstLine.substring(0, 60) + '...' : firstLine;
+            }
+            groups.push(currentStep);
+            currentStep = null;
+        }
+    };
+
+    const commitSystem = () => {
+        if (systemGroup) {
+            groups.push(systemGroup);
+            systemGroup = null;
+        }
+    };
+
     for (const log of logs) {
-        // Filter out "Thinking..." and duplicate "Mission Complete"
-        if (log.includes('Thinking...')) continue;
+        // Skip duplicate mission complete usually at end
         if (log.toLowerCase() === 'mission complete' && groups.length > 0 && groups[groups.length - 1].content.includes('MISSION COMPLETE')) continue;
 
-        // User
+        // User Message
         if (log.startsWith('**User**:')) {
-            if (currentGroup) groups.push(currentGroup);
-            if (systemGroup) { groups.push(systemGroup); systemGroup = null; }
-            currentGroup = { type: 'user', content: log.replace('**User**:', '').trim() };
+            commitStep();
+            commitSystem();
+            groups.push({ type: 'user', content: log.replace('**User**:', '').trim() });
         }
-        // Agent
+        // Turn Marker (Thinking...)
+        else if (log.includes('Thinking...')) {
+            // If we have an existing step that is "Thinking...", maybe update it?
+            // Or usually "Thinking..." marks start of new turn.
+            commitStep();
+            commitSystem();
+
+            const turnNum = log.match(/Turn (\d+):/)?.[1] || '';
+            currentStep = {
+                type: 'step',
+                content: log,
+                title: turnNum ? `Thinking (Turn ${turnNum})...` : 'Thinking...',
+                markdown: '',
+                tools: [],
+                artifacts: [],
+                status: 'running'
+            };
+        }
+        // Agent Message
         else if (log.startsWith('**Gemini**:')) {
-            if (currentGroup) groups.push(currentGroup);
-            if (systemGroup) { groups.push(systemGroup); systemGroup = null; }
-            currentGroup = { type: 'agent', content: log.replace('**Gemini**:', '').trim() };
+            commitSystem();
+            const text = log.replace('**Gemini**:', '').trim();
+
+            if (!currentStep) {
+                // If text comes without "Thinking" (e.g. Planning mode reply), create step
+                currentStep = {
+                    type: 'step',
+                    content: 'Agent Reply',
+                    title: 'Response',
+                    markdown: text,
+                    tools: [],
+                    artifacts: [],
+                    status: 'running'
+                };
+            } else {
+                // Append to existing step (e.g. Thinking -> Tools -> Response)
+                if (currentStep.markdown) currentStep.markdown += '\n\n' + text;
+                else currentStep.markdown = text;
+
+                // If text contains "Mission Complete", mark step?
+                // Actually we just display text.
+            }
         }
         // Tool Call
         else if (log.includes('[Tool Call]:')) {
-            if (currentGroup && currentGroup.type !== 'tool') {
-                groups.push(currentGroup);
-                currentGroup = null;
-            }
-            if (systemGroup) { groups.push(systemGroup); systemGroup = null; }
-
+            commitSystem();
             const cleanLog = log.replace('> [Tool Call]:', '').trim();
-            if (!currentGroup) {
-                currentGroup = { type: 'tool', content: cleanLog, details: [] };
-            } else {
-                // Start new tool block if previous was tool
-                groups.push(currentGroup);
-                currentGroup = { type: 'tool', content: cleanLog, details: [] };
+            const fnName = cleanLog.split('(')[0];
+
+            // Find Checkpoint
+            const matchedCheckpoint = checkpoints.find(cp => cp.message.includes(cleanLog));
+
+            if (!currentStep) {
+                // Orphan tool call? Create implicit step
+                currentStep = {
+                    type: 'step',
+                    content: 'Tool Execution',
+                    title: `Executing ${fnName}...`,
+                    markdown: '',
+                    tools: [],
+                    artifacts: [],
+                    status: 'running'
+                };
             }
+            // Add tool
+            currentStep.tools?.push({
+                name: fnName,
+                call: cleanLog,
+                result: '',
+                checkpointId: matchedCheckpoint?.id
+            });
         }
         // Tool Result
         else if (log.includes('[Result]:')) {
-            if (currentGroup && currentGroup.type === 'tool') {
-                currentGroup.details?.push(log.replace('> [Result]:', '').trim());
+            if (currentStep && currentStep.tools && currentStep.tools.length > 0) {
+                // Attach to last tool
+                const lastTool = currentStep.tools[currentStep.tools.length - 1];
+                const res = log.replace('> [Result]:', '').trim();
+                lastTool.result = lastTool.result ? lastTool.result + '\n' + res : res;
+            }
+            // Else ignore parsing error
+        }
+        // Artifact
+        else if (log.includes('[Artifact Created]:')) {
+            const path = log.replace('[Artifact Created]:', '').trim();
+            if (currentStep) {
+                if (!currentStep.artifacts?.includes(path)) {
+                    currentStep.artifacts?.push(path);
+                }
             } else {
-                // Orphan result, treat as info
-                if (currentGroup) groups.push(currentGroup);
-                currentGroup = { type: 'info', content: log };
+                // Implicit step or just log as artifact card?
+                // Let's create a standalone artifact group if no step
+                groups.push({ type: 'artifact', content: path });
             }
         }
         // Error
-        else if (log.startsWith('Error:')) {
-            if (currentGroup) groups.push(currentGroup);
-            if (systemGroup) { groups.push(systemGroup); systemGroup = null; }
-            currentGroup = { type: 'error', content: log };
+        else if (log.startsWith('Error:') || log.includes('> [Error]:')) {
+            if (currentStep) {
+                // Append error to markdown or logic?
+                currentStep.markdown += `\n\n> ⚠️ **Error**: ${log.replace('> [Error]:', '')}`;
+                currentStep.status = 'failed';
+            } else {
+                groups.push({ type: 'error', content: log });
+            }
         }
-        // System Logs (Initializing, Creating Worktree, etc.)
+        // System / Info
         else if (
             log.startsWith('Initializing') ||
             log.startsWith('Creating Isolated') ||
-            log.startsWith('Worktree created') ||
             log.includes('**Worktree Created**') ||
             log.startsWith('Consulting Gemini')
         ) {
-            if (currentGroup) groups.push(currentGroup);
-            currentGroup = null; // Reset current main group
-
+            commitStep();
             if (!systemGroup) {
                 systemGroup = { type: 'system', content: 'System Initialization', details: [] };
             }
             systemGroup.details?.push(log);
         }
-        // Artifact created
-        else if (log.includes('[Artifact Created]:')) {
-            if (currentGroup) groups.push(currentGroup);
-            if (systemGroup) { groups.push(systemGroup); systemGroup = null; }
-
-            const path = log.replace('[Artifact Created]:', '').trim();
-            currentGroup = { type: 'artifact', content: path };
-        }
         else {
-            // Append to current if match type
-            if (currentGroup && (currentGroup.type === 'agent' || currentGroup.type === 'user')) {
-                currentGroup.content += '\n' + log;
-            } else if (currentGroup && currentGroup.type === 'tool') {
-                currentGroup.details?.push(log);
+            // Misc logs
+            if (currentStep) {
+                // Maybe append to markdown if it looks like text?
+                if (!log.startsWith('>')) {
+                    // currentStep.markdown += '\n' + log; 
+                    // Actually, be careful not to pollute markdown with debug noise.
+                }
             } else if (systemGroup) {
                 systemGroup.details?.push(log);
-            } else {
-                // Fallback info
-                if (log.trim()) {
-                    if (currentGroup) groups.push(currentGroup);
-                    currentGroup = { type: 'info', content: log };
-                }
             }
         }
     }
-    if (systemGroup) groups.push(systemGroup);
-    if (currentGroup) groups.push(currentGroup);
+
+    commitStep();
+    commitSystem();
+
     return groups;
 }
 
@@ -204,7 +280,7 @@ function App() {
     };
 
     const activeAgent = activeAgents.find(a => a.id === expandedAgentId) || activeAgents[0];
-    const logGroups = activeAgent ? parseLogs(activeAgent.logs) : [];
+    const logGroups = activeAgent ? parseLogs(activeAgent.logs, activeAgent.checkpoints || []) : [];
 
     // Helper to start new chat
     const handleNewChat = () => {
@@ -311,30 +387,65 @@ function App() {
                                                     </div>
                                                 );
                                             }
-                                            if (group.type === 'agent') {
+                                            if (group.type === 'step') {
                                                 return (
-                                                    <div key={i} className="msg-row msg-row-agent">
-                                                        <div className="msg-avatar">🤖</div>
-                                                        <div className="msg-bubble msg-agent">
-                                                            <div className="msg-content markdown-body">
-                                                                <ReactMarkdown>{group.content}</ReactMarkdown>
-                                                            </div>
+                                                    <div key={i} className="msg-step-card">
+                                                        <div className="step-header">
+                                                            <div className="step-icon">🤖</div>
+                                                            <div className="step-title">{group.title}</div>
                                                         </div>
-                                                    </div>
-                                                );
-                                            }
-                                            if (group.type === 'tool') {
-                                                return (
-                                                    <div key={i} className="msg-tool">
-                                                        <details>
-                                                            <summary>🛠️ Used Tool: <code>{group.content.split('(')[0]}...</code></summary>
-                                                            <div className="tool-details">
-                                                                <div className="tool-call">{group.content}</div>
-                                                                {group.details?.map((d, di) => (
-                                                                    <div key={di} className="tool-result">{d}</div>
-                                                                ))}
-                                                            </div>
-                                                        </details>
+                                                        <div className="step-body">
+                                                            {group.markdown && (
+                                                                <div className="step-markdown markdown-body">
+                                                                    <ReactMarkdown>{group.markdown}</ReactMarkdown>
+                                                                </div>
+                                                            )}
+
+                                                            {/* Artifacts Created in this Step */}
+                                                            {group.artifacts && group.artifacts.length > 0 && (
+                                                                <div className="step-artifacts">
+                                                                    {group.artifacts.map((path, ai) => (
+                                                                        <div key={ai} className="mini-artifact-card"
+                                                                            onClick={() => vscode.postMessage({ command: 'previewFile', path: path, taskId: activeAgent.id })}>
+                                                                            <span className="icon">📄</span>
+                                                                            <span className="name">{path.split(/[\\/]/).pop()}</span>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+
+                                                            {/* Progress Updates (Collapsed Tools) */}
+                                                            {group.tools && group.tools.length > 0 && (
+                                                                <details className="step-updates">
+                                                                    <summary>Progress Updates ({group.tools.length})</summary>
+                                                                    <div className="step-updates-list">
+                                                                        {group.tools.map((tool, ti) => (
+                                                                            <div key={ti} className="step-tool-item">
+                                                                                <div className="tool-row">
+                                                                                    <span className="tool-name">⚡ {tool.name}</span>
+                                                                                    {tool.checkpointId && (
+                                                                                        <button className="revert-btn-small"
+                                                                                            title="Revert to this state"
+                                                                                            onClick={(e) => {
+                                                                                                e.stopPropagation();
+                                                                                                vscode.postMessage({
+                                                                                                    command: 'requestRevert',
+                                                                                                    taskId: activeAgent.id,
+                                                                                                    checkpointId: tool.checkpointId
+                                                                                                });
+                                                                                            }}>
+                                                                                            ↩ Revert
+                                                                                        </button>
+                                                                                    )}
+                                                                                </div>
+                                                                                <div className="tool-args">{tool.call}</div>
+                                                                                {tool.result && <div className="tool-result-mini">{tool.result.substring(0, 100)}{tool.result.length > 100 ? '...' : ''}</div>}
+                                                                            </div>
+                                                                        ))}
+                                                                    </div>
+                                                                </details>
+                                                            )}
+                                                        </div>
                                                     </div>
                                                 );
                                             }
@@ -344,7 +455,7 @@ function App() {
                                                         <div className="artifact-icon">📄</div>
                                                         <div className="artifact-info">
                                                             <div className="artifact-name">{group.content.split(/[\\/]/).pop()}</div>
-                                                            <div className="artifact-desc">Information Artifact</div>
+                                                            <div className="artifact-desc">Artifact</div>
                                                         </div>
                                                         <button className="artifact-open-btn"
                                                             onClick={() => vscode.postMessage({ command: 'previewFile', path: group.content, taskId: activeAgent.id })}>
@@ -356,15 +467,7 @@ function App() {
                                             if (group.type === 'error') {
                                                 return <div key={i} className="msg-error">⚠️ {group.content}</div>;
                                             }
-                                            // Handle alerts especially
-                                            if (group.content.includes('[!IMPORTANT]')) {
-                                                return (
-                                                    <div key={i} className="msg-alert">
-                                                        <ReactMarkdown>{group.content}</ReactMarkdown>
-                                                    </div>
-                                                );
-                                            }
-                                            return <div key={i} className="msg-info">{group.content}</div>;
+                                            return null;
                                         })}
                                         <div ref={logsEndRef} />
                                     </div>
