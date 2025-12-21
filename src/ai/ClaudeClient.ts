@@ -75,6 +75,26 @@ export class ClaudeClient {
                     },
                     required: ["query"]
                 }
+            },
+            {
+                name: "reload_browser",
+                description: "Reload the browser preview to verify UI changes",
+                input_schema: {
+                    type: "object" as const,
+                    properties: {},
+                    required: []
+                }
+            },
+            {
+                name: "navigate_browser",
+                description: "Navigate the browser preview to a specific URL (e.g., http://localhost:8080)",
+                input_schema: {
+                    type: "object" as const,
+                    properties: {
+                        url: { type: "string", description: "URL to navigate to (e.g., http://localhost:8080)" }
+                    },
+                    required: ["url"]
+                }
             }
         ];
 

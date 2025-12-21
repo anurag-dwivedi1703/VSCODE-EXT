@@ -41,6 +41,9 @@ export class TaskRunner {
     private _onReloadBrowser = new vscode.EventEmitter<void>();
     public readonly onReloadBrowser = this._onReloadBrowser.event;
 
+    private _onNavigateBrowser = new vscode.EventEmitter<string>();
+    public readonly onNavigateBrowser = this._onNavigateBrowser.event;
+
     public getTasks(): AgentTask[] {
         return Array.from(this.tasks.values());
     }
@@ -233,7 +236,8 @@ export class TaskRunner {
                 workspaceRoot,
                 terminalManager,
                 this.gemini,
-                () => { this._onReloadBrowser.fire(); }
+                () => { this._onReloadBrowser.fire(); },
+                (url: string) => { this._onNavigateBrowser.fire(url); }
             );
 
             // Step 3: Start Gemini Session
@@ -250,6 +254,7 @@ export class TaskRunner {
             - list_files(path): List directory.
             - run_command(command): Execute shell command (git, npm, etc).
             - reload_browser(): Reload the browser preview to verify changes. (Tool, NOT a shell command)
+            - navigate_browser(url): Navigate the browser preview to a specific URL (e.g., 'http://localhost:8080').
             - search_web(query): Search the web for documentation, solutions, or new concepts.
 
             CRITICAL RULES:
@@ -517,6 +522,11 @@ export class TaskRunner {
                                 case 'reload_browser':
                                     this._onReloadBrowser.fire();
                                     toolResult = "Browser reload triggered.";
+                                    break;
+                                case 'navigate_browser':
+                                    const navUrl = args.url as string || 'http://localhost:3000';
+                                    this._onNavigateBrowser.fire(navUrl);
+                                    toolResult = `Browser navigated to ${navUrl}.`;
                                     break;
                                 case 'search_web':
                                     toolResult = await tools.searchWeb(args.query as string);

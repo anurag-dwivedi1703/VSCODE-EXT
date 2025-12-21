@@ -9,7 +9,8 @@ export class AgentTools {
         private readonly worktreeRoot: string,
         private readonly terminalManager?: TerminalManager,
         private readonly geminiClient?: GeminiClient,
-        private readonly onReloadBrowserCallback?: () => void
+        private readonly onReloadBrowserCallback?: () => void,
+        private readonly onNavigateBrowserCallback?: (url: string) => void
     ) { }
 
     private getUri(relativePath: string): vscode.Uri {
@@ -87,6 +88,14 @@ export class AgentTools {
             return "Browser Preview Reloaded. Please check the visual output.";
         }
         return "Browser Reload Triggered (Simulated).";
+    }
+
+    async navigate_browser(url: string): Promise<string> {
+        if (this.onNavigateBrowserCallback) {
+            this.onNavigateBrowserCallback(url);
+            return `Browser navigated to ${url}. Please check the visual output.`;
+        }
+        return `Browser navigation to ${url} triggered (Simulated).`;
     }
 
     async runCommand(command: string): Promise<string> {

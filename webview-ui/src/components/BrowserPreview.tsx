@@ -31,6 +31,12 @@ export function BrowserPreview({ taskId, reloadTrigger }: BrowserPreviewProps) {
             if (event.data.command === 'reloadBrowser') {
                 // Fallback for direct messages if still used
                 setReloadKey(prev => prev + 1);
+            } else if (event.data.command === 'navigateBrowser' && event.data.url) {
+                // Navigate to new URL
+                const newUrl = event.data.url;
+                setUrl(newUrl);
+                setInputUrl(newUrl);
+                setReloadKey(prev => prev + 1);
             }
         };
         window.addEventListener('message', messageHandler);

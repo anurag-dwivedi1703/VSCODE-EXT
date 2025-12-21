@@ -91,6 +91,26 @@ export class GeminiClient {
                                 },
                                 required: ["query"]
                             }
+                        },
+                        {
+                            name: "reload_browser",
+                            description: "Reload the browser preview to verify UI changes",
+                            parameters: {
+                                type: "OBJECT" as any,
+                                properties: {},
+                                required: []
+                            }
+                        },
+                        {
+                            name: "navigate_browser",
+                            description: "Navigate the browser preview to a specific URL (e.g., http://localhost:8080)",
+                            parameters: {
+                                type: "OBJECT" as any,
+                                properties: {
+                                    url: { type: "STRING" as any, description: "URL to navigate to (e.g., http://localhost:8080)" }
+                                },
+                                required: ["url"]
+                            }
                         }
                     ]
                 }

@@ -1,3 +1,0 @@
-- [x] Kill process on port 3000
-- [x] Kill process on port 3001
-- [x] Verify ports are free
