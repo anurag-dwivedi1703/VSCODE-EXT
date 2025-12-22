@@ -488,6 +488,7 @@ function App() {
                                                                                     if (match) filePath = match[1];
                                                                                 }
                                                                                 const fileName = filePath ? filePath.split(/[\\/]/).pop() : 'Unknown file';
+                                                                                const isSystemFile = fileName?.toLowerCase().match(/^(task\.md|implementation_plan\.md|mission_summary\.md)$/);
 
                                                                                 return (
                                                                                     <div key={fi} className="file-modified-card">
@@ -496,37 +497,58 @@ function App() {
                                                                                             <span className="file-name">{fileName}</span>
                                                                                         </div>
                                                                                         <div className="file-actions">
-                                                                                            <button
-                                                                                                className="open-diff-btn-prominent"
-                                                                                                title="View file changes"
-                                                                                                onClick={(e) => {
-                                                                                                    e.stopPropagation();
-                                                                                                    if (filePath) {
-                                                                                                        vscode.postMessage({
-                                                                                                            command: 'getDiff',
-                                                                                                            taskId: activeAgent.id,
-                                                                                                            path: filePath
-                                                                                                        });
-                                                                                                    }
-                                                                                                }}>
-                                                                                                <span className="btn-icon">⇄</span>
-                                                                                                Open Diff
-                                                                                            </button>
-                                                                                            <button
-                                                                                                className="preview-file-btn"
-                                                                                                title="Preview file"
-                                                                                                onClick={(e) => {
-                                                                                                    e.stopPropagation();
-                                                                                                    if (filePath) {
-                                                                                                        vscode.postMessage({
-                                                                                                            command: 'previewFile',
-                                                                                                            path: filePath,
-                                                                                                            taskId: activeAgent.id
-                                                                                                        });
-                                                                                                    }
-                                                                                                }}>
-                                                                                                👁 View
-                                                                                            </button>
+                                                                                            {!isSystemFile ? (
+                                                                                                <>
+                                                                                                    <button
+                                                                                                        className="open-diff-btn-prominent"
+                                                                                                        title="View file changes"
+                                                                                                        onClick={(e) => {
+                                                                                                            e.stopPropagation();
+                                                                                                            if (filePath) {
+                                                                                                                vscode.postMessage({
+                                                                                                                    command: 'getDiff',
+                                                                                                                    taskId: activeAgent.id,
+                                                                                                                    path: filePath
+                                                                                                                });
+                                                                                                            }
+                                                                                                        }}>
+                                                                                                        <span className="btn-icon">⇄</span>
+                                                                                                        Open Diff
+                                                                                                    </button>
+                                                                                                    <button
+                                                                                                        className="preview-file-btn"
+                                                                                                        title="Preview file"
+                                                                                                        onClick={(e) => {
+                                                                                                            e.stopPropagation();
+                                                                                                            if (filePath) {
+                                                                                                                vscode.postMessage({
+                                                                                                                    command: 'previewFile',
+                                                                                                                    path: filePath,
+                                                                                                                    taskId: activeAgent.id
+                                                                                                                });
+                                                                                                            }
+                                                                                                        }}>
+                                                                                                        👁 View
+                                                                                                    </button>
+                                                                                                </>
+                                                                                            ) : (
+                                                                                                <button
+                                                                                                    className="preview-file-btn primary"
+                                                                                                    style={{ width: '100%', justifyContent: 'center' }}
+                                                                                                    title="Open File"
+                                                                                                    onClick={(e) => {
+                                                                                                        e.stopPropagation();
+                                                                                                        if (filePath) {
+                                                                                                            vscode.postMessage({
+                                                                                                                command: 'previewFile',
+                                                                                                                path: filePath,
+                                                                                                                taskId: activeAgent.id
+                                                                                                            });
+                                                                                                        }
+                                                                                                    }}>
+                                                                                                    Open
+                                                                                                </button>
+                                                                                            )}
                                                                                         </div>
                                                                                     </div>
                                                                                 );
