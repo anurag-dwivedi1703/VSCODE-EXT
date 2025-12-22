@@ -52,6 +52,34 @@ You need a Google Gemini API Key.
 2.  Type `VibeArchitect: Open Mission Control`.
 3.  The dashboard should appear!
 
+## Step 6: Browser Automation Setup (Optional)
+For AI-powered UI testing with Playwright:
+
+**For Development (running from source):**
+```bash
+# Browser automation deps are included in npm install
+npm run install-browsers  # Downloads Chromium for Playwright
+```
+
+**For Installed Extension (.vsix):**
+After installing the .vsix, run these commands:
+```powershell
+# Windows PowerShell
+cd "$env:USERPROFILE\.vscode\extensions"
+cd (Get-ChildItem -Filter "*vibearchitect*" | Select-Object -First 1).FullName
+npm install playwright-core pixelmatch pngjs
+```
+
+Then restart VS Code completely.
+
+**Verify it works:** Ask your agent:
+> "Create a login page and verify it with browser_verify_ui"
+
+The agent should launch Chrome, take screenshots, and use AI vision to verify.
+
 ## Troubleshooting
 *   **Blank Screen?** Ensure you ran `npm run build` in `webview-ui`.
 *   **"Gemini Error"?** Check your API Key in settings.
+*   **Browser automation fails?** Run `npm install playwright-core` in extension folder.
+*   **"Cannot read properties of undefined (reading 'launch')"?** Fully restart VS Code after installing deps.
+

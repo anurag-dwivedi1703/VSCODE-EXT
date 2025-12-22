@@ -3,22 +3,51 @@ import * as path from 'path';
 import * as fs from 'fs';
 
 // Dynamic imports for optional dependencies - loaded on demand
-let chromium: any = null;
+let playwrightModule: any = null;
 let playwrightAvailable: boolean | null = null;
 
 async function getPlaywright(): Promise<any> {
-    if (!chromium) {
-        try {
-            const pw = await import('playwright-core');
-            chromium = pw.chromium;
-            playwrightAvailable = true;
-        } catch (error: any) {
-            playwrightAvailable = false;
-            console.error('[BrowserAutomation] Failed to load playwright-core:', error.message);
+    if (playwrightModule) {
+        return playwrightModule;
+    }
 
-            // Provide detailed setup instructions
-            const setupInstructions = `
-Browser automation is not available. To enable it:
+    try {
+        // Try dynamic import
+        const pw = await import('playwright-core');
+
+        // Debug: Log what we got
+        console.log('[BrowserAutomation] playwright-core loaded, keys:', Object.keys(pw));
+
+        // Handle different module structures
+        // ESM: default export or named exports
+        // CommonJS: direct exports
+        if (pw.chromium) {
+            playwrightModule = pw.chromium;
+        } else if (pw.default?.chromium) {
+            playwrightModule = pw.default.chromium;
+        } else {
+            // Log available properties for debugging
+            console.error('[BrowserAutomation] Unexpected module structure:', JSON.stringify(Object.keys(pw)));
+            throw new Error(`playwright-core loaded but chromium not found. Module keys: ${Object.keys(pw).join(', ')}`);
+        }
+
+        if (!playwrightModule || typeof playwrightModule.launch !== 'function') {
+            throw new Error('playwright-core.chromium.launch is not a function');
+        }
+
+        playwrightAvailable = true;
+        console.log('[BrowserAutomation] Successfully loaded playwright-core');
+        return playwrightModule;
+
+    } catch (error: any) {
+        playwrightAvailable = false;
+        console.error('[BrowserAutomation] Failed to load playwright-core:', error.message);
+
+        // Provide detailed setup instructions
+        const setupInstructions = `
+Browser automation is not available. Error: ${error.message}
+
+To enable browser automation:
 
 1. Find your VS Code extensions folder:
    - Windows: %USERPROFILE%\\.vscode\\extensions\\undefined_publisher.vibearchitect-0.0.1
@@ -28,14 +57,13 @@ Browser automation is not available. To enable it:
 2. Open a terminal in that folder and run:
    npm install playwright-core pixelmatch pngjs
 
-3. Restart VS Code
+3. Restart VS Code completely (not just reload window)
 
-Alternative: Use the built-in browser preview (reload_browser/navigate_browser tools) for basic verification.
+Note: The extension uses dynamic imports. If the error persists, try:
+   npm uninstall playwright-core && npm install playwright-core
 `;
-            throw new Error(setupInstructions);
-        }
+        throw new Error(setupInstructions);
     }
-    return chromium;
 }
 
 /**
@@ -46,9 +74,9 @@ export async function isPlaywrightAvailable(): Promise<boolean> {
         return playwrightAvailable;
     }
     try {
-        await import('playwright-core');
-        playwrightAvailable = true;
-        return true;
+        const pw = await import('playwright-core');
+        playwrightAvailable = !!(pw.chromium || pw.default?.chromium);
+        return playwrightAvailable;
     } catch {
         playwrightAvailable = false;
         return false;

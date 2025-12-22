@@ -192,12 +192,13 @@ export class GeminiClient {
                         },
                         {
                             name: "browser_verify_ui",
-                            description: "Take a screenshot and verify the UI against expectations. Compares against baseline if exists.",
+                            description: "Take a screenshot and use Gemini Vision AI to verify the UI matches expectations. Returns detailed analysis with issues and fix suggestions. Use this for self-healing: if FAIL, fix the issues and call again.",
                             parameters: {
                                 type: "OBJECT" as any,
                                 properties: {
                                     category: { type: "STRING" as any, description: "Category/name for this UI state (e.g., 'homepage', 'login-form')" },
-                                    description: { type: "STRING" as any, description: "Expected appearance of the UI" }
+                                    description: { type: "STRING" as any, description: "Detailed description of what the UI should look like" },
+                                    mission_objective: { type: "STRING" as any, description: "The overall goal/mission this UI should fulfill" }
                                 },
                                 required: ["category", "description"]
                             }
@@ -258,6 +259,113 @@ export class GeminiClient {
             return response.text();
         } catch (error: any) {
             return `Search failed: ${error.message}`;
+        }
+    }
+
+    /**
+     * Analyze a screenshot using Gemini Vision to verify it matches expectations
+     * This is the core of the self-healing system - semantic UI validation
+     */
+    public async analyzeScreenshot(
+        imageBase64: string,
+        mimeType: string,
+        expectedDescription: string,
+        missionObjective: string
+    ): Promise<{
+        matches: boolean;
+        confidence: number;
+        issues: string[];
+        suggestions: string[];
+        analysis: string;
+    }> {
+        try {
+            // Use a vision-capable model
+            const model = this.genAI.getGenerativeModel({
+                model: 'gemini-2.0-flash'
+            });
+
+            const prompt = `You are a UI testing expert. Analyze this screenshot and determine if it matches the expected design.
+
+MISSION OBJECTIVE: ${missionObjective}
+
+EXPECTED UI DESCRIPTION: ${expectedDescription}
+
+Analyze the screenshot and respond in this EXACT JSON format:
+{
+    "matches": true/false,
+    "confidence": 0-100,
+    "issues": ["list of specific UI problems found"],
+    "suggestions": ["list of specific code fixes to address the issues"],
+    "analysis": "Brief description of what you see vs what was expected"
+}
+
+IMPORTANT:
+- Set "matches" to true ONLY if the UI clearly fulfills the expected description
+- Be specific about issues (e.g., "Button text is 'Submit' but should be 'Login'")
+- Provide actionable suggestions (e.g., "Change the h1 text from 'Welcome' to 'Login Form'")
+- Consider: layout, colors, text content, element presence, responsiveness
+- If the page is blank, loading, or shows an error, that's a critical issue
+
+Respond ONLY with the JSON, no other text.`;
+
+            const result = await model.generateContent([
+                prompt,
+                {
+                    inlineData: {
+                        mimeType: mimeType,
+                        data: imageBase64
+                    }
+                }
+            ]);
+
+            const responseText = result.response.text();
+
+            // Parse the JSON response
+            try {
+                // Clean up the response (remove markdown code blocks if present)
+                let jsonText = responseText.trim();
+                if (jsonText.startsWith('```json')) {
+                    jsonText = jsonText.slice(7);
+                }
+                if (jsonText.startsWith('```')) {
+                    jsonText = jsonText.slice(3);
+                }
+                if (jsonText.endsWith('```')) {
+                    jsonText = jsonText.slice(0, -3);
+                }
+                jsonText = jsonText.trim();
+
+                const parsed = JSON.parse(jsonText);
+                return {
+                    matches: parsed.matches === true,
+                    confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 50,
+                    issues: Array.isArray(parsed.issues) ? parsed.issues : [],
+                    suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions : [],
+                    analysis: parsed.analysis || 'No analysis provided'
+                };
+            } catch (parseError) {
+                // If JSON parsing fails, try to extract meaning from text
+                const lowerText = responseText.toLowerCase();
+                const matches = lowerText.includes('matches": true') ||
+                    (lowerText.includes('looks correct') && !lowerText.includes('not'));
+
+                return {
+                    matches: matches,
+                    confidence: 30, // Low confidence since we couldn't parse properly
+                    issues: ['Could not parse vision analysis response'],
+                    suggestions: ['Manual review recommended'],
+                    analysis: responseText.substring(0, 500)
+                };
+            }
+        } catch (error: any) {
+            console.error('[GeminiClient] Vision analysis failed:', error.message);
+            return {
+                matches: false,
+                confidence: 0,
+                issues: [`Vision analysis error: ${error.message}`],
+                suggestions: ['Check Gemini API connection and try again'],
+                analysis: 'Analysis failed due to API error'
+            };
         }
     }
 }

@@ -315,41 +315,61 @@ export class TaskRunner {
             
             Your Mission: ${task.prompt}
             
-            Available Tools:
+            === BASIC TOOLS ===
             - read_file(path): Read file content.
             - write_file(path, content): Write file content (auto-creates dirs).
             - list_files(path): List directory.
             - run_command(command): Execute shell command (git, npm, etc).
-            - reload_browser(): Reload the browser preview to verify changes. (Tool, NOT a shell command)
-            - navigate_browser(url): Navigate the browser preview to a specific URL (e.g., 'http://localhost:8080').
             - search_web(query): Search the web for documentation, solutions, or new concepts.
             
-            Browser Automation Tools (for automated testing):
-            - browser_launch(recordVideo?): Launch Chrome for automated testing. Set recordVideo=true to record session.
-            - browser_navigate(url): Navigate the automated browser to a URL and wait for page load.
-            - browser_screenshot(name?): Take a screenshot of the current page.
-            - browser_click(selector): Click on an element using CSS selector.
-            - browser_type(selector, text): Type text into an input field.
-            - browser_wait_for(selector, timeout?): Wait for an element to appear.
-            - browser_get_dom(): Get the current page's HTML content for analysis.
-            - browser_verify_ui(category, description): Take screenshot and verify UI against expectations.
-            - browser_close(): Close the browser and stop recording.
+            === SIMPLE PREVIEW (just for quick display to user) ===
+            - reload_browser(): Reload the embedded preview pane. Use ONLY to show the user what you built.
+            - navigate_browser(url): Navigate the embedded preview to a URL. Does NOT verify anything.
+            
+            === AUTOMATED UI TESTING (MANDATORY for verification) ===
+            Use these tools to VERIFY your work. They provide AI-powered analysis and self-healing:
+            - browser_launch(true): Launch Chrome with video recording. ALWAYS use recordVideo=true.
+            - browser_navigate(url): Navigate and wait for page load.
+            - browser_screenshot(name?): Take a screenshot.
+            - browser_click(selector): Click an element.
+            - browser_type(selector, text): Type into an input.
+            - browser_wait_for(selector): Wait for an element.
+            - browser_get_dom(): Get page HTML.
+            - browser_verify_ui(category, description): CRITICAL - This uses AI Vision to verify the UI matches expectations.
+            - browser_close(): Close browser and save the video recording.
 
-            CRITICAL RULES:
-            1. **VERIFY EVERYTHING**: Never assume code works. Run it.
-               - If it's a script, run it.
-               - If it's a web app, start the server and use 'reload_browser()' to show it to the user.
-               - **AUTOMATED TESTING**: For UI verification, use browser_launch(true) to record, then browser_verify_ui() to check.
-               - **IMPORTANT**: If a server is already running on a port (e.g. 3000), you must KILL it first or use a different port.
-            2. **SELF-HEALING**: If browser_verify_ui() finds issues, analyze the screenshot and fix the code, then verify again.
-            3. **COMMUNICATE**: Do not just say "Done". Explain what you did.
-            4. **CLEAN UP**: Stop any background processes you started if they are verified (unless it's a server meant to stay running).
-            5. **PYTHON RULES**:
+            === CRITICAL RULES ===
+            
+            1. **VERIFICATION IS MANDATORY**: After creating any web UI, you MUST verify it:
+               a) Start server: run_command("python -m http.server 8080") or similar
+               b) Launch automated browser: browser_launch(true)  <-- ALWAYS with recording
+               c) Navigate: browser_navigate("http://localhost:8080")
+               d) AI Verify: browser_verify_ui("page-name", "description of expected UI")
+               e) If FAIL: Read the issues, fix the code, and call browser_verify_ui AGAIN
+               f) If PASS: browser_close() to save the video
+               g) (Optional) Show to user: navigate_browser("http://localhost:8080")
+               
+            2. **SELF-HEALING LOOP**: 
+               - browser_verify_ui() returns PASS or FAIL with specific issues
+               - If FAIL: Fix each issue listed, then verify again
+               - Repeat until PASS (max 3 attempts)
+               
+            3. **DO NOT SKIP AUTOMATED TESTING**:
+               - reload_browser() is NOT verification - it just shows the preview
+               - ONLY browser_verify_ui() provides actual verification with AI analysis
+               - Never say "verified" unless you called browser_verify_ui and got PASS
+               
+            4. **VIDEO RECORDING**: Always use browser_launch(true) so the session is recorded.
+            
+            5. **COMMUNICATE**: Explain what you did and what the verification found.
+            
+            6. **PYTHON RULES**:
                - NEVER install globally.
                - Create a venv: 'python -m venv venv'.
-               - Install packages using the venv executable: 'venv/Scripts/pip install ...' (Windows) or 'venv/bin/pip ...' (Mac/Linux).
-               - Run scripts using the venv executable: 'venv/Scripts/python app.py' (Windows) or 'venv/bin/python app.py' (Mac/Linux).
-            6. **REASONING**: Before calling ANY tool, you MUST explain your plan in 1-2 sentences. This will be displayed to the user as your "Thought".
+               - Install packages: 'venv/Scripts/pip install ...' (Windows) or 'venv/bin/pip ...' (Mac/Linux).
+               - Run scripts: 'venv/Scripts/python app.py' (Windows) or 'venv/bin/python app.py' (Mac/Linux).
+               
+            7. **REASONING**: Before calling ANY tool, explain your plan in 1-2 sentences.
             `;
 
 
@@ -694,10 +714,16 @@ export class TaskRunner {
                                     toolResult = await tools.browserGetDOM();
                                     break;
                                 case 'browser_verify_ui':
-                                    toolResult = await tools.browserVerifyUI(args.category as string, args.description as string);
+                                    toolResult = await tools.browserVerifyUI(
+                                        args.category as string,
+                                        args.description as string,
+                                        args.mission_objective as string || task.prompt // Use mission prompt as fallback
+                                    );
                                     // Check if verification detected issues for self-healing
-                                    if (toolResult.includes('Issues detected:') || toolResult.includes('Match: NO')) {
-                                        task.logs.push(`> [UI Verification]: Visual issues detected. Agent may attempt self-healing.`);
+                                    if (toolResult.includes('❌ FAIL') || toolResult.includes('ACTION REQUIRED')) {
+                                        task.logs.push(`> [UI Verification]: Issues detected - agent should attempt self-healing.`);
+                                    } else if (toolResult.includes('✅ PASS')) {
+                                        task.logs.push(`> [UI Verification]: UI verification passed!`);
                                     }
                                     break;
                                 case 'browser_close':

@@ -176,12 +176,13 @@ export class ClaudeClient {
             },
             {
                 name: "browser_verify_ui",
-                description: "Take a screenshot and verify the UI against expectations. Compares against baseline if exists.",
+                description: "Take a screenshot and use Gemini Vision AI to verify the UI matches expectations. Returns detailed analysis with issues and fix suggestions. Use this for self-healing: if FAIL, fix the issues and call again.",
                 input_schema: {
                     type: "object" as const,
                     properties: {
                         category: { type: "string", description: "Category/name for this UI state (e.g., 'homepage', 'login-form')" },
-                        description: { type: "string", description: "Expected appearance of the UI" }
+                        description: { type: "string", description: "Detailed description of what the UI should look like" },
+                        mission_objective: { type: "string", description: "The overall goal/mission this UI should fulfill" }
                     },
                     required: ["category", "description"]
                 }

@@ -334,12 +334,13 @@ export class AgentTools {
     }
 
     /**
-     * Verify UI by taking a screenshot and comparing against baseline
-     * Returns comparison result or saves as new baseline if none exists
+     * Verify UI by taking a screenshot and using Gemini Vision to analyze
+     * whether it matches the expected description and mission objective.
+     * This is the core of the self-healing system.
      */
-    async browserVerifyUI(category: string, description: string): Promise<string> {
-        if (!this.browserService || !this.visualService) {
-            return 'Error: Browser or visual service not initialized.';
+    async browserVerifyUI(category: string, description: string, missionObjective?: string): Promise<string> {
+        if (!this.browserService) {
+            return 'Error: Browser service not initialized.';
         }
 
         try {
@@ -349,49 +350,84 @@ export class AgentTools {
                 return screenshotResult; // Error
             }
 
-            // Check for basic issues
-            const issues = await this.visualService.analyzeScreenshotForIssues(screenshotResult.path);
+            // Read the screenshot file for vision analysis
+            const fs = await import('fs');
+            const screenshotBuffer = fs.readFileSync(screenshotResult.path);
+            const screenshotBase64 = screenshotBuffer.toString('base64');
 
-            // Check if baseline exists
-            if (this.visualService.hasBaseline(category)) {
-                // Compare against baseline
-                const comparison = await this.visualService.compareAgainstBaseline(
-                    screenshotResult.path,
-                    category
+            // Use Gemini Vision for semantic analysis if available
+            if (this.geminiClient) {
+                const analysis = await this.geminiClient.analyzeScreenshot(
+                    screenshotBase64,
+                    'image/png',
+                    description,
+                    missionObjective || 'Verify the UI looks correct'
                 );
 
-                if (!comparison) {
-                    return `Verification failed: Could not compare against baseline.`;
+                // Build detailed result for the agent
+                let result = `\n=== UI VERIFICATION: "${category}" ===\n`;
+                result += `📊 VERDICT: ${analysis.matches ? '✅ PASS' : '❌ FAIL'}\n`;
+                result += `🎯 Confidence: ${analysis.confidence}%\n\n`;
+
+                result += `📝 Analysis:\n${analysis.analysis}\n\n`;
+
+                if (analysis.issues.length > 0) {
+                    result += `⚠️ Issues Found:\n`;
+                    analysis.issues.forEach((issue, i) => {
+                        result += `  ${i + 1}. ${issue}\n`;
+                    });
+                    result += '\n';
                 }
 
-                let result = `UI Verification for "${category}":\n`;
-                result += `- Match: ${comparison.matches ? 'YES' : 'NO'}\n`;
-                result += `- Difference: ${comparison.diffPercentage}%\n`;
-
-                if (issues.length > 0) {
-                    result += `- Issues detected:\n  ${issues.join('\n  ')}\n`;
+                if (analysis.suggestions.length > 0) {
+                    result += `💡 Suggested Fixes:\n`;
+                    analysis.suggestions.forEach((suggestion, i) => {
+                        result += `  ${i + 1}. ${suggestion}\n`;
+                    });
+                    result += '\n';
                 }
 
-                if (comparison.diffImagePath) {
-                    result += `- Diff image: ${comparison.diffImagePath}\n`;
+                result += `📸 Screenshot: ${screenshotResult.path}\n`;
+                result += `🎯 Expected: ${description}\n`;
+
+                if (!analysis.matches) {
+                    result += `\n🔧 ACTION REQUIRED: Please fix the issues above and call browser_verify_ui again to confirm the fix worked.\n`;
                 }
 
-                result += `- Expected: ${description}\n`;
-                result += `- Screenshot: ${screenshotResult.path}`;
+                // Also do pixel comparison if visual service available and baseline exists
+                if (this.visualService && this.visualService.hasBaseline(category)) {
+                    const comparison = await this.visualService.compareAgainstBaseline(
+                        screenshotResult.path,
+                        category
+                    );
+                    if (comparison) {
+                        result += `\n📐 Pixel Comparison: ${comparison.diffPercentage}% different from baseline`;
+                        if (comparison.diffImagePath) {
+                            result += ` (diff: ${comparison.diffImagePath})`;
+                        }
+                        result += '\n';
+                    }
+                } else if (this.visualService) {
+                    // Save as new baseline
+                    await this.visualService.saveBaseline(screenshotResult.path, category);
+                    result += `\n📌 Saved as baseline for future comparisons.\n`;
+                }
 
                 return result;
             } else {
-                // Save as new baseline
-                await this.visualService.saveBaseline(screenshotResult.path, category);
+                // Fallback: Basic analysis without Gemini Vision
                 let result = `UI Verification for "${category}":\n`;
-                result += `- New baseline saved (first run)\n`;
-
-                if (issues.length > 0) {
-                    result += `- Issues detected:\n  ${issues.join('\n  ')}\n`;
-                }
-
+                result += `- Screenshot taken: ${screenshotResult.path}\n`;
                 result += `- Expected: ${description}\n`;
-                result += `- Screenshot: ${screenshotResult.path}`;
+                result += `- Note: Gemini Vision not available for semantic analysis. `;
+                result += `Please visually inspect the screenshot.\n`;
+
+                if (this.visualService) {
+                    const issues = await this.visualService.analyzeScreenshotForIssues(screenshotResult.path);
+                    if (issues.length > 0) {
+                        result += `- Basic issues detected:\n  ${issues.join('\n  ')}\n`;
+                    }
+                }
 
                 return result;
             }
