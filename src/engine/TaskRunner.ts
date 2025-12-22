@@ -323,20 +323,33 @@ export class TaskRunner {
             - reload_browser(): Reload the browser preview to verify changes. (Tool, NOT a shell command)
             - navigate_browser(url): Navigate the browser preview to a specific URL (e.g., 'http://localhost:8080').
             - search_web(query): Search the web for documentation, solutions, or new concepts.
+            
+            Browser Automation Tools (for automated testing):
+            - browser_launch(recordVideo?): Launch Chrome for automated testing. Set recordVideo=true to record session.
+            - browser_navigate(url): Navigate the automated browser to a URL and wait for page load.
+            - browser_screenshot(name?): Take a screenshot of the current page.
+            - browser_click(selector): Click on an element using CSS selector.
+            - browser_type(selector, text): Type text into an input field.
+            - browser_wait_for(selector, timeout?): Wait for an element to appear.
+            - browser_get_dom(): Get the current page's HTML content for analysis.
+            - browser_verify_ui(category, description): Take screenshot and verify UI against expectations.
+            - browser_close(): Close the browser and stop recording.
 
             CRITICAL RULES:
             1. **VERIFY EVERYTHING**: Never assume code works. Run it.
                - If it's a script, run it.
                - If it's a web app, start the server and use 'reload_browser()' to show it to the user.
+               - **AUTOMATED TESTING**: For UI verification, use browser_launch(true) to record, then browser_verify_ui() to check.
                - **IMPORTANT**: If a server is already running on a port (e.g. 3000), you must KILL it first or use a different port.
-            2. **COMMUNICATE**: Do not just say "Done". Explain what you did.
-            3. **CLEAN UP**: Stop any background processes you started if they are verified (unless it's a server meant to stay running).
-            4. **PYTHON RULES**:
+            2. **SELF-HEALING**: If browser_verify_ui() finds issues, analyze the screenshot and fix the code, then verify again.
+            3. **COMMUNICATE**: Do not just say "Done". Explain what you did.
+            4. **CLEAN UP**: Stop any background processes you started if they are verified (unless it's a server meant to stay running).
+            5. **PYTHON RULES**:
                - NEVER install globally.
                - Create a venv: 'python -m venv venv'.
                - Install packages using the venv executable: 'venv/Scripts/pip install ...' (Windows) or 'venv/bin/pip ...' (Mac/Linux).
                - Run scripts using the venv executable: 'venv/Scripts/python app.py' (Windows) or 'venv/bin/python app.py' (Mac/Linux).
-            5. **REASONING**: Before calling ANY tool, you MUST explain your plan in 1-2 sentences. This will be displayed to the user as your "Thought".
+            6. **REASONING**: Before calling ANY tool, you MUST explain your plan in 1-2 sentences. This will be displayed to the user as your "Thought".
             `;
 
 
@@ -650,6 +663,52 @@ export class TaskRunner {
                                     break;
                                 case 'search_web':
                                     toolResult = await tools.searchWeb(args.query as string);
+                                    break;
+                                // ==================== BROWSER AUTOMATION TOOLS ====================
+                                case 'browser_launch':
+                                    toolResult = await tools.browserLaunch(args.recordVideo as boolean || false);
+                                    break;
+                                case 'browser_navigate':
+                                    toolResult = await tools.browserNavigate(args.url as string);
+                                    break;
+                                case 'browser_screenshot':
+                                    toolResult = await tools.browserScreenshot(args.name as string);
+                                    // Track screenshot as artifact
+                                    if (toolResult.includes('Screenshot saved:')) {
+                                        const screenshotPath = toolResult.split('Screenshot saved:')[1]?.trim();
+                                        if (screenshotPath && !task.artifacts.includes(screenshotPath)) {
+                                            task.artifacts.push(screenshotPath);
+                                        }
+                                    }
+                                    break;
+                                case 'browser_click':
+                                    toolResult = await tools.browserClick(args.selector as string);
+                                    break;
+                                case 'browser_type':
+                                    toolResult = await tools.browserType(args.selector as string, args.text as string);
+                                    break;
+                                case 'browser_wait_for':
+                                    toolResult = await tools.browserWaitFor(args.selector as string, args.timeout as number);
+                                    break;
+                                case 'browser_get_dom':
+                                    toolResult = await tools.browserGetDOM();
+                                    break;
+                                case 'browser_verify_ui':
+                                    toolResult = await tools.browserVerifyUI(args.category as string, args.description as string);
+                                    // Check if verification detected issues for self-healing
+                                    if (toolResult.includes('Issues detected:') || toolResult.includes('Match: NO')) {
+                                        task.logs.push(`> [UI Verification]: Visual issues detected. Agent may attempt self-healing.`);
+                                    }
+                                    break;
+                                case 'browser_close':
+                                    toolResult = await tools.browserClose();
+                                    // Track recording as artifact if it was recorded
+                                    if (toolResult.includes('Recording saved:')) {
+                                        const recordingPath = toolResult.match(/Recording saved: ([^\s]+)/)?.[1];
+                                        if (recordingPath && !task.artifacts.includes(recordingPath)) {
+                                            task.artifacts.push(recordingPath);
+                                        }
+                                    }
                                     break;
                                 default:
                                     toolResult = `Error: Unknown tool ${fnName} `;

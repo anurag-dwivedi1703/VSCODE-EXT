@@ -41,6 +41,9 @@ const extensionConfig = {
     ],
     externals: {
         'vscode': 'commonjs vscode', // ignored because it doesn't exist
+        'playwright-core': 'commonjs playwright-core', // externalize - loaded at runtime
+        'pixelmatch': 'commonjs pixelmatch', // externalize - native dependencies
+        'pngjs': 'commonjs pngjs', // externalize - native dependencies
     },
     performance: {
         hints: false,

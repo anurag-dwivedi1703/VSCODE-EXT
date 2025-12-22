@@ -4,8 +4,13 @@ import * as path from 'path';
 import { TerminalManager } from './TerminalManager';
 import { GeminiClient } from '../ai/GeminiClient';
 import { FileLockManager } from '../services/FileLockManager';
+import { BrowserAutomationService, ScreenshotResult, RecordingResult } from '../services/BrowserAutomationService';
+import { VisualComparisonService, ComparisonResult } from '../services/VisualComparisonService';
 
 export class AgentTools {
+    private browserService: BrowserAutomationService | null = null;
+    private visualService: VisualComparisonService | null = null;
+
     constructor(
         private readonly worktreeRoot: string,
         private readonly terminalManager?: TerminalManager,
@@ -14,7 +19,14 @@ export class AgentTools {
         private readonly onNavigateBrowserCallback?: (url: string) => void,
         private readonly fileLockManager?: FileLockManager,
         private readonly taskId?: string
-    ) { }
+    ) {
+        // Initialize browser automation services if taskId is available
+        if (this.taskId) {
+            this.browserService = new BrowserAutomationService(this.taskId, this.worktreeRoot);
+            this.visualService = new VisualComparisonService(this.worktreeRoot, this.taskId);
+        }
+    }
+
 
     private getUri(relativePath: string): vscode.Uri {
         const fullPath = path.resolve(this.worktreeRoot, relativePath);
@@ -209,5 +221,196 @@ export class AgentTools {
         // But for spawn(cmd, args), usually we pass command string with shell:true
         // Logic above uses shell:true so 'command' as string is fine.
         return [command];
+    }
+
+    // ==================== BROWSER AUTOMATION TOOLS ====================
+
+    /**
+     * Launch browser with optional video recording
+     */
+    async browserLaunch(recordVideo: boolean = false): Promise<string> {
+        if (!this.browserService) {
+            return 'Error: Browser service not initialized. Task ID required.';
+        }
+        return await this.browserService.launchBrowser(recordVideo);
+    }
+
+    /**
+     * Navigate browser to a URL
+     */
+    async browserNavigate(url: string): Promise<string> {
+        if (!this.browserService) {
+            return 'Error: Browser service not initialized.';
+        }
+        return await this.browserService.navigateTo(url);
+    }
+
+    /**
+     * Take a screenshot of the current page
+     */
+    async browserScreenshot(name?: string): Promise<string> {
+        if (!this.browserService) {
+            return 'Error: Browser service not initialized.';
+        }
+        const result = await this.browserService.takeScreenshot(name);
+        if (typeof result === 'string') {
+            return result; // Error message
+        }
+        return `Screenshot saved: ${result.path}`;
+    }
+
+    /**
+     * Click on an element
+     */
+    async browserClick(selector: string): Promise<string> {
+        if (!this.browserService) {
+            return 'Error: Browser service not initialized.';
+        }
+        return await this.browserService.click(selector);
+    }
+
+    /**
+     * Type text into an element
+     */
+    async browserType(selector: string, text: string): Promise<string> {
+        if (!this.browserService) {
+            return 'Error: Browser service not initialized.';
+        }
+        return await this.browserService.type(selector, text);
+    }
+
+    /**
+     * Wait for an element to appear
+     */
+    async browserWaitFor(selector: string, timeout?: number): Promise<string> {
+        if (!this.browserService) {
+            return 'Error: Browser service not initialized.';
+        }
+        return await this.browserService.waitForSelector(selector, timeout);
+    }
+
+    /**
+     * Get the current page's DOM content
+     */
+    async browserGetDOM(): Promise<string> {
+        if (!this.browserService) {
+            return 'Error: Browser service not initialized.';
+        }
+        return await this.browserService.getPageContent();
+    }
+
+    /**
+     * Reload the current page
+     */
+    async browserReload(): Promise<string> {
+        if (!this.browserService) {
+            return 'Error: Browser service not initialized.';
+        }
+        return await this.browserService.reload();
+    }
+
+    /**
+     * Evaluate JavaScript in the page
+     */
+    async browserEvaluate(script: string): Promise<string> {
+        if (!this.browserService) {
+            return 'Error: Browser service not initialized.';
+        }
+        return await this.browserService.evaluate(script);
+    }
+
+    /**
+     * Close the browser and stop recording
+     */
+    async browserClose(): Promise<string> {
+        if (!this.browserService) {
+            return 'Error: Browser service not initialized.';
+        }
+        const result = await this.browserService.closeBrowser();
+        if (typeof result === 'string') {
+            return result;
+        }
+        return `Browser closed. Recording saved: ${result.path} (${Math.round(result.duration / 1000)}s)`;
+    }
+
+    /**
+     * Verify UI by taking a screenshot and comparing against baseline
+     * Returns comparison result or saves as new baseline if none exists
+     */
+    async browserVerifyUI(category: string, description: string): Promise<string> {
+        if (!this.browserService || !this.visualService) {
+            return 'Error: Browser or visual service not initialized.';
+        }
+
+        try {
+            // Take current screenshot
+            const screenshotResult = await this.browserService.takeScreenshot(`verify_${category}`);
+            if (typeof screenshotResult === 'string') {
+                return screenshotResult; // Error
+            }
+
+            // Check for basic issues
+            const issues = await this.visualService.analyzeScreenshotForIssues(screenshotResult.path);
+
+            // Check if baseline exists
+            if (this.visualService.hasBaseline(category)) {
+                // Compare against baseline
+                const comparison = await this.visualService.compareAgainstBaseline(
+                    screenshotResult.path,
+                    category
+                );
+
+                if (!comparison) {
+                    return `Verification failed: Could not compare against baseline.`;
+                }
+
+                let result = `UI Verification for "${category}":\n`;
+                result += `- Match: ${comparison.matches ? 'YES' : 'NO'}\n`;
+                result += `- Difference: ${comparison.diffPercentage}%\n`;
+
+                if (issues.length > 0) {
+                    result += `- Issues detected:\n  ${issues.join('\n  ')}\n`;
+                }
+
+                if (comparison.diffImagePath) {
+                    result += `- Diff image: ${comparison.diffImagePath}\n`;
+                }
+
+                result += `- Expected: ${description}\n`;
+                result += `- Screenshot: ${screenshotResult.path}`;
+
+                return result;
+            } else {
+                // Save as new baseline
+                await this.visualService.saveBaseline(screenshotResult.path, category);
+                let result = `UI Verification for "${category}":\n`;
+                result += `- New baseline saved (first run)\n`;
+
+                if (issues.length > 0) {
+                    result += `- Issues detected:\n  ${issues.join('\n  ')}\n`;
+                }
+
+                result += `- Expected: ${description}\n`;
+                result += `- Screenshot: ${screenshotResult.path}`;
+
+                return result;
+            }
+        } catch (error: any) {
+            return `Error during UI verification: ${error.message}`;
+        }
+    }
+
+    /**
+     * Check if browser is currently running
+     */
+    isBrowserRunning(): boolean {
+        return this.browserService?.isRunning() ?? false;
+    }
+
+    /**
+     * Check if currently recording video
+     */
+    isBrowserRecording(): boolean {
+        return this.browserService?.isRecordingVideo() ?? false;
     }
 }

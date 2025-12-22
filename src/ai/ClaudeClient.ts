@@ -95,6 +95,105 @@ export class ClaudeClient {
                     },
                     required: ["url"]
                 }
+            },
+            // Browser Automation Tools
+            {
+                name: "browser_launch",
+                description: "Launch a Chrome browser for automated testing. Optionally records a video of the session.",
+                input_schema: {
+                    type: "object" as const,
+                    properties: {
+                        recordVideo: { type: "boolean", description: "If true, records the browser session as an MP4 video" }
+                    },
+                    required: []
+                }
+            },
+            {
+                name: "browser_navigate",
+                description: "Navigate the automated browser to a URL and wait for page load",
+                input_schema: {
+                    type: "object" as const,
+                    properties: {
+                        url: { type: "string", description: "URL to navigate to" }
+                    },
+                    required: ["url"]
+                }
+            },
+            {
+                name: "browser_screenshot",
+                description: "Take a screenshot of the current browser page",
+                input_schema: {
+                    type: "object" as const,
+                    properties: {
+                        name: { type: "string", description: "Optional name for the screenshot file" }
+                    },
+                    required: []
+                }
+            },
+            {
+                name: "browser_click",
+                description: "Click on an element in the browser using a CSS selector",
+                input_schema: {
+                    type: "object" as const,
+                    properties: {
+                        selector: { type: "string", description: "CSS selector of the element to click" }
+                    },
+                    required: ["selector"]
+                }
+            },
+            {
+                name: "browser_type",
+                description: "Type text into an input field in the browser",
+                input_schema: {
+                    type: "object" as const,
+                    properties: {
+                        selector: { type: "string", description: "CSS selector of the input element" },
+                        text: { type: "string", description: "Text to type" }
+                    },
+                    required: ["selector", "text"]
+                }
+            },
+            {
+                name: "browser_wait_for",
+                description: "Wait for an element to appear in the browser",
+                input_schema: {
+                    type: "object" as const,
+                    properties: {
+                        selector: { type: "string", description: "CSS selector to wait for" },
+                        timeout: { type: "number", description: "Timeout in milliseconds (default 5000)" }
+                    },
+                    required: ["selector"]
+                }
+            },
+            {
+                name: "browser_get_dom",
+                description: "Get the current page's HTML content for analysis",
+                input_schema: {
+                    type: "object" as const,
+                    properties: {},
+                    required: []
+                }
+            },
+            {
+                name: "browser_verify_ui",
+                description: "Take a screenshot and verify the UI against expectations. Compares against baseline if exists.",
+                input_schema: {
+                    type: "object" as const,
+                    properties: {
+                        category: { type: "string", description: "Category/name for this UI state (e.g., 'homepage', 'login-form')" },
+                        description: { type: "string", description: "Expected appearance of the UI" }
+                    },
+                    required: ["category", "description"]
+                }
+            },
+            {
+                name: "browser_close",
+                description: "Close the automated browser and stop recording if active",
+                input_schema: {
+                    type: "object" as const,
+                    properties: {},
+                    required: []
+                }
             }
         ];
 

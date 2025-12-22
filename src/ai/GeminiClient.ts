@@ -111,6 +111,105 @@ export class GeminiClient {
                                 },
                                 required: ["url"]
                             }
+                        },
+                        // Browser Automation Tools
+                        {
+                            name: "browser_launch",
+                            description: "Launch a Chrome browser for automated testing. Optionally records a video of the session.",
+                            parameters: {
+                                type: "OBJECT" as any,
+                                properties: {
+                                    recordVideo: { type: "BOOLEAN" as any, description: "If true, records the browser session as an MP4 video" }
+                                },
+                                required: []
+                            }
+                        },
+                        {
+                            name: "browser_navigate",
+                            description: "Navigate the automated browser to a URL and wait for page load",
+                            parameters: {
+                                type: "OBJECT" as any,
+                                properties: {
+                                    url: { type: "STRING" as any, description: "URL to navigate to" }
+                                },
+                                required: ["url"]
+                            }
+                        },
+                        {
+                            name: "browser_screenshot",
+                            description: "Take a screenshot of the current browser page",
+                            parameters: {
+                                type: "OBJECT" as any,
+                                properties: {
+                                    name: { type: "STRING" as any, description: "Optional name for the screenshot file" }
+                                },
+                                required: []
+                            }
+                        },
+                        {
+                            name: "browser_click",
+                            description: "Click on an element in the browser using a CSS selector",
+                            parameters: {
+                                type: "OBJECT" as any,
+                                properties: {
+                                    selector: { type: "STRING" as any, description: "CSS selector of the element to click" }
+                                },
+                                required: ["selector"]
+                            }
+                        },
+                        {
+                            name: "browser_type",
+                            description: "Type text into an input field in the browser",
+                            parameters: {
+                                type: "OBJECT" as any,
+                                properties: {
+                                    selector: { type: "STRING" as any, description: "CSS selector of the input element" },
+                                    text: { type: "STRING" as any, description: "Text to type" }
+                                },
+                                required: ["selector", "text"]
+                            }
+                        },
+                        {
+                            name: "browser_wait_for",
+                            description: "Wait for an element to appear in the browser",
+                            parameters: {
+                                type: "OBJECT" as any,
+                                properties: {
+                                    selector: { type: "STRING" as any, description: "CSS selector to wait for" },
+                                    timeout: { type: "NUMBER" as any, description: "Timeout in milliseconds (default 5000)" }
+                                },
+                                required: ["selector"]
+                            }
+                        },
+                        {
+                            name: "browser_get_dom",
+                            description: "Get the current page's HTML content for analysis",
+                            parameters: {
+                                type: "OBJECT" as any,
+                                properties: {},
+                                required: []
+                            }
+                        },
+                        {
+                            name: "browser_verify_ui",
+                            description: "Take a screenshot and verify the UI against expectations. Compares against baseline if exists.",
+                            parameters: {
+                                type: "OBJECT" as any,
+                                properties: {
+                                    category: { type: "STRING" as any, description: "Category/name for this UI state (e.g., 'homepage', 'login-form')" },
+                                    description: { type: "STRING" as any, description: "Expected appearance of the UI" }
+                                },
+                                required: ["category", "description"]
+                            }
+                        },
+                        {
+                            name: "browser_close",
+                            description: "Close the automated browser and stop recording if active",
+                            parameters: {
+                                type: "OBJECT" as any,
+                                properties: {},
+                                required: []
+                            }
                         }
                     ]
                 }
