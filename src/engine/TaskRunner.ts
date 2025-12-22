@@ -259,7 +259,8 @@ export class TaskRunner {
             // but we don't switch branches automatically anymore to be safe? 
             // The user wanted "Directly work in the workspaces".
             // So we assume the user is on the branch they want.
-            task.branchName = 'current-branch';
+            // Use workspace folder name as branch identifier
+            task.branchName = path.basename(workspaceRoot);
 
             // Step 2: Initialize Tools for this Workspace
             const tools = new AgentTools(
@@ -756,10 +757,17 @@ export class TaskRunner {
                     const modelId = task.model || 'gemini-3-pro-preview';
                     const isClaudeModel = modelId.startsWith('claude');
 
+                    // Build previous context from task history
+                    const previousContext = this.buildContextFromTask(task);
+
                     const systemPrompt = `You are resuming a previous mission.
                     Your Mission: ${task.prompt}
                     
+                    IMPORTANT - PREVIOUS CONTEXT (what was done before):
+                    ${previousContext}
+                    
                     The user has provided feedback or new instructions.
+                    CRITICAL: If the user refers to "the file" or "this file", they mean the files listed above in PREVIOUS CONTEXT.
                     Use your tools to explore the current state of the code if needed.
                     
                     Available Tools:
@@ -888,5 +896,61 @@ export class TaskRunner {
         }
         // Return the last (most recent) edit
         return editsForPath[editsForPath.length - 1];
+    }
+
+    /**
+     * Build context string from previous task history for session restoration.
+     * This helps the agent understand what was done before when resuming a session.
+     */
+    private buildContextFromTask(task: AgentTask): string {
+        const contextLines: string[] = [];
+
+        // Add artifacts (files created/modified)
+        if (task.artifacts && task.artifacts.length > 0) {
+            contextLines.push('Files created/modified in this mission:');
+            for (const artifact of task.artifacts) {
+                contextLines.push(`  - ${artifact}`);
+            }
+        }
+
+        // Extract key write_file calls from logs
+        const writeFileCalls: string[] = [];
+        for (const log of task.logs) {
+            if (log.includes('[Tool Call]:') && log.includes('write_file')) {
+                // Extract path from write_file call
+                const pathMatch = log.match(/["']path["']\s*:\s*["']([^"']+)["']/);
+                if (pathMatch && !writeFileCalls.includes(pathMatch[1])) {
+                    writeFileCalls.push(pathMatch[1]);
+                }
+            }
+        }
+
+        if (writeFileCalls.length > 0 && task.artifacts?.length === 0) {
+            // Only add if not already covered by artifacts
+            contextLines.push('Files written:');
+            for (const filePath of writeFileCalls) {
+                contextLines.push(`  - ${filePath}`);
+            }
+        }
+
+        // Add user messages for conversation context
+        const userMessages: string[] = [];
+        for (const log of task.logs) {
+            if (log.startsWith('**User**:')) {
+                userMessages.push(log.replace('**User**:', 'User said:'));
+            }
+        }
+        if (userMessages.length > 0) {
+            contextLines.push('\nPrevious conversation:');
+            // Only include last 5 user messages to avoid token bloat
+            for (const msg of userMessages.slice(-5)) {
+                contextLines.push(`  ${msg}`);
+            }
+        }
+
+        // Add the original prompt reminder
+        contextLines.push(`\nOriginal task was: "${task.prompt}"`);
+
+        return contextLines.join('\n');
     }
 }
