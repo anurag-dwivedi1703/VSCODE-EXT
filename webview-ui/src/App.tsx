@@ -356,45 +356,93 @@ function App() {
                         </div>
 
                         <div className="workspace-list">
-                            {workspaces.map(ws => {
-                                const wsAgents = activeAgents.filter(a => a.worktreePath === ws.id);
+                            {(() => {
+                                const renderedAgentIds = new Set<string>();
+
+                                const workspaceGroups = workspaces.map(ws => {
+                                    // Normalize paths for comparison (Windows issue)
+                                    const wsPath = ws.id.toLowerCase().replace(/\\/g, '/');
+
+                                    const wsAgents = activeAgents.filter(a => {
+                                        if (!a.worktreePath) return false;
+                                        const agentPath = a.worktreePath.toLowerCase().replace(/\\/g, '/');
+                                        return agentPath === wsPath || agentPath.startsWith(wsPath + '/');
+                                    });
+
+                                    wsAgents.forEach(a => renderedAgentIds.add(a.id));
+
+                                    // Only show workspace group if it's the main selected one OR has active agents
+                                    // Actually, we show all known workspaces for structure
+                                    return (
+                                        <div key={ws.id} className="workspace-group">
+                                            <div className="workspace-header" onClick={() => setSelectedWorkspace(ws.id)}>
+                                                <div className="workspace-info">
+                                                    <span className="workspace-icon">📂</span>
+                                                    <span className="workspace-name">{ws.name}</span>
+                                                </div>
+                                                <div className="workspace-actions">
+                                                    <button className="icon-btn-small" onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        setSelectedWorkspace(ws.id);
+                                                        handleNewChat();
+                                                    }} title="New Mission">
+                                                        +
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            <div className="workspace-missions">
+                                                {wsAgents.length > 0 ? (
+                                                    wsAgents.map(agent => (
+                                                        <div key={agent.id}
+                                                            className={`mission-item ${expandedAgentId === agent.id ? 'active' : ''}`}
+                                                            onClick={() => {
+                                                                setExpandedAgentId(agent.id);
+                                                                if (agent.worktreePath) setSelectedWorkspace(agent.worktreePath);
+                                                            }}>
+                                                            <div className="mission-title">{agent.prompt.substring(0, 30)}...</div>
+                                                            <div className="mission-status">{agent.status}</div>
+                                                        </div>
+                                                    ))
+                                                ) : (
+                                                    <div className="empty-mission-placeholder">No active missions</div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    );
+                                });
+
+                                // Find Uncategorized Agents
+                                const uncategorizedAgents = activeAgents.filter(a => !renderedAgentIds.has(a.id));
+
                                 return (
-                                    <div key={ws.id} className="workspace-group">
-                                        <div className="workspace-header">
-                                            <div className="workspace-info">
-                                                <span className="workspace-icon">📂</span>
-                                                <span className="workspace-name">{ws.name}</span>
-                                            </div>
-                                            <div className="workspace-actions">
-                                                <button className="icon-btn-small" onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    setSelectedWorkspace(ws.id);
-                                                    handleNewChat();
-                                                }} title="New Mission">
-                                                    +
-                                                </button>
-                                            </div>
-                                        </div>
-                                        <div className="workspace-missions">
-                                            {wsAgents.length > 0 ? (
-                                                wsAgents.map(agent => (
-                                                    <div key={agent.id}
-                                                        className={`mission-item ${expandedAgentId === agent.id ? 'active' : ''}`}
-                                                        onClick={() => {
-                                                            setExpandedAgentId(agent.id);
-                                                            if (agent.worktreePath) setSelectedWorkspace(agent.worktreePath);
-                                                        }}>
-                                                        <div className="mission-title">{agent.prompt.substring(0, 30)}...</div>
-                                                        <div className="mission-status">{agent.status}</div>
+                                    <>
+                                        {workspaceGroups}
+                                        {uncategorizedAgents.length > 0 && (
+                                            <div className="workspace-group">
+                                                <div className="workspace-header" style={{ opacity: 0.7 }}>
+                                                    <div className="workspace-info">
+                                                        <span className="workspace-icon">❓</span>
+                                                        <span className="workspace-name">Other Missions</span>
                                                     </div>
-                                                ))
-                                            ) : (
-                                                <div className="empty-mission-placeholder">No active missions</div>
-                                            )}
-                                        </div>
-                                    </div>
+                                                </div>
+                                                <div className="workspace-missions">
+                                                    {uncategorizedAgents.map(agent => (
+                                                        <div key={agent.id}
+                                                            className={`mission-item ${expandedAgentId === agent.id ? 'active' : ''}`}
+                                                            onClick={() => {
+                                                                setExpandedAgentId(agent.id);
+                                                                // Don't switch workspace blindly if it's unknown
+                                                            }}>
+                                                            <div className="mission-title">{agent.prompt.substring(0, 30)}...</div>
+                                                            <div className="mission-status">{agent.status}</div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </>
                                 );
-                            })}
+                            })()}
                         </div>
                     </aside>
                 }

@@ -32,19 +32,38 @@ export class MissionControlProvider {
 
         // Load workspaces from globalState
         const savedWorkspaces = this._context.globalState.get<WorkspaceInfo[]>('vibearchitect.workspaces');
+        let initialWorkspaces: WorkspaceInfo[] = [];
+
         if (savedWorkspaces && savedWorkspaces.length > 0) {
-            this._workspaces = savedWorkspaces;
-        } else {
-            // Fallback: Initialize with current VS Code workspace if available
-            if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
-                this._workspaces = vscode.workspace.workspaceFolders.map(wf => ({
-                    id: wf.uri.fsPath,
-                    name: wf.name,
-                    status: 'Active'
-                }));
-                this.saveWorkspaces();
-            }
+            initialWorkspaces = savedWorkspaces;
+        } else if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+            initialWorkspaces = vscode.workspace.workspaceFolders.map(wf => ({
+                id: wf.uri.fsPath,
+                name: wf.name,
+                status: 'Active'
+            }));
         }
+
+        // AUTO-DISCOVERY: Add workspaces from existing tasks if missing
+        const tasksForDiscovery = this._taskRunner.getTasks();
+        const existingPaths = new Set(initialWorkspaces.map(w => w.id.toLowerCase())); // Normalize for check
+
+        tasksForDiscovery.forEach(task => {
+            if (task.worktreePath) {
+                const normalizedPath = task.worktreePath.toLowerCase();
+                if (!existingPaths.has(normalizedPath)) {
+                    initialWorkspaces.push({
+                        id: task.worktreePath,
+                        name: path.basename(task.worktreePath),
+                        status: 'Active'
+                    });
+                    existingPaths.add(normalizedPath);
+                }
+            }
+        });
+
+        this._workspaces = initialWorkspaces;
+        this.saveWorkspaces(); // Persist the inferred ones
 
         // Send initial list
         this.sendWorkspaces();

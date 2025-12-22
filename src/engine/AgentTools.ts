@@ -3,6 +3,7 @@ import * as cp from 'child_process';
 import * as path from 'path';
 import { TerminalManager } from './TerminalManager';
 import { GeminiClient } from '../ai/GeminiClient';
+import { FileLockManager } from '../services/FileLockManager';
 
 export class AgentTools {
     constructor(
@@ -10,7 +11,9 @@ export class AgentTools {
         private readonly terminalManager?: TerminalManager,
         private readonly geminiClient?: GeminiClient,
         private readonly onReloadBrowserCallback?: () => void,
-        private readonly onNavigateBrowserCallback?: (url: string) => void
+        private readonly onNavigateBrowserCallback?: (url: string) => void,
+        private readonly fileLockManager?: FileLockManager,
+        private readonly taskId?: string
     ) { }
 
     private getUri(relativePath: string): vscode.Uri {
@@ -34,12 +37,28 @@ export class AgentTools {
     async writeFile(relativePath: string, content: string): Promise<string> {
         try {
             const fileUri = this.getUri(relativePath);
-            const uint8Array = new TextEncoder().encode(content);
-            const parentDir = vscode.Uri.file(path.dirname(path.join(this.worktreeRoot, relativePath)));
-            await vscode.workspace.fs.createDirectory(parentDir);
+            const absolutePath = fileUri.fsPath;
 
-            await vscode.workspace.fs.writeFile(fileUri, uint8Array);
-            return `Successfully wrote to ${relativePath}`;
+            // Enforce Locking
+            if (this.fileLockManager && this.taskId) {
+                if (!this.fileLockManager.acquireLock(absolutePath, this.taskId)) {
+                    return `Error: File ${relativePath} is currently locked by another agent. Please wait.`;
+                }
+            }
+
+            try {
+                const uint8Array = new TextEncoder().encode(content);
+                const parentDir = vscode.Uri.file(path.dirname(path.join(this.worktreeRoot, relativePath)));
+                await vscode.workspace.fs.createDirectory(parentDir);
+
+                await vscode.workspace.fs.writeFile(fileUri, uint8Array);
+                return `Successfully wrote to ${relativePath}`;
+            } finally {
+                // Always release lock
+                if (this.fileLockManager && this.taskId) {
+                    this.fileLockManager.releaseLock(absolutePath, this.taskId);
+                }
+            }
         } catch (error: any) {
             return `Error writing file ${relativePath}: ${error.message}`;
         }

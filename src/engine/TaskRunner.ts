@@ -12,6 +12,15 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { ShadowRepository } from '../services/ShadowRepository';
 import { RevertManager } from '../services/RevertManager';
+import { FileLockManager } from '../services/FileLockManager';
+
+interface TaskContext {
+    shadowRepo: ShadowRepository;
+    revertManager: RevertManager;
+    gemini?: GeminiClient;
+    claude?: ClaudeClient;
+    copilotClaude?: CopilotClaudeClient;
+}
 
 interface FileEdit {
     path: string;
@@ -40,12 +49,8 @@ interface AgentTask {
 export class TaskRunner {
     private tasks: Map<string, AgentTask> = new Map();
     private sessions: Map<string, ISession> = new Map(); // Keep sessions alive
-    private gemini: GeminiClient;
-    private claude: ClaudeClient | undefined;
-    private copilotClaude: CopilotClaudeClient | undefined;
+    private taskContexts: Map<string, TaskContext> = new Map(); // Isolated execution context per task
     private worktreeManager: WorktreeManager | undefined;
-    private shadowRepo: ShadowRepository | undefined;
-    private revertManager: RevertManager | undefined;
     private _onTaskUpdate = new vscode.EventEmitter<{ taskId: string, task: AgentTask }>();
     public readonly onTaskUpdate = this._onTaskUpdate.event;
 
@@ -60,11 +65,6 @@ export class TaskRunner {
     }
 
     constructor(private context: vscode.ExtensionContext) {
-        // Retrieve API Key from settings
-        const config = vscode.workspace.getConfiguration('vibearchitect');
-        const apiKey = config.get<string>('geminiApiKey') || '';
-        this.gemini = new GeminiClient(apiKey);
-
         // Initialize WorktreeManager with the first workspace folder
         if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
             this.worktreeManager = new WorktreeManager(vscode.workspace.workspaceFolders[0].uri.fsPath);
@@ -151,31 +151,38 @@ export class TaskRunner {
         task.model = newModel;
         task.logs.push(`**System**: Model changed from ${oldModel} to ${newModel}`);
 
-        // Re-initialize client for the new model
+        // Re-initialize client for the new model in the TASK CONTEXT
         const config = vscode.workspace.getConfiguration('vibearchitect');
         const isClaudeModel = newModel.startsWith('claude');
         const useCopilotForClaude = config.get<boolean>('useCopilotForClaude') || false;
 
-        if (isClaudeModel) {
-            if (useCopilotForClaude) {
-                // Use Copilot Claude
-                task.logs.push(`**System**: Switching to Claude via Copilot...`);
-                this.copilotClaude = new CopilotClaudeClient();
-                // Note: initialize() will be called when session is created
-            } else {
-                const claudeApiKey = config.get<string>('claudeApiKey') || '';
-                if (!claudeApiKey) {
-                    task.logs.push(`**System**: Error - Claude API key not configured`);
-                } else {
-                    this.claude = new ClaudeClient(claudeApiKey, newModel);
-                }
-            }
+        let context = this.taskContexts.get(taskId);
+        if (!context) {
+            // Should not happen if task is running, but if it is paused/zombie, we might strictly need it?
+            // If context is missing, we can't really update the client instance.
+            // But we can clear the old session.
+            console.warn(`[TaskRunner] Context missing for task ${taskId} during model change.`);
         } else {
-            const geminiApiKey = config.get<string>('geminiApiKey') || '';
-            if (!geminiApiKey) {
-                task.logs.push(`**System**: Error - Gemini API key not configured`);
-            } else {
-                this.gemini = new GeminiClient(geminiApiKey, newModel);
+            // Reset clients in context
+            context.gemini = undefined;
+            context.claude = undefined;
+            context.copilotClaude = undefined;
+
+            if (isClaudeModel) {
+                if (useCopilotForClaude) {
+                    // Copilot Claude
+                    task.logs.push(`**System**: Switching to Claude via Copilot...`);
+                    // initialized later
+                } else {
+                    const claudeApiKey = config.get<string>('claudeApiKey') || '';
+                    if (!claudeApiKey) {
+                        task.logs.push(`**System**: Error - Claude API key not configured`);
+                    } else {
+                        // We can't really set specific client here easily without async init for Copilot
+                        // So we just clear it, and processTask loop will recreate it if needed?
+                        // Actually changeModel is sync.
+                    }
+                }
             }
         }
 
@@ -202,29 +209,7 @@ export class TaskRunner {
             const isClaudeModel = modelId.startsWith('claude');
             const useCopilotForClaude = config.get<boolean>('useCopilotForClaude') || false;
 
-            if (isClaudeModel) {
-                if (useCopilotForClaude) {
-                    // Use Copilot Claude via vscode.lm API
-                    task.logs.push(`> [System]: Using Claude via GitHub Copilot subscription`);
-                    this.copilotClaude = new CopilotClaudeClient();
-                    const initialized = await this.copilotClaude.initialize();
-                    if (!initialized) {
-                        throw new Error('Failed to initialize Claude via Copilot. Ensure GitHub Copilot extensions are installed and you have an active subscription. Or disable "Use Copilot for Claude" in settings.');
-                    }
-                } else {
-                    // Use Claude API directly
-                    if (!claudeApiKey) {
-                        throw new Error('Claude API key not configured. Go to Settings > VibeArchitect > Claude Api Key. Or enable "Use Copilot for Claude" if you have a Copilot subscription.');
-                    }
-                    this.claude = new ClaudeClient(claudeApiKey, modelId);
-                }
-            } else {
-                // Use Gemini client
-                if (!geminiApiKey) {
-                    throw new Error('Gemini API key not configured. Go to Settings > VibeArchitect > Gemini Api Key');
-                }
-                this.gemini = new GeminiClient(geminiApiKey, modelId);
-            }
+            // Client initialization moved down to use TaskContext
 
             this.updateStatus(taskId, 'planning', 5, `Initializing ${isClaudeModel ? 'Claude' : 'Gemini'} Agent...`);
 
@@ -256,14 +241,22 @@ export class TaskRunner {
             this.updateStatus(taskId, 'executing', 10, `Accessing Workspace: ${workspaceRoot}`);
             task.logs.push(`\n**Working Directory**: \`${workspaceRoot}\``);
 
-            // INITIALIZE SHADOW REPO
-            this.shadowRepo = new ShadowRepository(this.context, workspaceRoot);
-            await this.shadowRepo.initialize();
-            this.revertManager = new RevertManager(this.shadowRepo);
-            task.checkpoints = []; // Reset checkpoints for new run (or maybe load existing if persistent? For now reset)
+            // INITIALIZE SHADOW REPO (Isolated per task)
+            const shadowRepo = new ShadowRepository(this.context, workspaceRoot);
+            await shadowRepo.initialize();
+            const revertManager = new RevertManager(shadowRepo);
+
+            // Initialize Context
+            const taskContext: TaskContext = {
+                shadowRepo,
+                revertManager
+            };
+            this.taskContexts.set(taskId, taskContext);
+
+            task.checkpoints = []; // Reset checkpoints for new run
 
             // Initial Snapshot
-            const initialHash = await this.shadowRepo.snapshot("Task Started");
+            const initialHash = await shadowRepo.snapshot("Task Started");
             task.checkpoints.push({ id: initialHash, message: "Task Started", timestamp: Date.now() });
 
             // We set a branch name just for reference or if we add git features later, 
@@ -274,12 +267,44 @@ export class TaskRunner {
             task.branchName = path.basename(workspaceRoot);
 
             // Step 2: Initialize Tools for this Workspace
+            // Create AgentTools with everything needed
+            // Note: We need a Gemini Client for the 'search_web' tool. 
+            // We use the one from context if available, or create a temporary one?
+            // Actually, we haven't assigned clients to context yet.
+
+            // Let's instantiate the correct client FIRST.
+            if (isClaudeModel) {
+                if (useCopilotForClaude) {
+                    task.logs.push(`> [System]: Using Claude via GitHub Copilot subscription`);
+                    const copilotClient = new CopilotClaudeClient();
+                    const initialized = await copilotClient.initialize();
+                    if (!initialized) throw new Error('Failed to init Copilot Claude');
+                    taskContext.copilotClaude = copilotClient;
+                } else {
+                    if (!claudeApiKey) throw new Error('Claude API Key missing');
+                    taskContext.claude = new ClaudeClient(claudeApiKey, modelId);
+                }
+            } else {
+                if (!geminiApiKey) throw new Error('Gemini API Key missing');
+                taskContext.gemini = new GeminiClient(geminiApiKey, modelId);
+            }
+
+            // We default search tool to use Gemini if available, or fail if not?
+            // If using Claude, we might not have Gemini client for search.
+            // But we can create a separate Gemini client just for search if key exists?
+            let searchClient: GeminiClient | undefined = taskContext.gemini;
+            if (!searchClient && geminiApiKey) {
+                searchClient = new GeminiClient(geminiApiKey); // dedicated for search
+            }
+
             const tools = new AgentTools(
                 workspaceRoot,
                 terminalManager,
-                this.gemini,
+                searchClient,
                 () => { this._onReloadBrowser.fire(); },
-                (url: string) => { this._onNavigateBrowser.fire(url); }
+                (url: string) => { this._onNavigateBrowser.fire(url); },
+                FileLockManager.getInstance(), // Inject Lock Manager
+                taskId // Inject Task ID for locking
             );
 
             // Step 3: Start Gemini Session
@@ -352,12 +377,14 @@ export class TaskRunner {
 
             // Start session with selected model
             let chat: ISession;
-            if (isClaudeModel && useCopilotForClaude && this.copilotClaude) {
-                chat = this.copilotClaude.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
-            } else if (isClaudeModel && this.claude) {
-                chat = this.claude.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
+            if (isClaudeModel && useCopilotForClaude && taskContext.copilotClaude) {
+                chat = taskContext.copilotClaude.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
+            } else if (isClaudeModel && taskContext.claude) {
+                chat = taskContext.claude.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
+            } else if (taskContext.gemini) {
+                chat = taskContext.gemini.startSession(systemPrompt, 'high');
             } else {
-                chat = this.gemini.startSession(systemPrompt, 'high');
+                throw new Error("No AI Client initialized");
             }
             this.sessions.set(taskId, chat);
 
@@ -471,19 +498,28 @@ export class TaskRunner {
                     const continuationPrompt = `You are continuing a task. Previous context is included. ${task.prompt}`;
 
                     if (isClaudeModel && useCopilotForClaude) {
-                        this.copilotClaude = new CopilotClaudeClient();
-                        await this.copilotClaude.initialize();
-                        activeChat = this.copilotClaude.startSession(continuationPrompt, task.mode === 'planning' ? 'high' : 'low');
+                        const copilotClient = new CopilotClaudeClient();
+                        await copilotClient.initialize();
+                        if (this.taskContexts.has(taskId)) {
+                            this.taskContexts.get(taskId)!.copilotClaude = copilotClient;
+                        }
+                        activeChat = copilotClient.startSession(continuationPrompt, task.mode === 'planning' ? 'high' : 'low');
                     } else if (isClaudeModel) {
                         const claudeApiKey = config.get<string>('claudeApiKey') || '';
                         if (!claudeApiKey) throw new Error('Claude API key not configured');
-                        this.claude = new ClaudeClient(claudeApiKey, modelId);
-                        activeChat = this.claude.startSession(continuationPrompt, task.mode === 'planning' ? 'high' : 'low');
+                        const claudeClient = new ClaudeClient(claudeApiKey, modelId);
+                        if (this.taskContexts.has(taskId)) {
+                            this.taskContexts.get(taskId)!.claude = claudeClient;
+                        }
+                        activeChat = claudeClient.startSession(continuationPrompt, task.mode === 'planning' ? 'high' : 'low');
                     } else {
                         const geminiApiKey = config.get<string>('geminiApiKey') || '';
                         if (!geminiApiKey) throw new Error('Gemini API key not configured');
-                        this.gemini = new GeminiClient(geminiApiKey, modelId);
-                        activeChat = this.gemini.startSession(continuationPrompt, 'high');
+                        const geminiClient = new GeminiClient(geminiApiKey, modelId);
+                        if (this.taskContexts.has(taskId)) {
+                            this.taskContexts.get(taskId)!.gemini = geminiClient;
+                        }
+                        activeChat = geminiClient.startSession(continuationPrompt, 'high');
                     }
                     this.sessions.set(taskId, activeChat);
                     chat = activeChat;
@@ -524,15 +560,18 @@ export class TaskRunner {
                         let toolResult = '';
                         try {
                             // CHECKPOINT BEFORE ACTION
-                            if (this.shadowRepo) {
+                            const taskContext = this.taskContexts.get(taskId);
+                            if (taskContext && taskContext.shadowRepo) {
                                 // Only checkpoint for state-changing tools
                                 if (['write_file', 'run_command'].includes(fnName)) {
                                     const snapMsg = `Pre - Tool: ${fnName} (${JSON.stringify(args)})`;
-                                    const snapHash = await this.shadowRepo.snapshot(snapMsg);
-                                    if (task.checkpoints) {
-                                        task.checkpoints.push({ id: snapHash, message: snapMsg, timestamp: Date.now() });
-                                        // Update UI immediately about checkpoint
-                                        this._onTaskUpdate.fire({ taskId, task });
+                                    if (taskContext.shadowRepo) {
+                                        const snapHash = await taskContext.shadowRepo.snapshot(snapMsg);
+                                        if (task.checkpoints) {
+                                            task.checkpoints.push({ id: snapHash, message: snapMsg, timestamp: Date.now() });
+                                            // Update UI immediately about checkpoint
+                                            this._onTaskUpdate.fire({ taskId, task });
+                                        }
                                     }
                                 }
                             }
@@ -787,6 +826,7 @@ export class TaskRunner {
                     - list_files(path): List directory.
                     - run_command(command): Execute shell command (git, npm, etc).
                     - reload_browser(): Reload the browser preview to verify changes. (Tool, NOT a shell command)
+                    - navigate_browser(url): Navigate the browser preview to a specific URL (e.g., 'http://localhost:8080').
                     - search_web(query): Search the web for documentation, solutions, or new concepts.
 
                     UI VERIFICATION RULE:
@@ -800,37 +840,68 @@ export class TaskRunner {
 
                     const useCopilotForClaude = config.get<boolean>('useCopilotForClaude') || false;
 
+                    // Ensure Context exists because we need to store the client there
+                    let taskContext = this.taskContexts.get(taskId);
+                    if (!taskContext) {
+                        // Create basic context (ShadowRepo needed for tools)
+                        const shadowRepo = new ShadowRepository(this.context, worktreePath);
+                        // We assume it was initialized before if task exists
+                        const revertManager = new RevertManager(shadowRepo);
+                        taskContext = { shadowRepo, revertManager };
+                        this.taskContexts.set(taskId, taskContext);
+                    }
+
                     if (isClaudeModel && useCopilotForClaude) {
                         task.logs.push('> [System]: Resuming with Claude via Copilot...');
-                        this.copilotClaude = new CopilotClaudeClient();
-                        const initialized = await this.copilotClaude.initialize();
+                        const copilotClient = new CopilotClaudeClient();
+                        const initialized = await copilotClient.initialize();
                         if (!initialized) {
                             task.logs.push('> [Error]: Failed to initialize Claude via Copilot');
                             return;
                         }
-                        session = this.copilotClaude.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
+                        taskContext.copilotClaude = copilotClient;
+                        session = copilotClient.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
                     } else if (isClaudeModel) {
                         const claudeApiKey = config.get<string>('claudeApiKey') || '';
                         if (!claudeApiKey) {
                             task.logs.push('> [Error]: Claude API key not configured');
                             return;
                         }
-                        this.claude = new ClaudeClient(claudeApiKey, modelId);
-                        session = this.claude.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
+                        const claudeClient = new ClaudeClient(claudeApiKey, modelId);
+                        taskContext.claude = claudeClient;
+                        session = claudeClient.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
                     } else {
                         const geminiApiKey = config.get<string>('geminiApiKey') || '';
                         if (!geminiApiKey) {
                             task.logs.push('> [Error]: Gemini API key not configured');
                             return;
                         }
-                        this.gemini = new GeminiClient(geminiApiKey, modelId);
-                        session = this.gemini.startSession(systemPrompt, 'high');
+                        const geminiClient = new GeminiClient(geminiApiKey, modelId);
+                        taskContext.gemini = geminiClient;
+                        session = geminiClient.startSession(systemPrompt, 'high');
                     }
                     this.sessions.set(taskId, session);
                 }
 
                 if (session && worktreePath) {
-                    const tools = new AgentTools(worktreePath, terminalManager, this.gemini);
+                    // Ensure we have a search client
+                    let searchClient = this.taskContexts.get(taskId)?.gemini;
+                    if (!searchClient) {
+                        // Attempt to create a fallback search client
+                        const config = vscode.workspace.getConfiguration('vibearchitect');
+                        const geminiApiKey = config.get<string>('geminiApiKey') || '';
+                        if (geminiApiKey) searchClient = new GeminiClient(geminiApiKey);
+                    }
+
+                    const tools = new AgentTools(
+                        worktreePath,
+                        terminalManager,
+                        searchClient,
+                        () => { this._onReloadBrowser.fire(); },
+                        (url: string) => { this._onNavigateBrowser.fire(url); },
+                        FileLockManager.getInstance(),
+                        taskId
+                    );
                     this.runExecutionLoop(taskId, session, tools);
                 } else {
                     task.logs.push("Error: Cannot resume session. Worktree path missing.");
@@ -854,14 +925,16 @@ export class TaskRunner {
             return;
         }
 
-        // Lazy init ShadowRepo/RevertManager if missing (e.g. after reload)
-        if (!this.shadowRepo || !this.revertManager) {
+        // Lazy init TaskContext if missing
+        let taskContext = this.taskContexts.get(taskId);
+        if (!taskContext) {
             if (task.worktreePath) {
-                console.log(`[TaskRunner] Re-initializing ShadowRepo for ${task.worktreePath}`);
-                this.shadowRepo = new ShadowRepository(this.context, task.worktreePath);
-                // We assume it was already init'd before, but we might need to ensure it's loaded?
-                // simple-git just needs the path.
-                this.revertManager = new RevertManager(this.shadowRepo);
+                console.log(`[TaskRunner] Re-initializing Context for ${task.worktreePath}`);
+                const shadowRepo = new ShadowRepository(this.context, task.worktreePath);
+                // We assume it was already init'd before
+                const revertManager = new RevertManager(shadowRepo);
+                taskContext = { shadowRepo, revertManager };
+                this.taskContexts.set(taskId, taskContext);
             } else {
                 console.error(`[TaskRunner] Revert failed: No worktree path for task ${taskId}`);
                 return;
@@ -872,7 +945,7 @@ export class TaskRunner {
         this._onTaskUpdate.fire({ taskId, task });
 
         try {
-            const success = await this.revertManager.revertToCheckpoint(checkpointId);
+            const success = await taskContext.revertManager.revertToCheckpoint(checkpointId);
 
             if (success) {
                 task.logs.push(`> [System]: Revert successful.`);
