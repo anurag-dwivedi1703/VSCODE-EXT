@@ -312,6 +312,23 @@ export class MissionControlProvider {
                         }
                         return;
                     }
+                    case 'getDiff': {
+                        const taskId = message.taskId;
+                        const filePath = message.path;
+
+                        const fileEdit = this._taskRunner.getFileEdit(taskId, filePath);
+                        if (fileEdit) {
+                            this._panel.webview.postMessage({
+                                command: 'diffContent',
+                                path: fileEdit.path,
+                                before: fileEdit.beforeContent,
+                                after: fileEdit.afterContent
+                            });
+                        } else {
+                            console.error(`[MissionControl] FileEdit not found: ${filePath}`);
+                        }
+                        return;
+                    }
                 }
             },
             undefined,

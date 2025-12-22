@@ -3,8 +3,9 @@ import * as esbuild from 'esbuild';
 esbuild.build({
     entryPoints: ['src/main.tsx'],
     bundle: true,
-    outfile: 'dist/assets/index.js',
-    loader: { '.tsx': 'tsx', '.ts': 'ts', '.css': 'css' },
+    outdir: 'dist/assets',
+    entryNames: 'index',
+    loader: { '.tsx': 'tsx', '.ts': 'ts' },
     minify: true,
     sourcemap: true,
     platform: 'browser',

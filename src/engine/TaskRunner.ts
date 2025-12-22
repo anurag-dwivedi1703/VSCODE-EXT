@@ -13,6 +13,14 @@ import * as fs from 'fs';
 import { ShadowRepository } from '../services/ShadowRepository';
 import { RevertManager } from '../services/RevertManager';
 
+interface FileEdit {
+    path: string;
+    beforeContent: string | null;  // null if new file
+    afterContent: string;
+    timestamp: number;
+    checkpointId?: string;
+}
+
 interface AgentTask {
     id: string;
     prompt: string;
@@ -26,6 +34,7 @@ interface AgentTask {
     mode?: 'planning' | 'fast';
     model?: string;
     checkpoints?: { id: string, message: string, timestamp: number }[];
+    fileEdits?: FileEdit[];
 }
 
 export class TaskRunner {
@@ -521,11 +530,40 @@ export class TaskRunner {
                                     toolResult = await tools.readFile(args.path as string);
                                     break;
                                 case 'write_file':
-                                    toolResult = await tools.writeFile(args.path as string, args.content as string);
+                                    // DIFF TRACKING: Capture before content
+                                    let beforeContent: string | null = null;
+                                    const filePath = args.path as string;
+                                    const afterContent = args.content as string;
+                                    const editTimestamp = Date.now();
+
+                                    try {
+                                        // Try to read existing file content before writing
+                                        const existingContent = await tools.readFile(filePath);
+                                        // Check if it's an error message (file doesn't exist)
+                                        if (!existingContent.startsWith('Error reading file')) {
+                                            beforeContent = existingContent;
+                                        }
+                                    } catch {
+                                        // File doesn't exist, beforeContent stays null
+                                    }
+
+                                    toolResult = await tools.writeFile(filePath, afterContent);
+
+                                    // Store file edit for diff viewing
+                                    if (!task.fileEdits) {
+                                        task.fileEdits = [];
+                                    }
+                                    task.fileEdits.push({
+                                        path: filePath,
+                                        beforeContent,
+                                        afterContent,
+                                        timestamp: editTimestamp,
+                                        checkpointId: task.checkpoints?.[task.checkpoints.length - 1]?.id
+                                    });
 
                                     // AUTO-RELOAD LOGIC:
                                     // If we wrote a frontend file, trigger the browser reload automatically.
-                                    const p = (args.path as string).toLowerCase();
+                                    const p = filePath.toLowerCase();
                                     if (p.endsWith('.html') || p.endsWith('.css') || p.endsWith('.js') || p.endsWith('.jsx') || p.endsWith('.tsx')) {
                                         this._onReloadBrowser.fire();
                                         toolResult += "\n> [System]: Browser preview auto-reloaded.";
@@ -836,5 +874,19 @@ export class TaskRunner {
         }
 
         this._onTaskUpdate.fire({ taskId, task });
+    }
+
+    public getFileEdit(taskId: string, filePath: string): FileEdit | undefined {
+        const task = this.tasks.get(taskId);
+        if (!task || !task.fileEdits) {
+            return undefined;
+        }
+        // Find all edits for this path this path and return the most recent one
+        const editsForPath = task.fileEdits.filter(e => e.path === filePath || e.path.endsWith(filePath) || filePath.endsWith(e.path));
+        if (editsForPath.length === 0) {
+            return undefined;
+        }
+        // Return the last (most recent) edit
+        return editsForPath[editsForPath.length - 1];
     }
 }

@@ -936,3 +936,289 @@
         transform: translateY(0);
     }
 }
+
+/* =========================================
+   FILES MODIFIED SECTION (Prominent)
+   ========================================= */
+
+.files-modified {
+    margin-top: 15px;
+    background: var(--vscode-editor-background);
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.files-modified-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    background: var(--vscode-titleBar-activeBackground);
+    border-bottom: 1px solid var(--vscode-panel-border);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--vscode-foreground);
+}
+
+.files-modified-header .header-icon {
+    font-size: 14px;
+}
+
+.files-modified-list {
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.file-modified-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    background: var(--vscode-list-hoverBackground);
+    border-radius: 6px;
+    transition: all 0.15s ease;
+    border-left: 3px solid #3fb950;
+}
+
+.file-modified-card:hover {
+    background: var(--vscode-list-activeSelectionBackground);
+}
+
+.file-info {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1;
+    overflow: hidden;
+}
+
+.file-info .file-icon {
+    font-size: 16px;
+}
+
+.file-info .file-name {
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.file-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+/* Prominent Open Diff Button */
+.open-diff-btn-prominent {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 12px;
+    background: linear-gradient(135deg, #238636 0%, #2ea043 100%);
+    color: white;
+    border: none;
+    border-radius: 5px;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    box-shadow: 0 2px 6px rgba(46, 160, 67, 0.25);
+}
+
+.open-diff-btn-prominent:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 10px rgba(46, 160, 67, 0.35);
+    filter: brightness(1.1);
+}
+
+.open-diff-btn-prominent:active {
+    transform: translateY(0);
+}
+
+.open-diff-btn-prominent .btn-icon {
+    font-size: 12px;
+}
+
+/* Preview File Button */
+.preview-file-btn {
+    padding: 6px 10px;
+    background: var(--vscode-button-secondaryBackground);
+    color: var(--vscode-button-secondaryForeground);
+    border: none;
+    border-radius: 5px;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.preview-file-btn:hover {
+    background: var(--vscode-button-secondaryHoverBackground);
+}
+
+/* =========================================
+   DIFF VIEWER (GitHub Style)
+   ========================================= */
+
+.diff-viewer {
+    background: var(--vscode-editor-background);
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 8px;
+    overflow: hidden;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+.diff-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 15px;
+    background: var(--vscode-titleBar-activeBackground);
+    border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.diff-title {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.diff-filename {
+    font-weight: 600;
+    font-size: 13px;
+}
+
+.diff-stats {
+    display: flex;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+.stat-add {
+    color: #3fb950;
+}
+
+.stat-del {
+    color: #f85149;
+}
+
+.diff-body {
+    flex: 1;
+    overflow-y: auto;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.diff-new-file-badge {
+    background: rgba(46, 160, 67, 0.15);
+    color: #3fb950;
+    padding: 4px 12px;
+    text-align: center;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.diff-line {
+    display: flex;
+    padding: 0 10px;
+    min-height: 20px;
+    align-items: center;
+    border-left: 3px solid transparent;
+}
+
+.diff-line.addition {
+    background-color: rgba(46, 160, 67, 0.15);
+    border-left-color: #3fb950;
+}
+
+.diff-line.deletion {
+    background-color: rgba(248, 81, 73, 0.15);
+    border-left-color: #f85149;
+}
+
+.diff-line.context {
+    background: transparent;
+}
+
+.diff-line:hover {
+    background-color: var(--vscode-list-hoverBackground);
+}
+
+.line-num {
+    min-width: 35px;
+    color: var(--vscode-editorLineNumber-foreground);
+    text-align: right;
+    padding-right: 8px;
+    user-select: none;
+    font-size: 11px;
+    opacity: 0.6;
+}
+
+.line-num.old {
+    border-right: 1px solid var(--vscode-panel-border);
+}
+
+.line-prefix {
+    width: 18px;
+    text-align: center;
+    font-weight: bold;
+    user-select: none;
+}
+
+.diff-line.addition .line-prefix {
+    color: #3fb950;
+}
+
+.diff-line.deletion .line-prefix {
+    color: #f85149;
+}
+
+.line-content {
+    flex: 1;
+    white-space: pre;
+    overflow-x: auto;
+}
+
+/* Open Diff Button */
+.open-diff-btn {
+    background: transparent;
+    border: none;
+    color: var(--vscode-textLink-foreground);
+    cursor: pointer;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 3px;
+    transition: all 0.15s ease;
+}
+
+.open-diff-btn:hover {
+    background: var(--vscode-button-secondaryBackground);
+    text-decoration: underline;
+}
+
+/* Tool Actions Container */
+.tool-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+}
+
+/* File Edit Highlight */
+.step-tool-item.file-edit {
+    border-left: 2px solid #3fb950;
+    padding-left: 8px;
+    margin-left: -10px;
+}

@@ -5,6 +5,7 @@ import './App.css';
 import { vscode } from './utilities/vscode';
 import { BrowserPreview } from './components/BrowserPreview';
 import { ResizableLayout } from './components/ResizableLayout';
+import { DiffViewer } from './components/DiffViewer';
 
 // Mock Data
 const DEFAULT_WORKSPACES = [
@@ -20,7 +21,7 @@ interface LogGroup {
     // For Step
     title?: string;
     markdown?: string;
-    tools?: { name: string, call: string, result?: string, checkpointId?: string }[];
+    tools?: { name: string, call: string, result?: string, checkpointId?: string, filePath?: string, timestamp?: number }[];
     artifacts?: string[];
     status?: 'running' | 'completed' | 'failed';
 }
@@ -132,7 +133,7 @@ function parseLogs(logs: string[], checkpoints: { id: string, message: string }[
         else if (log.includes('[Tool Call]:')) {
             commitSystem();
             const cleanLog = log.replace('> [Tool Call]:', '').trim();
-            const fnName = cleanLog.split('(')[0];
+            const fnName = cleanLog.split('(')[0].trim();
 
             // Find Checkpoint
             const matchedCheckpoint = checkpoints.find(cp => cp.message.includes(cleanLog));
@@ -150,11 +151,25 @@ function parseLogs(logs: string[], checkpoints: { id: string, message: string }[
                 };
             }
             // Add tool
+            // Extract file path for write_file calls
+            let filePath: string | undefined;
+            let timestamp: number | undefined;
+            if (fnName === 'write_file') {
+                // Parse path from call like: write_file({"path":"src/app.ts","content":"..."})
+                const pathMatch = cleanLog.match(/["']path["']\s*:\s*["']([^"']+)["']/);
+                if (pathMatch) {
+                    filePath = pathMatch[1];
+                    timestamp = Date.now(); // Use current time as approximation
+                }
+            }
+
             currentStep.tools?.push({
                 name: fnName,
                 call: cleanLog,
                 result: '',
-                checkpointId: matchedCheckpoint?.id
+                checkpointId: matchedCheckpoint?.id,
+                filePath,
+                timestamp
             });
         }
         // Tool Result
@@ -237,6 +252,9 @@ function App() {
     // Browser Reload State
     const [browserReloadTrigger, setBrowserReloadTrigger] = useState(0);
 
+    // Diff Viewer State
+    const [diffContent, setDiffContent] = useState<{ path: string, before: string | null, after: string } | null>(null);
+
     // Auto-scroll logic
     const logsEndRef = useRef<HTMLDivElement>(null);
 
@@ -272,6 +290,14 @@ function App() {
             if (message.command === 'reloadBrowser') {
                 setRightPaneTab('browser');
                 setBrowserReloadTrigger(Date.now());
+            }
+            if (message.command === 'diffContent') {
+                setDiffContent({
+                    path: message.path,
+                    before: message.before,
+                    after: message.after
+                });
+                setRightPaneTab('context');
             }
         };
         window.addEventListener('message', messageHandler);
@@ -443,29 +469,122 @@ function App() {
                                                                 </div>
                                                             )}
 
+                                                            {/* Files Modified - PROMINENT SECTION */}
+                                                            {(() => {
+                                                                const fileEdits = group.tools?.filter(t => t.name === 'write_file') || [];
+                                                                if (fileEdits.length === 0) return null;
+                                                                return (
+                                                                    <div className="files-modified">
+                                                                        <div className="files-modified-header">
+                                                                            <span className="header-icon">📝</span>
+                                                                            <span>Files Modified ({fileEdits.length})</span>
+                                                                        </div>
+                                                                        <div className="files-modified-list">
+                                                                            {fileEdits.map((tool, fi) => {
+                                                                                // Extract file path
+                                                                                let filePath = tool.filePath;
+                                                                                if (!filePath) {
+                                                                                    const match = tool.call.match(/["']path["']\s*:\s*["']([^"']+)["']/);
+                                                                                    if (match) filePath = match[1];
+                                                                                }
+                                                                                const fileName = filePath ? filePath.split(/[\\/]/).pop() : 'Unknown file';
+
+                                                                                return (
+                                                                                    <div key={fi} className="file-modified-card">
+                                                                                        <div className="file-info">
+                                                                                            <span className="file-icon">📄</span>
+                                                                                            <span className="file-name">{fileName}</span>
+                                                                                        </div>
+                                                                                        <div className="file-actions">
+                                                                                            <button
+                                                                                                className="open-diff-btn-prominent"
+                                                                                                title="View file changes"
+                                                                                                onClick={(e) => {
+                                                                                                    e.stopPropagation();
+                                                                                                    if (filePath) {
+                                                                                                        vscode.postMessage({
+                                                                                                            command: 'getDiff',
+                                                                                                            taskId: activeAgent.id,
+                                                                                                            path: filePath
+                                                                                                        });
+                                                                                                    }
+                                                                                                }}>
+                                                                                                <span className="btn-icon">⇄</span>
+                                                                                                Open Diff
+                                                                                            </button>
+                                                                                            <button
+                                                                                                className="preview-file-btn"
+                                                                                                title="Preview file"
+                                                                                                onClick={(e) => {
+                                                                                                    e.stopPropagation();
+                                                                                                    if (filePath) {
+                                                                                                        vscode.postMessage({
+                                                                                                            command: 'previewFile',
+                                                                                                            path: filePath,
+                                                                                                            taskId: activeAgent.id
+                                                                                                        });
+                                                                                                    }
+                                                                                                }}>
+                                                                                                👁 View
+                                                                                            </button>
+                                                                                        </div>
+                                                                                    </div>
+                                                                                );
+                                                                            })}
+                                                                        </div>
+                                                                    </div>
+                                                                );
+                                                            })()}
+
                                                             {/* Progress Updates (Collapsed Tools) */}
                                                             {group.tools && group.tools.length > 0 && (
                                                                 <details className="step-updates">
                                                                     <summary>Progress Updates ({group.tools.length})</summary>
                                                                     <div className="step-updates-list">
                                                                         {group.tools.map((tool, ti) => (
-                                                                            <div key={ti} className="step-tool-item">
+                                                                            <div key={ti} className={`step-tool-item ${tool.name === 'write_file' ? 'file-edit' : ''}`}>
                                                                                 <div className="tool-row">
                                                                                     <span className="tool-name">⚡ {tool.name}</span>
-                                                                                    {tool.checkpointId && (
-                                                                                        <button className="revert-btn-small"
-                                                                                            title="Revert to this state"
-                                                                                            onClick={(e) => {
-                                                                                                e.stopPropagation();
-                                                                                                vscode.postMessage({
-                                                                                                    command: 'requestRevert',
-                                                                                                    taskId: activeAgent.id,
-                                                                                                    checkpointId: tool.checkpointId
-                                                                                                });
-                                                                                            }}>
-                                                                                            ↩ Revert
-                                                                                        </button>
-                                                                                    )}
+                                                                                    <div className="tool-actions">
+                                                                                        {tool.name === 'write_file' && (
+                                                                                            <button
+                                                                                                className="open-diff-btn"
+                                                                                                title="Open Diff"
+                                                                                                onClick={(e) => {
+                                                                                                    e.stopPropagation();
+                                                                                                    // Extract path from tool.call string
+                                                                                                    let extractedPath = tool.filePath;
+                                                                                                    if (!extractedPath) {
+                                                                                                        // Try to extract from call: write_file({"path":"poem.md",...})
+                                                                                                        const match = tool.call.match(/["']path["']\s*:\s*["']([^"']+)["']/);
+                                                                                                        if (match) extractedPath = match[1];
+                                                                                                    }
+                                                                                                    if (extractedPath) {
+                                                                                                        vscode.postMessage({
+                                                                                                            command: 'getDiff',
+                                                                                                            taskId: activeAgent.id,
+                                                                                                            path: extractedPath
+                                                                                                        });
+                                                                                                    }
+                                                                                                }}>
+                                                                                                Open Diff
+                                                                                            </button>
+                                                                                        )}
+                                                                                        {tool.checkpointId && (
+                                                                                            <button className="revert-btn-small"
+                                                                                                title="Revert to this state"
+                                                                                                onClick={(e) => {
+                                                                                                    e.stopPropagation();
+                                                                                                    vscode.postMessage({
+                                                                                                        command: 'requestRevert',
+                                                                                                        taskId: activeAgent.id,
+                                                                                                        checkpointId: tool.checkpointId
+                                                                                                    });
+                                                                                                }}>
+                                                                                                ↩ Revert
+                                                                                            </button>
+                                                                                        )}
+                                                                                    </div>
                                                                                 </div>
                                                                                 <div className="tool-args">{tool.call}</div>
                                                                                 {tool.result && <div className="tool-result-mini">{tool.result.substring(0, 100)}{tool.result.length > 100 ? '...' : ''}</div>}
@@ -668,7 +787,14 @@ function App() {
                         {
                             rightPaneTab === 'context' ? (
                                 <div className="context-list">
-                                    {previewContent ? (
+                                    {diffContent ? (
+                                        <DiffViewer
+                                            filePath={diffContent.path}
+                                            beforeContent={diffContent.before}
+                                            afterContent={diffContent.after}
+                                            onClose={() => setDiffContent(null)}
+                                        />
+                                    ) : previewContent ? (
                                         <div className="file-preview">
                                             <div className="preview-header">
                                                 <span className="preview-filename">{previewPath?.split(/[\\/]/).pop()}</span>
