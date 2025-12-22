@@ -242,6 +242,17 @@ export class TaskRunner {
 
             task.worktreePath = workspaceRoot; // Ensure it is set
 
+            // Clean up stale artifacts from previous missions to prevent session bleeding
+            const staleSummaryPath = path.join(workspaceRoot, 'mission_summary.md');
+            if (fs.existsSync(staleSummaryPath)) {
+                try {
+                    fs.unlinkSync(staleSummaryPath);
+                    console.log('[TaskRunner] Cleaned up stale mission_summary.md');
+                } catch (err) {
+                    console.warn('[TaskRunner] Could not clean up mission_summary.md:', err);
+                }
+            }
+
             this.updateStatus(taskId, 'executing', 10, `Accessing Workspace: ${workspaceRoot}`);
             task.logs.push(`\n**Working Directory**: \`${workspaceRoot}\``);
 
