@@ -98,19 +98,29 @@ async function installPlaywrightCore(): Promise<boolean> {
 }
 
 /**
- * Prompt user to install playwright-core
+ * Prompt user to install playwright-core (non-blocking - fires and forgets)
  */
-async function promptForInstallation(): Promise<boolean> {
-    const choice = await vscode.window.showWarningMessage(
-        'Browser automation requires playwright-core. Would you like to install it now? (This is a one-time setup)',
+function triggerInstallPrompt(): void {
+    // Show as information message with action button - don't await
+    vscode.window.showWarningMessage(
+        '🌐 Browser automation requires playwright-core to be installed.',
         'Install Now',
-        'Cancel'
-    );
-
-    if (choice === 'Install Now') {
-        return await installPlaywrightCore();
-    }
-    return false;
+        'Dismiss'
+    ).then(async (choice) => {
+        if (choice === 'Install Now') {
+            const success = await installPlaywrightCore();
+            if (success) {
+                vscode.window.showInformationMessage(
+                    '✅ playwright-core installed! Reload VS Code to use browser automation.',
+                    'Reload Now'
+                ).then((action) => {
+                    if (action === 'Reload Now') {
+                        vscode.commands.executeCommand('workbench.action.reloadWindow');
+                    }
+                });
+            }
+        }
+    });
 }
 
 async function getPlaywright(): Promise<any> {
@@ -152,13 +162,18 @@ async function getPlaywright(): Promise<any> {
 
         // Check if it's a "module not found" error
         if (error.message.includes('Cannot find module') || error.code === 'MODULE_NOT_FOUND') {
-            // Prompt user to install
-            const installed = await promptForInstallation();
-            if (installed) {
-                throw new Error('Browser automation installed. Please reload the window and try again.');
-            } else {
-                throw new Error('Browser automation is not available. Install playwright-core to enable this feature.');
-            }
+            // Trigger non-blocking install prompt (user will see VS Code notification)
+            triggerInstallPrompt();
+
+            // Return immediately with instructions (this message will show in Mission Control)
+            throw new Error(
+                '⚠️ BROWSER AUTOMATION NOT INSTALLED\n\n' +
+                '👉 A notification has appeared in VS Code (bottom-right).\n' +
+                '   Click "Install Now" to automatically install playwright-core.\n\n' +
+                '📦 Manual alternative: Run this in the extension folder:\n' +
+                '   npm install playwright-core\n\n' +
+                '🔄 After installing, reload VS Code window and try again.'
+            );
         }
 
         // Other error - provide detailed info
