@@ -1,10 +1,117 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as cp from 'child_process';
 
 // Dynamic imports for optional dependencies - loaded on demand
 let playwrightModule: any = null;
 let playwrightAvailable: boolean | null = null;
+let installationInProgress: boolean = false;
+
+/**
+ * Get the extension's installation directory
+ */
+function getExtensionDir(): string {
+    // Try to find the extension directory from vscode.extensions
+    const ext = vscode.extensions.getExtension('undefined_publisher.vibearchitect');
+    if (ext) {
+        return ext.extensionPath;
+    }
+    // Fallback: use __dirname to find the extension root
+    // __dirname is typically in dist/, so go up one level
+    return path.resolve(__dirname, '..');
+}
+
+/**
+ * Install playwright-core in the extension directory
+ */
+async function installPlaywrightCore(): Promise<boolean> {
+    if (installationInProgress) {
+        vscode.window.showInformationMessage('Installation already in progress...');
+        return false;
+    }
+
+    const extensionDir = getExtensionDir();
+
+    return new Promise((resolve) => {
+        installationInProgress = true;
+
+        vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "Installing browser automation dependencies...",
+            cancellable: false
+        }, async (progress) => {
+            progress.report({ message: 'Running npm install playwright-core...' });
+
+            return new Promise<void>((resolveProgress) => {
+                const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+                const child = cp.spawn(npmCmd, ['install', 'playwright-core', '--save'], {
+                    cwd: extensionDir,
+                    shell: true
+                });
+
+                let stdout = '';
+                let stderr = '';
+
+                child.stdout?.on('data', (data) => {
+                    stdout += data.toString();
+                });
+
+                child.stderr?.on('data', (data) => {
+                    stderr += data.toString();
+                });
+
+                child.on('close', (code) => {
+                    installationInProgress = false;
+
+                    if (code === 0) {
+                        vscode.window.showInformationMessage(
+                            'Browser automation installed successfully! Please reload the window.',
+                            'Reload Window'
+                        ).then((selection) => {
+                            if (selection === 'Reload Window') {
+                                vscode.commands.executeCommand('workbench.action.reloadWindow');
+                            }
+                        });
+                        resolve(true);
+                    } else {
+                        console.error('[BrowserAutomation] npm install failed:', stderr);
+                        vscode.window.showErrorMessage(
+                            `Failed to install browser automation: ${stderr || 'Unknown error'}. ` +
+                            `Try manually: cd "${extensionDir}" && npm install playwright-core`
+                        );
+                        resolve(false);
+                    }
+                    resolveProgress();
+                });
+
+                child.on('error', (err) => {
+                    installationInProgress = false;
+                    console.error('[BrowserAutomation] npm spawn error:', err);
+                    vscode.window.showErrorMessage(`Failed to run npm: ${err.message}`);
+                    resolve(false);
+                    resolveProgress();
+                });
+            });
+        });
+    });
+}
+
+/**
+ * Prompt user to install playwright-core
+ */
+async function promptForInstallation(): Promise<boolean> {
+    const choice = await vscode.window.showWarningMessage(
+        'Browser automation requires playwright-core. Would you like to install it now? (This is a one-time setup)',
+        'Install Now',
+        'Cancel'
+    );
+
+    if (choice === 'Install Now') {
+        return await installPlaywrightCore();
+    }
+    return false;
+}
 
 async function getPlaywright(): Promise<any> {
     if (playwrightModule) {
@@ -43,26 +150,19 @@ async function getPlaywright(): Promise<any> {
         playwrightAvailable = false;
         console.error('[BrowserAutomation] Failed to load playwright-core:', error.message);
 
-        // Provide detailed setup instructions
-        const setupInstructions = `
-Browser automation is not available. Error: ${error.message}
+        // Check if it's a "module not found" error
+        if (error.message.includes('Cannot find module') || error.code === 'MODULE_NOT_FOUND') {
+            // Prompt user to install
+            const installed = await promptForInstallation();
+            if (installed) {
+                throw new Error('Browser automation installed. Please reload the window and try again.');
+            } else {
+                throw new Error('Browser automation is not available. Install playwright-core to enable this feature.');
+            }
+        }
 
-To enable browser automation:
-
-1. Find your VS Code extensions folder:
-   - Windows: %USERPROFILE%\\.vscode\\extensions\\undefined_publisher.vibearchitect-0.0.1
-   - macOS: ~/.vscode/extensions/undefined_publisher.vibearchitect-0.0.1
-   - Linux: ~/.vscode/extensions/undefined_publisher.vibearchitect-0.0.1
-
-2. Open a terminal in that folder and run:
-   npm install playwright-core pixelmatch pngjs
-
-3. Restart VS Code completely (not just reload window)
-
-Note: The extension uses dynamic imports. If the error persists, try:
-   npm uninstall playwright-core && npm install playwright-core
-`;
-        throw new Error(setupInstructions);
+        // Other error - provide detailed info
+        throw new Error(`Browser automation error: ${error.message}`);
     }
 }
 
