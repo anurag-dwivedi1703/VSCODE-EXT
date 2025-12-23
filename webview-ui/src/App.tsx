@@ -255,6 +255,20 @@ function App() {
     // Diff Viewer State
     const [diffContent, setDiffContent] = useState<{ path: string, before: string | null, after: string } | null>(null);
 
+    // Agent Mode State (Global - applies to all missions)
+    const [agentMode, setAgentMode] = useState<'auto' | 'agent-decides'>('auto');
+
+    // Pending Approval State (for Agent Decides mode)
+    const [pendingApproval, setPendingApproval] = useState<{
+        type: 'plan' | 'command';
+        content: string;
+        taskId: string;
+        riskReason?: string;
+    } | null>(null);
+
+    // Review Comment State (ephemeral - for current session)
+    const [reviewComment, setReviewComment] = useState('');
+
     // Auto-scroll logic
     const logsEndRef = useRef<HTMLDivElement>(null);
 
@@ -299,6 +313,27 @@ function App() {
                 });
                 setRightPaneTab('context');
             }
+            // Handle approval requests from backend (Agent Decides mode)
+            if (message.command === 'awaitingApproval') {
+                setPendingApproval({
+                    type: 'plan',
+                    content: message.content,
+                    taskId: message.taskId
+                });
+                setRightPaneTab('context');
+            }
+            if (message.command === 'commandApprovalRequired') {
+                setPendingApproval({
+                    type: 'command',
+                    content: message.command,
+                    taskId: message.taskId,
+                    riskReason: message.riskReason
+                });
+            }
+            if (message.command === 'approvalComplete') {
+                setPendingApproval(null);
+                setReviewComment('');
+            }
         };
         window.addEventListener('message', messageHandler);
         vscode.postMessage({ command: 'getWorkspaces' });
@@ -323,13 +358,62 @@ function App() {
             text: prompt,
             workspaceId: selectedWorkspace,
             mode: composerMode,
-            model: composerModel
+            model: composerModel,
+            agentMode: agentMode  // Include global agent mode
         });
         // Optional: Reset composer or switch view
     };
 
     const handleAddWorkspace = () => {
         vscode.postMessage({ command: 'addWorkspace' });
+    };
+
+    // Approval handlers for Agent Decides mode
+    const handleApproveReview = () => {
+        if (!pendingApproval) return;
+        vscode.postMessage({
+            command: 'approveReview',
+            taskId: pendingApproval.taskId,
+            feedback: reviewComment
+        });
+        setPendingApproval(null);
+        setReviewComment('');
+    };
+
+    const handleRejectReview = () => {
+        if (!pendingApproval) return;
+        vscode.postMessage({
+            command: 'rejectReview',
+            taskId: pendingApproval.taskId
+        });
+        setPendingApproval(null);
+        setReviewComment('');
+    };
+
+    const handleApproveCommand = () => {
+        if (!pendingApproval) return;
+        vscode.postMessage({
+            command: 'approveCommand',
+            taskId: pendingApproval.taskId
+        });
+        setPendingApproval(null);
+    };
+
+    const handleDeclineCommand = () => {
+        if (!pendingApproval) return;
+        vscode.postMessage({
+            command: 'declineCommand',
+            taskId: pendingApproval.taskId
+        });
+        setPendingApproval(null);
+    };
+
+    const handleAgentModeChange = (newMode: 'auto' | 'agent-decides') => {
+        setAgentMode(newMode);
+        vscode.postMessage({
+            command: 'setAgentMode',
+            mode: newMode
+        });
     };
 
     const activeAgent = activeAgents.find(a => a.id === expandedAgentId) || activeAgents[0];
@@ -342,6 +426,65 @@ function App() {
 
     return (
         <div className="app-container">
+            {/* Settings Bar */}
+            <div className="settings-bar">
+                <div className="settings-bar-left">
+                    <span className="settings-label">Agent Mode:</span>
+                    <div className="mode-toggle">
+                        <button
+                            className={`mode-toggle-btn ${agentMode === 'auto' ? 'active' : ''}`}
+                            onClick={() => handleAgentModeChange('auto')}
+                            title="Agent works autonomously without pause"
+                        >
+                            <span className="mode-icon">⚡</span>
+                            Auto
+                        </button>
+                        <button
+                            className={`mode-toggle-btn ${agentMode === 'agent-decides' ? 'active' : ''}`}
+                            onClick={() => handleAgentModeChange('agent-decides')}
+                            title="Agent pauses for review after plans and before high-risk commands"
+                        >
+                            <span className="mode-icon">🛡️</span>
+                            Agent Decides
+                        </button>
+                    </div>
+                </div>
+                <div className="settings-bar-right">
+                    {agentMode === 'agent-decides' && (
+                        <span className="mode-indicator">
+                            <span className="indicator-dot"></span>
+                            Review mode active
+                        </span>
+                    )}
+                </div>
+            </div>
+
+            {/* Command Approval Modal */}
+            {pendingApproval && pendingApproval.type === 'command' && (
+                <div className="modal-overlay">
+                    <div className="command-approval-modal">
+                        <div className="modal-header">
+                            <span className="modal-icon">⚠️</span>
+                            <h3>High-Risk Command Detected</h3>
+                        </div>
+                        <div className="modal-body">
+                            <p className="risk-reason">{pendingApproval.riskReason || 'This command may have significant effects.'}</p>
+                            <div className="command-preview">
+                                <code>{pendingApproval.content}</code>
+                            </div>
+                        </div>
+                        <div className="modal-actions">
+                            <button className="decline-btn" onClick={handleDeclineCommand}>
+                                ✕ Decline
+                            </button>
+                            <button className="approve-btn" onClick={handleApproveCommand}>
+                                ✓ Accept
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             <ResizableLayout
                 left={
                     /* LEFT PANE: WORKSPACE & MISSIONS */
@@ -857,7 +1000,35 @@ function App() {
                         {
                             rightPaneTab === 'context' ? (
                                 <div className="context-list">
-                                    {diffContent ? (
+                                    {/* Priority 1: Review Pane for Plan Approval */}
+                                    {pendingApproval && pendingApproval.type === 'plan' ? (
+                                        <div className="review-pane">
+                                            <div className="review-header">
+                                                <span className="review-icon">📋</span>
+                                                <h3>Review Implementation Plan</h3>
+                                            </div>
+                                            <div className="review-content markdown-body">
+                                                <ReactMarkdown>{pendingApproval.content}</ReactMarkdown>
+                                            </div>
+                                            <div className="review-comment-section">
+                                                <label className="comment-label">Add feedback or suggestions (optional):</label>
+                                                <textarea
+                                                    className="review-textarea"
+                                                    placeholder="e.g., 'Add error handling' or 'Include unit tests'..."
+                                                    value={reviewComment}
+                                                    onChange={(e) => setReviewComment(e.target.value)}
+                                                />
+                                            </div>
+                                            <div className="review-actions">
+                                                <button className="decline-btn" onClick={handleRejectReview}>
+                                                    ✕ Cancel
+                                                </button>
+                                                <button className="approve-btn" onClick={handleApproveReview}>
+                                                    ✓ Approve & Continue
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ) : diffContent ? (
                                         <DiffViewer
                                             filePath={diffContent.path}
                                             beforeContent={diffContent.before}

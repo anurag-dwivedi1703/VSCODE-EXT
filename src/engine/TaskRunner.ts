@@ -33,7 +33,7 @@ interface FileEdit {
 interface AgentTask {
     id: string;
     prompt: string;
-    status: 'pending' | 'planning' | 'executing' | 'completed' | 'failed';
+    status: 'pending' | 'planning' | 'executing' | 'completed' | 'failed' | 'awaiting-approval';
     progress: number;
     logs: string[];
     worktreePath?: string;
@@ -44,6 +44,12 @@ interface AgentTask {
     model?: string;
     checkpoints?: { id: string, message: string, timestamp: number }[];
     fileEdits?: FileEdit[];
+    // Pending approval state for Agent Decides mode
+    awaitingApproval?: {
+        type: 'plan' | 'command';
+        content: string;
+        riskReason?: string;
+    };
 }
 
 export class TaskRunner {
@@ -60,8 +66,120 @@ export class TaskRunner {
     private _onNavigateBrowser = new vscode.EventEmitter<string>();
     public readonly onNavigateBrowser = this._onNavigateBrowser.event;
 
+    // Approval events for Agent Decides mode
+    private _onAwaitingApproval = new vscode.EventEmitter<{ taskId: string, type: 'plan' | 'command', content: string, riskReason?: string }>();
+    public readonly onAwaitingApproval = this._onAwaitingApproval.event;
+
+    private _onApprovalComplete = new vscode.EventEmitter<{ taskId: string }>();
+    public readonly onApprovalComplete = this._onApprovalComplete.event;
+
+    // Approval resolvers - allows execution loop to await user approval
+    private _approvalResolvers: Map<string, { resolve: (approved: boolean) => void, feedback?: string }> = new Map();
+
+    // Global agent mode (applies to all missions)
+    private _globalAgentMode: 'auto' | 'agent-decides' = 'auto';
+
     public getTasks(): AgentTask[] {
         return Array.from(this.tasks.values());
+    }
+
+    // Get/Set global agent mode
+    public getAgentMode(): 'auto' | 'agent-decides' {
+        return this._globalAgentMode;
+    }
+
+    public setAgentMode(mode: 'auto' | 'agent-decides') {
+        this._globalAgentMode = mode;
+        console.log(`[TaskRunner] Agent mode set to: ${mode}`);
+    }
+
+    // Approval control methods for Agent Decides mode
+    public approveReview(taskId: string, feedback?: string) {
+        const task = this.tasks.get(taskId);
+        if (!task || task.status !== 'awaiting-approval') return;
+
+        // Clear awaiting state
+        task.awaitingApproval = undefined;
+        task.status = 'executing';
+
+        // If feedback provided, inject it as a user message
+        if (feedback && feedback.trim()) {
+            task.userMessages.push({ text: `[User Feedback on Plan]: ${feedback}`, attachments: [] });
+            task.logs.push(`> [User Feedback]: ${feedback}`);
+        }
+
+        // Resolve the waiting promise to resume execution loop
+        const resolver = this._approvalResolvers.get(taskId);
+        if (resolver) {
+            resolver.feedback = feedback;
+            resolver.resolve(true);
+            this._approvalResolvers.delete(taskId);
+        }
+
+        this._onApprovalComplete.fire({ taskId });
+        this._onTaskUpdate.fire({ taskId, task });
+        this.saveTask(task);
+    }
+
+    public rejectReview(taskId: string) {
+        const task = this.tasks.get(taskId);
+        if (!task) return;
+
+        task.awaitingApproval = undefined;
+        task.status = 'failed';
+        task.logs.push(`> [System]: User cancelled the pending approval.`);
+
+        // Resolve the waiting promise with false to stop execution
+        const resolver = this._approvalResolvers.get(taskId);
+        if (resolver) {
+            resolver.resolve(false);
+            this._approvalResolvers.delete(taskId);
+        }
+
+        this._onApprovalComplete.fire({ taskId });
+        this._onTaskUpdate.fire({ taskId, task });
+        this.saveTask(task);
+    }
+
+    public approveCommand(taskId: string) {
+        const task = this.tasks.get(taskId);
+        if (!task || task.status !== 'awaiting-approval') return;
+
+        task.awaitingApproval = undefined;
+        task.status = 'executing';
+        task.logs.push(`> [System]: User approved the high-risk command.`);
+
+        // Resolve the waiting promise to resume with command execution
+        const resolver = this._approvalResolvers.get(taskId);
+        if (resolver) {
+            resolver.resolve(true);
+            this._approvalResolvers.delete(taskId);
+        }
+
+        this._onApprovalComplete.fire({ taskId });
+        this._onTaskUpdate.fire({ taskId, task });
+        this.saveTask(task);
+    }
+
+    public declineCommand(taskId: string) {
+        const task = this.tasks.get(taskId);
+        if (!task) return;
+
+        const declinedCommand = task.awaitingApproval?.content || 'unknown command';
+        task.awaitingApproval = undefined;
+        task.status = 'executing';  // Continue but skip the command
+        task.logs.push(`> [System]: User declined the command: ${declinedCommand}`);
+
+        // Resolve promise with false - command will be skipped
+        const resolver = this._approvalResolvers.get(taskId);
+        if (resolver) {
+            resolver.resolve(false);
+            this._approvalResolvers.delete(taskId);
+        }
+
+        this._onApprovalComplete.fire({ taskId });
+        this._onTaskUpdate.fire({ taskId, task });
+        this.saveTask(task);
     }
 
     constructor(private context: vscode.ExtensionContext) {
@@ -72,6 +190,71 @@ export class TaskRunner {
 
         // Load tasks from disk
         this.loadTasks();
+    }
+
+    /**
+     * Wait for user approval in Agent Decides mode.
+     * Returns true if approved, false if rejected/declined.
+     */
+    private async waitForApproval(taskId: string, type: 'plan' | 'command', content: string, riskReason?: string): Promise<boolean> {
+        const task = this.tasks.get(taskId);
+        if (!task) return false;
+
+        // Set task to awaiting approval state
+        task.status = 'awaiting-approval';
+        task.awaitingApproval = { type, content, riskReason };
+        this._onTaskUpdate.fire({ taskId, task });
+        this.saveTask(task);
+
+        // Create a promise that will be resolved when user approves/rejects
+        return new Promise<boolean>((resolve) => {
+            this._approvalResolvers.set(taskId, { resolve });
+
+            // Fire the event to notify UI
+            this._onAwaitingApproval.fire({ taskId, type, content, riskReason });
+
+            task.logs.push(`> [Awaiting Approval]: ${type === 'plan' ? 'Implementation plan ready for review' : 'High-risk command requires approval'}`);
+            this._onTaskUpdate.fire({ taskId, task });
+        });
+    }
+
+    /**
+     * Check if a command is high-risk and requires approval
+     */
+    private isHighRiskCommand(command: string): { isRisk: boolean, reason?: string } {
+        const cmd = command.toLowerCase().trim();
+
+        // Destructive file operations
+        if (cmd.includes('rm -rf') || cmd.includes('rmdir /s') || cmd.includes('del /s') || cmd.includes('rd /s')) {
+            return { isRisk: true, reason: 'Recursive file/directory deletion' };
+        }
+
+        // Force push to git
+        if (cmd.includes('git push') && (cmd.includes('-f') || cmd.includes('--force'))) {
+            return { isRisk: true, reason: 'Force push may overwrite remote history' };
+        }
+
+        // Git reset hard
+        if (cmd.includes('git reset') && cmd.includes('--hard')) {
+            return { isRisk: true, reason: 'Hard reset discards uncommitted changes' };
+        }
+
+        // System-level commands
+        if (cmd.includes('sudo ') || cmd.includes('chmod 777') || cmd.includes('chown')) {
+            return { isRisk: true, reason: 'System-level permission changes' };
+        }
+
+        // Package manager installs with global flag
+        if ((cmd.includes('npm install') || cmd.includes('pip install')) && cmd.includes('-g')) {
+            return { isRisk: true, reason: 'Global package installation' };
+        }
+
+        // Database drops
+        if (cmd.includes('drop database') || cmd.includes('drop table')) {
+            return { isRisk: true, reason: 'Database deletion' };
+        }
+
+        return { isRisk: false };
     }
 
     private get storageDir(): string {
@@ -658,12 +841,43 @@ export class TaskRunner {
                                         task.artifacts.push(args.path);
                                         task.logs.push(`[Artifact Created]: ${args.path} `);
                                     }
+
+                                    // AGENT DECIDES MODE: Pause for review after creating implementation_plan.md
+                                    if (this._globalAgentMode === 'agent-decides') {
+                                        const baseName = filePath.split(/[\\/]/).pop()?.toLowerCase();
+                                        if (baseName === 'implementation_plan.md') {
+                                            task.logs.push(`> [Agent Decides]: Implementation plan created. Pausing for user review...`);
+                                            const approved = await this.waitForApproval(taskId, 'plan', afterContent);
+                                            if (!approved) {
+                                                toolResult += '\n> [System]: User rejected the plan. Mission cancelled.';
+                                                // Update task status back to executing before throwing
+                                                task.status = 'failed';
+                                                this._onTaskUpdate.fire({ taskId, task });
+                                                throw new Error('User rejected implementation plan');
+                                            }
+                                            toolResult += '\n> [System]: User approved the implementation plan. Continuing...';
+                                        }
+                                    }
                                     break;
                                 case 'list_files':
                                     toolResult = await tools.listFiles(args.path as string);
                                     break;
                                 case 'run_command':
                                     const cmd = (args.command as string || '').trim();
+
+                                    // AGENT DECIDES MODE: Check for high-risk commands
+                                    if (this._globalAgentMode === 'agent-decides') {
+                                        const riskCheck = this.isHighRiskCommand(cmd);
+                                        if (riskCheck.isRisk) {
+                                            task.logs.push(`> [Agent Decides]: High-risk command detected. Requesting approval...`);
+                                            const approved = await this.waitForApproval(taskId, 'command', cmd, riskCheck.reason);
+                                            if (!approved) {
+                                                toolResult = `> [System]: Command skipped by user: ${cmd}`;
+                                                break;
+                                            }
+                                        }
+                                    }
+
                                     // Aggressive check: if command mentions 'reload_browser', just do it.
                                     if (cmd.toLowerCase().includes('reload_browser')) {
                                         this._onReloadBrowser.fire();
@@ -895,13 +1109,19 @@ export class TaskRunner {
                     // Build previous context from task history
                     const previousContext = this.buildContextFromTask(task);
 
-                    const systemPrompt = `You are resuming a previous mission.
-                    Your Mission: ${task.prompt}
+                    // Detect if this is a trivial request (skip planning for questions, math, etc.)
+                    const isTrivial = this.isTrivialRequest(message);
+                    const modeWorkflow = this.buildModeWorkflow(task.mode || 'planning', isTrivial);
+
+                    const systemPrompt = `You are ${isTrivial ? 'responding to a simple question' : 'starting a new mission or continuing substantial work'}.
+                    
+                    USER'S NEW REQUEST: ${message}
                     
                     IMPORTANT - PREVIOUS CONTEXT (what was done before):
                     ${previousContext}
                     
-                    The user has provided feedback or new instructions.
+                    ${modeWorkflow}
+                    
                     CRITICAL: If the user refers to "the file" or "this file", they mean the files listed above in PREVIOUS CONTEXT.
                     Use your tools to explore the current state of the code if needed.
                     
@@ -1121,5 +1341,111 @@ export class TaskRunner {
         contextLines.push(`\nOriginal task was: "${task.prompt}"`);
 
         return contextLines.join('\n');
+    }
+
+    /**
+     * Detect if a user request is trivial (doesn't require planning).
+     * Trivial requests include: basic questions, web searches, math, knowledge questions.
+     */
+    private isTrivialRequest(message: string): boolean {
+        const lowerMsg = message.toLowerCase().trim();
+
+        // Short messages are often trivial
+        if (lowerMsg.length < 30) {
+            // Check for question patterns
+            const questionPatterns = [
+                /^what (is|are|was|were|did|does|do)/,
+                /^how (do|does|did|can|could|would)/,
+                /^why (is|are|did|does|do)/,
+                /^who (is|are|was|were)/,
+                /^where (is|are|was|were)/,
+                /^when (is|are|was|were|did)/,
+                /^can you (explain|tell|show|describe)/,
+                /^please (explain|tell|show|describe)/,
+            ];
+            if (questionPatterns.some(p => p.test(lowerMsg))) {
+                return true;
+            }
+        }
+
+        // Trivial keywords - basic questions about what was done
+        const trivialKeywords = [
+            'what did you do',
+            'what have you done',
+            'what was done',
+            'show me',
+            'explain',
+            'search for',
+            'search the web',
+            'look up',
+            'calculate',
+            'compute',
+            'what is the result',
+            'summarize',
+            'status',
+            'progress',
+        ];
+
+        if (trivialKeywords.some(kw => lowerMsg.includes(kw))) {
+            return true;
+        }
+
+        // Pure math expressions (no code needed)
+        if (/^\d+[\s\+\-\*\/\(\)\^\d\.]+$/.test(lowerMsg.replace(/\s/g, ''))) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Build mode-specific workflow instructions for the AI agent.
+     * Used by both processTask() and replyToTask() for consistency.
+     */
+    private buildModeWorkflow(mode: 'planning' | 'fast', isTrivial: boolean): string {
+        // Trivial requests skip planning regardless of mode
+        if (isTrivial) {
+            return `
+WORKFLOW (TRIVIAL REQUEST):
+- This is a simple question/search/calculation. Answer directly without creating files.
+- Do NOT create 'task.md' or 'implementation_plan.md' for this request.
+- Use tools only if needed (e.g., search_web for research questions).
+            `.trim();
+        }
+
+        if (mode === 'fast') {
+            return `
+CORE WORKFLOW (FAST MODE):
+1. ACT: Execute the request immediately.
+2. NO PLANNING DOCS: Do NOT create 'task.md' or 'implementation_plan.md' unless explicitly asked.
+3. EXPLORE (optional): Only if needed to locate files.
+4. VERIFY (MANDATORY):
+   - Run the code or start the server.
+   - **Web Apps**: Call 'reload_browser()' to refresh the preview.
+5. FINISH:
+   - Answer with "MISSION COMPLETE" at the end.
+            `.trim();
+        }
+
+        // PLANNING MODE (default for substantial requests)
+        return `
+CORE WORKFLOW (PLANNING MODE):
+1. EXPLORE: Use list_files / read_file to understand the codebase.
+2. PLAN (Mandatory):
+   - Create a file named 'task.md'. This must be a Markdown checklist of steps (e.g., "- [ ] Step 1").
+   - Create a file named 'implementation_plan.md'. This must detail your technical approach.
+3. ACT: Use write_file / run_command to implement the plan.
+4. UPDATE: After completing a step, OVERWRITE 'task.md' to mark the item as done (e.g., "- [x] Step 1").
+5. VERIFY (MANDATORY):
+   - Run tests or verification scripts.
+   - **Web Apps**: You MUST start the server (e.g. 'npm run dev') and call 'reload_browser()' to refresh the internal preview.
+   - **Check Ports**: Ensure you are viewing the correct port. If the preview shows old content, the old server might still be running. Kill it.
+   - Confirm the output is correct.
+   - If verification fails, FIX IT before marking as complete.
+6. FINISH:
+   - You MUST create a file named "mission_summary.md" in the root.
+   - Write a detailed summary of changes and verification instructions in it.
+   - Answer with "MISSION COMPLETE" only after creating this file.
+        `.trim();
     }
 }

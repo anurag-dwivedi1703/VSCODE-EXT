@@ -90,6 +90,23 @@ export class MissionControlProvider {
             });
         });
 
+        // Listen for approval requests (Agent Decides mode)
+        this._taskRunner.onAwaitingApproval((event) => {
+            this._panel.webview.postMessage({
+                command: event.type === 'plan' ? 'awaitingApproval' : 'commandApprovalRequired',
+                taskId: event.taskId,
+                content: event.content,
+                riskReason: event.riskReason
+            });
+        });
+
+        this._taskRunner.onApprovalComplete((event) => {
+            this._panel.webview.postMessage({
+                command: 'approvalComplete',
+                taskId: event.taskId
+            });
+        });
+
         // Send existing tasks (loaded from disk)
         const existingTasks = this._taskRunner.getTasks();
         existingTasks.forEach(task => {
@@ -348,6 +365,22 @@ export class MissionControlProvider {
                         }
                         return;
                     }
+                    // Agent Mode and Approval Handlers
+                    case 'setAgentMode':
+                        this._taskRunner.setAgentMode(message.mode);
+                        return;
+                    case 'approveReview':
+                        this._taskRunner.approveReview(message.taskId, message.feedback);
+                        return;
+                    case 'rejectReview':
+                        this._taskRunner.rejectReview(message.taskId);
+                        return;
+                    case 'approveCommand':
+                        this._taskRunner.approveCommand(message.taskId);
+                        return;
+                    case 'declineCommand':
+                        this._taskRunner.declineCommand(message.taskId);
+                        return;
                 }
             },
             undefined,
