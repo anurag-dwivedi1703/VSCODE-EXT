@@ -13,6 +13,7 @@ import * as fs from 'fs';
 import { ShadowRepository } from '../services/ShadowRepository';
 import { RevertManager } from '../services/RevertManager';
 import { FileLockManager } from '../services/FileLockManager';
+import { detectSecrets, detectPII } from '../ai/SecurityInstructions';
 
 interface TaskContext {
     shadowRepo: ShadowRepository;
@@ -814,6 +815,57 @@ export class TaskRunner {
                                         // File doesn't exist, beforeContent stays null
                                     }
 
+                                    // ==================== SECURITY PRE-CHECK ====================
+                                    // Check for secrets and PII BEFORE writing
+                                    const isEnvFile = filePath.endsWith('.env') || filePath.includes('.env.');
+                                    const isTextFile = /\.(js|ts|jsx|tsx|py|rb|java|go|rs|php|cs|cpp|c|h|txt|json|yaml|yml|xml|md|csv|sql|html|htm|css|scss|less)$/i.test(filePath) || !filePath.includes('.');
+
+                                    const detectedSecrets = detectSecrets(afterContent);
+                                    const detectedPII = detectPII(afterContent);
+                                    const highSeverityPII = detectedPII.filter(p => p.severity === 'high');
+
+                                    const hasSecurityIssues = (detectedSecrets.length > 0 && !isEnvFile) || (highSeverityPII.length > 0 && isTextFile);
+
+                                    if (hasSecurityIssues) {
+                                        // Build warning message for approval
+                                        let warningContent = `🔒 **SECURITY ALERT** for file: ${filePath}\n\n`;
+
+                                        if (detectedSecrets.length > 0 && !isEnvFile) {
+                                            warningContent += `**Potential Secrets Detected:**\n`;
+                                            for (const secret of detectedSecrets.slice(0, 5)) {
+                                                warningContent += `  • ${secret.type} at line ${secret.line}: ${secret.suggestion}\n`;
+                                            }
+                                            warningContent += `\n`;
+                                        }
+
+                                        if (highSeverityPII.length > 0 && isTextFile) {
+                                            warningContent += `**PII Detected:**\n`;
+                                            for (const pii of highSeverityPII.slice(0, 5)) {
+                                                warningContent += `  • ${pii.type} at line ${pii.line} - Use ${pii.maskExample} for testing\n`;
+                                            }
+                                            warningContent += `\n`;
+                                        }
+
+                                        warningContent += `\n**Do you want to proceed with creating this file?**`;
+
+                                        // Log the alert and trigger approval
+                                        task.logs.push(`\n${warningContent}`);
+                                        this._onTaskUpdate.fire({ taskId, task });
+
+                                        // Wait for user approval
+                                        const approved = await this.waitForApproval(taskId, 'command', warningContent, 'File contains sensitive data');
+
+                                        if (!approved) {
+                                            toolResult = `⛔ File creation aborted by user due to security concerns: ${filePath}`;
+                                            task.logs.push(`> [Security]: User rejected file with sensitive data. File was NOT created.`);
+                                            this._onTaskUpdate.fire({ taskId, task });
+                                            break;
+                                        }
+
+                                        task.logs.push(`> [Security]: User approved file creation despite warnings.`);
+                                    }
+
+                                    // ==================== PROCEED WITH WRITE ====================
                                     toolResult = await tools.writeFile(filePath, afterContent);
 
                                     // Store file edit for diff viewing
@@ -1113,16 +1165,31 @@ export class TaskRunner {
                     const isTrivial = this.isTrivialRequest(message);
                     const modeWorkflow = this.buildModeWorkflow(task.mode || 'planning', isTrivial);
 
-                    const systemPrompt = `You are ${isTrivial ? 'responding to a simple question' : 'starting a new mission or continuing substantial work'}.
+                    // Detect if user is starting a completely NEW mission (not continuing old work)
+                    // Be AGGRESSIVE about detecting new missions to avoid old context bleeding
+                    const msgLower = message.toLowerCase();
+                    const hasCreateCommand = msgLower.includes('create') || msgLower.includes('make') || msgLower.includes('build') || msgLower.includes('write');
+                    const specifiesNewFile = /create\s+\w+\.\w+|make\s+\w+\.\w+|build\s+\w+|write\s+\w+\.\w+/i.test(message);
+                    const refersToOldWork = msgLower.includes('continue') || msgLower.includes('the file') ||
+                        msgLower.includes('the code') || msgLower.includes('that file') || msgLower.includes('fix it');
+
+                    // NEW MISSION if: user is giving a CREATE command with a specific file AND not referencing old work
+                    const isNewMission = (hasCreateCommand && specifiesNewFile && !refersToOldWork) ||
+                        (message.length > 50 && !refersToOldWork);
+
+                    const contextSection = isNewMission
+                        ? `⚠️ CRITICAL: IGNORE all previous task context. The user is starting a BRAND NEW mission. Do exactly what they ask in their new request. Do NOT reference or continue any previous work.`
+                        : `IMPORTANT - PREVIOUS CONTEXT (what was done before):\n${previousContext}`;
+
+                    const systemPrompt = `You are ${isTrivial ? 'responding to a simple question' : (isNewMission ? 'starting a COMPLETELY NEW mission - forget all previous context' : 'continuing substantial work')}.
                     
-                    USER'S NEW REQUEST: ${message}
+                    USER'S ${isNewMission ? 'NEW MISSION (IGNORE ALL PREVIOUS WORK)' : 'REQUEST'}: ${message}
                     
-                    IMPORTANT - PREVIOUS CONTEXT (what was done before):
-                    ${previousContext}
+                    ${contextSection}
                     
                     ${modeWorkflow}
                     
-                    CRITICAL: If the user refers to "the file" or "this file", they mean the files listed above in PREVIOUS CONTEXT.
+                    CRITICAL: ${isNewMission ? 'This is a NEW mission - do not try to continue the old task.' : 'If the user refers to "the file" or "this file", they mean the files listed above in PREVIOUS CONTEXT.'}
                     Use your tools to explore the current state of the code if needed.
                     
                     Available Tools:

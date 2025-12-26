@@ -49,7 +49,7 @@ export class GeminiClient {
                         },
                         {
                             name: "write_file",
-                            description: "Write content to a file",
+                            description: "Write content to a file. SECURITY: Never hardcode API keys/passwords/secrets - use environment variables (process.env.X). When creating .env files, a .env.example with placeholders is auto-created.",
                             parameters: {
                                 type: "OBJECT" as any,
                                 properties: {

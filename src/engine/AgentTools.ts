@@ -6,6 +6,7 @@ import { GeminiClient } from '../ai/GeminiClient';
 import { FileLockManager } from '../services/FileLockManager';
 import { BrowserAutomationService, ScreenshotResult, RecordingResult } from '../services/BrowserAutomationService';
 import { VisualComparisonService, ComparisonResult } from '../services/VisualComparisonService';
+import { detectSecrets, detectPII, DetectedSecret, DetectedPII } from '../ai/SecurityInstructions';
 
 export class AgentTools {
     private browserService: BrowserAutomationService | null = null;
@@ -51,6 +52,78 @@ export class AgentTools {
             const fileUri = this.getUri(relativePath);
             const absolutePath = fileUri.fsPath;
 
+            // ==================== SECURITY CHECKS ====================
+            const securityWarnings: string[] = [];
+            const isEnvFile = relativePath.endsWith('.env') || relativePath.includes('.env.');
+            // Check if this is a text-based file that should be scanned for PII
+            // Includes source code, config files, data files, and files without extensions
+            const isTextFile = /\.(js|ts|jsx|tsx|py|rb|java|go|rs|php|cs|cpp|c|h|txt|json|yaml|yml|xml|md|csv|sql|html|htm|css|scss|less|sh|bat|ps1|cfg|conf|ini|log|env)$/i.test(relativePath) ||
+                !relativePath.includes('.'); // Files without extensions are often text
+
+            // Detect secrets in content (warn but allow for prototyping)
+            const detectedSecrets = detectSecrets(content);
+            console.log(`[Security] File: ${relativePath}, isEnvFile: ${isEnvFile}, isTextFile: ${isTextFile}, secrets: ${detectedSecrets.length}`);
+            if (detectedSecrets.length > 0 && !isEnvFile) {
+                securityWarnings.push(`⚠️ SECURITY WARNING: Detected ${detectedSecrets.length} potential secret(s) in ${relativePath}:`);
+                for (const secret of detectedSecrets.slice(0, 3)) { // Limit to first 3
+                    securityWarnings.push(`  - ${secret.type} at line ${secret.line}: ${secret.suggestion}`);
+                }
+                if (detectedSecrets.length > 3) {
+                    securityWarnings.push(`  ... and ${detectedSecrets.length - 3} more`);
+                }
+                securityWarnings.push(`  💡 TIP: Use environment variables instead of hardcoding secrets.`);
+            }
+
+            // Detect PII in text-based files
+            if (isTextFile) {
+                const detectedPII = detectPII(content);
+                console.log(`[Security] PII detection: ${detectedPII.length} items found`);
+                detectedPII.forEach(pii => console.log(`  - ${pii.type}: ${pii.match}`));
+                const highSeverityPII = detectedPII.filter(p => p.severity === 'high');
+                if (highSeverityPII.length > 0) {
+                    securityWarnings.push(`⚠️ PII WARNING: Detected sensitive personal data in ${relativePath}:`);
+                    for (const pii of highSeverityPII.slice(0, 3)) {
+                        securityWarnings.push(`  - ${pii.type} at line ${pii.line}: Use ${pii.maskExample} for testing`);
+                    }
+                }
+            } else {
+                console.log(`[Security] Skipping PII check - not a text file: ${relativePath}`);
+            }
+            console.log(`[Security] Total warnings: ${securityWarnings.length}`);
+
+            // ==================== .ENV FILE HANDLING ====================
+            let envExampleCreated = false;
+            let gitignoreUpdated = false;
+
+            if (isEnvFile && relativePath.endsWith('.env')) {
+                // Auto-create .env.example with placeholder values
+                try {
+                    const envExampleContent = this.generateEnvExample(content);
+                    const envExamplePath = relativePath.replace(/\.env$/, '.env.example');
+                    const envExampleUri = this.getUri(envExamplePath);
+
+                    // Check if .env.example already exists
+                    try {
+                        await vscode.workspace.fs.stat(envExampleUri);
+                    } catch {
+                        // File doesn't exist, create it
+                        const exampleUint8 = new TextEncoder().encode(envExampleContent);
+                        await vscode.workspace.fs.writeFile(envExampleUri, exampleUint8);
+                        envExampleCreated = true;
+                    }
+                } catch (e) {
+                    // Ignore errors creating .env.example
+                }
+
+                // Auto-update .gitignore to exclude .env
+                try {
+                    gitignoreUpdated = await this.ensureGitignoreExcludes('.env');
+                } catch (e) {
+                    // Ignore errors updating .gitignore
+                }
+            }
+
+            // ==================== ORIGINAL FILE WRITE ====================
             // Enforce Locking
             if (this.fileLockManager && this.taskId) {
                 if (!this.fileLockManager.acquireLock(absolutePath, this.taskId)) {
@@ -64,7 +137,19 @@ export class AgentTools {
                 await vscode.workspace.fs.createDirectory(parentDir);
 
                 await vscode.workspace.fs.writeFile(fileUri, uint8Array);
-                return `Successfully wrote to ${relativePath}`;
+
+                // Build response with security info
+                let response = `Successfully wrote to ${relativePath}`;
+                if (envExampleCreated) {
+                    response += `\n✅ Auto-created .env.example with placeholder values`;
+                }
+                if (gitignoreUpdated) {
+                    response += `\n✅ Added .env to .gitignore`;
+                }
+                if (securityWarnings.length > 0) {
+                    response += `\n\n${securityWarnings.join('\n')}`;
+                }
+                return response;
             } finally {
                 // Always release lock
                 if (this.fileLockManager && this.taskId) {
@@ -74,6 +159,81 @@ export class AgentTools {
         } catch (error: any) {
             return `Error writing file ${relativePath}: ${error.message}`;
         }
+    }
+
+    /**
+     * Generate .env.example content from .env content by replacing values with placeholders
+     */
+    private generateEnvExample(envContent: string): string {
+        const lines = envContent.split('\n');
+        const exampleLines = lines.map(line => {
+            // Keep comments and empty lines
+            if (line.trim().startsWith('#') || line.trim() === '') {
+                return line;
+            }
+            // Replace values with placeholders
+            const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+            if (match) {
+                const [, key, value] = match;
+                const placeholder = this.getPlaceholderForEnvKey(key, value);
+                return `${key}=${placeholder}`;
+            }
+            return line;
+        });
+        return exampleLines.join('\n');
+    }
+
+    /**
+     * Get appropriate placeholder for an environment variable key
+     */
+    private getPlaceholderForEnvKey(key: string, value: string): string {
+        const keyLower = key.toLowerCase();
+        if (keyLower.includes('key') || keyLower.includes('secret') || keyLower.includes('token')) {
+            return `your_${keyLower}_here`;
+        }
+        if (keyLower.includes('password') || keyLower.includes('passwd') || keyLower.includes('pwd')) {
+            return 'your_password_here';
+        }
+        if (keyLower.includes('database') || keyLower.includes('db_url') || keyLower.includes('connection')) {
+            return 'your_connection_string_here';
+        }
+        if (keyLower.includes('url') || keyLower.includes('host') || keyLower.includes('endpoint')) {
+            return 'https://your-service-url.com';
+        }
+        if (keyLower.includes('port')) {
+            return value; // Keep port numbers as-is
+        }
+        // Default placeholder
+        return `your_${keyLower}_here`;
+    }
+
+    /**
+     * Ensure .gitignore contains the specified pattern
+     */
+    private async ensureGitignoreExcludes(pattern: string): Promise<boolean> {
+        const gitignorePath = '.gitignore';
+        const gitignoreUri = this.getUri(gitignorePath);
+
+        let content = '';
+        try {
+            const uint8Array = await vscode.workspace.fs.readFile(gitignoreUri);
+            content = new TextDecoder().decode(uint8Array);
+        } catch {
+            // .gitignore doesn't exist, create it
+            content = '# Environment files\n';
+        }
+
+        // Check if pattern already exists
+        const lines = content.split('\n');
+        if (lines.some(line => line.trim() === pattern || line.trim() === pattern + '/')) {
+            return false; // Already excluded
+        }
+
+        // Add the pattern
+        const newContent = content.trimEnd() + '\n' + pattern + '\n';
+        const uint8Array = new TextEncoder().encode(newContent);
+        await vscode.workspace.fs.writeFile(gitignoreUri, uint8Array);
+        return true;
     }
 
     async listFiles(relativePath: string): Promise<string> {

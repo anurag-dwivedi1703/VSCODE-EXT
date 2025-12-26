@@ -325,7 +325,7 @@ function App() {
             if (message.command === 'commandApprovalRequired') {
                 setPendingApproval({
                     type: 'command',
-                    content: message.command,
+                    content: message.content,
                     taskId: message.taskId,
                     riskReason: message.riskReason
                 });

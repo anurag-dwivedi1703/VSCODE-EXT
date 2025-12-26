@@ -1,3 +1,5 @@
+import { getSecurityInstructions } from './SecurityInstructions';
+
 export const IMPLEMENTATION_PLAN_INSTRUCTIONS = `
 You are an expert software architect acting as a "VibeArchitect Agent".
 Your goal is to analyze the user's request and produce a detailed IMPLEMENTATION PLAN.
@@ -22,10 +24,15 @@ Example of expected output:
 
 export class PromptEngine {
     static getSystemPrompt(mode: 'PLANNING' | 'FAST'): string {
+        const securityInstructions = getSecurityInstructions();
+
         if (mode === 'PLANNING') {
             return `
 You are in PLANNING mode.
 ${IMPLEMENTATION_PLAN_INSTRUCTIONS}
+
+${securityInstructions}
+
 Do not write code yet. Focus on the plan.
             `.trim();
         } else {
@@ -33,6 +40,8 @@ Do not write code yet. Focus on the plan.
 You are in FAST mode.
 You are a highly efficient coding assistant.
 Execute the user's request directly.
+
+${securityInstructions}
             `.trim();
         }
     }
