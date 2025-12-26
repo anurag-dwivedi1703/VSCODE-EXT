@@ -90,13 +90,32 @@ export class MissionControlProvider {
             });
         });
 
-        // Listen for approval requests (Agent Decides mode)
+        // Listen for approval requests (Agent Decides mode and constitution review)
         this._taskRunner.onAwaitingApproval((event) => {
+            // Map approval types to webview commands
+            let command: string;
+            switch (event.type) {
+                case 'constitution':
+                case 'constitution-update':
+                case 'constitution-drift':
+                    command = 'constitutionReview';
+                    break;
+                case 'plan':
+                    command = 'awaitingApproval';
+                    break;
+                case 'command':
+                    command = 'commandApprovalRequired';
+                    break;
+                default:
+                    command = 'awaitingApproval';
+            }
+
             this._panel.webview.postMessage({
-                command: event.type === 'plan' ? 'awaitingApproval' : 'commandApprovalRequired',
+                command: command,
                 taskId: event.taskId,
                 content: event.content,
-                riskReason: event.riskReason
+                riskReason: event.riskReason,
+                approvalType: event.type  // Pass the original type for UI context
             });
         });
 
@@ -380,6 +399,13 @@ export class MissionControlProvider {
                         return;
                     case 'declineCommand':
                         this._taskRunner.declineCommand(message.taskId);
+                        return;
+                    // Constitution Review Handlers
+                    case 'approveConstitution':
+                        this._taskRunner.approveReview(message.taskId, message.feedback);
+                        return;
+                    case 'rejectConstitution':
+                        this._taskRunner.rejectReview(message.taskId);
                         return;
                 }
             },

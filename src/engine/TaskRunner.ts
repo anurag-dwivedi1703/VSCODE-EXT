@@ -14,10 +14,13 @@ import { ShadowRepository } from '../services/ShadowRepository';
 import { RevertManager } from '../services/RevertManager';
 import { FileLockManager } from '../services/FileLockManager';
 import { detectSecrets, detectPII } from '../ai/SecurityInstructions';
+import { SpecManager, SpecPhase } from './SpecManager';
+import { ContextHarvester } from '../services/ContextHarvester';
 
 interface TaskContext {
     shadowRepo: ShadowRepository;
     revertManager: RevertManager;
+    specManager?: SpecManager;  // NEW: Spec-kit manager
     gemini?: GeminiClient;
     claude?: ClaudeClient;
     copilotClaude?: CopilotClaudeClient;
@@ -47,7 +50,7 @@ interface AgentTask {
     fileEdits?: FileEdit[];
     // Pending approval state for Agent Decides mode
     awaitingApproval?: {
-        type: 'plan' | 'command';
+        type: 'plan' | 'command' | 'constitution' | 'constitution-update' | 'constitution-drift';
         content: string;
         riskReason?: string;
     };
@@ -67,8 +70,8 @@ export class TaskRunner {
     private _onNavigateBrowser = new vscode.EventEmitter<string>();
     public readonly onNavigateBrowser = this._onNavigateBrowser.event;
 
-    // Approval events for Agent Decides mode
-    private _onAwaitingApproval = new vscode.EventEmitter<{ taskId: string, type: 'plan' | 'command', content: string, riskReason?: string }>();
+    // Approval events for Agent Decides mode and constitution review
+    private _onAwaitingApproval = new vscode.EventEmitter<{ taskId: string, type: 'plan' | 'command' | 'constitution' | 'constitution-update' | 'constitution-drift', content: string, riskReason?: string }>();
     public readonly onAwaitingApproval = this._onAwaitingApproval.event;
 
     private _onApprovalComplete = new vscode.EventEmitter<{ taskId: string }>();
@@ -194,10 +197,15 @@ export class TaskRunner {
     }
 
     /**
-     * Wait for user approval in Agent Decides mode.
+     * Wait for user approval in Agent Decides mode OR for constitution review.
      * Returns true if approved, false if rejected/declined.
      */
-    private async waitForApproval(taskId: string, type: 'plan' | 'command', content: string, riskReason?: string): Promise<boolean> {
+    private async waitForApproval(
+        taskId: string,
+        type: 'plan' | 'command' | 'constitution' | 'constitution-update' | 'constitution-drift',
+        content: string,
+        riskReason?: string
+    ): Promise<boolean> {
         const task = this.tasks.get(taskId);
         if (!task) return false;
 
@@ -214,7 +222,28 @@ export class TaskRunner {
             // Fire the event to notify UI
             this._onAwaitingApproval.fire({ taskId, type, content, riskReason });
 
-            task.logs.push(`> [Awaiting Approval]: ${type === 'plan' ? 'Implementation plan ready for review' : 'High-risk command requires approval'}`);
+            // Create appropriate log message based on type
+            let logMessage: string;
+            switch (type) {
+                case 'constitution':
+                    logMessage = 'Constitution ready for review';
+                    break;
+                case 'constitution-update':
+                    logMessage = 'Post-mission constitution update ready for review';
+                    break;
+                case 'constitution-drift':
+                    logMessage = 'Constitution drift detected - update ready for review';
+                    break;
+                case 'plan':
+                    logMessage = 'Implementation plan ready for review';
+                    break;
+                case 'command':
+                    logMessage = 'High-risk command requires approval';
+                    break;
+                default:
+                    logMessage = 'Approval required';
+            }
+            task.logs.push(`> [Awaiting Approval]: ${logMessage}`);
             this._onTaskUpdate.fire({ taskId, task });
         });
     }
@@ -450,6 +479,158 @@ export class TaskRunner {
             // Use workspace folder name as branch identifier
             task.branchName = path.basename(workspaceRoot);
 
+            // ========================================
+            // SPEC-KIT: Constitution Lifecycle
+            // ========================================
+            const isTrivial = this.isTrivialRequest(task.prompt);
+
+            if (!isTrivial) {
+                const specManager = new SpecManager();
+                await specManager.initialize(workspaceRoot);
+                taskContext.specManager = specManager;
+
+                // Check if workspace is empty (no meaningful files)
+                if (specManager.isWorkspaceEmpty()) {
+                    task.logs.push(`> [Constitution]: Workspace is empty, skipping constitution`);
+                } else if (!specManager.hasConstitution()) {
+                    // Generate constitution for first-time workspace
+                    task.logs.push(`> [Constitution]: No constitution found, generating...`);
+                    this.updateStatus(taskId, 'planning', 8, 'Generating workspace constitution...');
+                    specManager.setPhase(SpecPhase.CONSTITUTION_GENERATION);
+
+                    const harvester = new ContextHarvester();
+                    const contextData = await harvester.scanWorkspace(workspaceRoot);
+
+                    console.log(`[TaskRunner] Constitution: Context data length: ${contextData.length}`);
+                    console.log(`[TaskRunner] Constitution: Context preview: ${contextData.substring(0, 500)}...`);
+
+                    // We need an AI client to generate the constitution
+                    // IMPORTANT: Always use top-tier models for constitution - it's the "brain" document
+                    let constitutionAI: GeminiClient | ClaudeClient;
+                    if (isClaudeModel && claudeApiKey) {
+                        // User selected Claude - use Claude Opus 4
+                        const CLAUDE_CONSTITUTION_MODEL = 'claude-opus-4-20250514';
+                        console.log(`[TaskRunner] Constitution: Using ${CLAUDE_CONSTITUTION_MODEL} for generation`);
+                        constitutionAI = new ClaudeClient(claudeApiKey, CLAUDE_CONSTITUTION_MODEL);
+                    } else if (geminiApiKey) {
+                        // Use Gemini 3 Pro for constitution
+                        const GEMINI_CONSTITUTION_MODEL = 'gemini-3-pro-preview';
+                        console.log(`[TaskRunner] Constitution: Using ${GEMINI_CONSTITUTION_MODEL} for generation`);
+                        constitutionAI = new GeminiClient(geminiApiKey, GEMINI_CONSTITUTION_MODEL);
+                    } else {
+                        throw new Error('No API key available for constitution generation');
+                    }
+
+                    // Generate constitution using AI with proper error handling
+                    let finalConstitution = '';
+                    try {
+                        const constitutionPrompt = specManager.getConstitutionGenerationPrompt();
+                        console.log('[TaskRunner] Constitution: Starting AI generation...');
+
+                        const constitutionSession = constitutionAI.startSession(constitutionPrompt, 'high');
+                        const result = await constitutionSession.sendMessage(`Here is the workspace context:\n\n${contextData}`);
+
+                        // Handle response - may differ between Gemini and Claude
+                        const responseObj = await result.response;
+                        console.log('[TaskRunner] Constitution: Got response object:', typeof responseObj);
+
+                        const constitutionContent = responseObj.text();
+                        console.log(`[TaskRunner] Constitution: AI response text length: ${constitutionContent?.length || 0}`);
+
+                        if (constitutionContent && constitutionContent.trim().length > 0) {
+                            finalConstitution = constitutionContent;
+                            console.log(`[TaskRunner] Constitution: Using AI-generated content (${finalConstitution.length} chars)`);
+                        } else {
+                            console.warn('[TaskRunner] Constitution: AI returned empty/whitespace');
+                        }
+                    } catch (aiError: any) {
+                        console.error('[TaskRunner] Constitution: AI generation failed:', aiError.message);
+                        task.logs.push(`> [Constitution]: AI generation error: ${aiError.message}`);
+                    }
+
+                    // Fallback if AI returns empty or fails
+                    if (!finalConstitution || finalConstitution.trim().length === 0) {
+                        console.log('[TaskRunner] Constitution: Using fallback with context data');
+                        finalConstitution = `# Workspace Constitution
+
+Generated automatically for: ${path.basename(workspaceRoot)}
+
+This constitution defines the rules and patterns for this workspace.
+
+${contextData}
+
+---
+*Constitution auto-generated from workspace scan*`;
+                        task.logs.push(`> [Constitution]: Using auto-generated constitution from workspace scan`);
+                    }
+
+                    // Save constitution
+                    console.log(`[TaskRunner] Constitution: Saving (${finalConstitution.length} chars)...`);
+                    await specManager.saveConstitution(finalConstitution);
+                    task.logs.push(`> [Constitution]: Generated and saved to ${specManager.getConstitutionPath()}`);
+
+                    // Pause for user review (constitution review always happens)
+                    specManager.setPhase(SpecPhase.CONSTITUTION_REVIEW);
+                    const approved = await this.waitForApproval(taskId, 'constitution', finalConstitution);
+                    if (!approved) {
+                        throw new Error('Constitution rejected by user - mission cancelled');
+                    }
+                    task.logs.push(`> [Constitution]: Approved by user`);
+                } else {
+                    // Existing constitution - check for drift
+                    task.logs.push(`> [Constitution]: Found existing constitution`);
+                    specManager.setPhase(SpecPhase.DRIFT_DETECTION);
+                    this.updateStatus(taskId, 'planning', 8, 'Checking for constitution drift...');
+
+                    const harvester = new ContextHarvester();
+                    const currentContext = await harvester.scanWorkspace(workspaceRoot);
+
+                    // Create a temporary AI client for drift detection
+                    let driftAI: GeminiClient | ClaudeClient;
+                    if (isClaudeModel && claudeApiKey) {
+                        driftAI = new ClaudeClient(claudeApiKey, modelId);
+                    } else if (geminiApiKey) {
+                        driftAI = new GeminiClient(geminiApiKey, modelId);
+                    } else {
+                        throw new Error('No API key available for drift detection');
+                    }
+
+                    // Check for drift
+                    const driftPrompt = specManager.getDriftDetectionPrompt(currentContext);
+                    const driftSession = driftAI.startSession(driftPrompt, 'low');
+                    const driftResult = await driftSession.sendMessage('Analyze the drift');
+                    const driftResponse = (await driftResult.response).text();
+
+                    const driftCheck = specManager.parseDriftResponse(driftResponse);
+
+                    if (driftCheck.hasDrift) {
+                        task.logs.push(`> [Constitution]: Drift detected - ${driftCheck.driftSummary}`);
+
+                        // Prompt user for constitution update
+                        const approved = await this.waitForApproval(
+                            taskId,
+                            'constitution-drift',
+                            `**Drift Summary**: ${driftCheck.driftSummary}\n\n---\n\n${driftCheck.suggestedUpdates}`
+                        );
+                        if (approved) {
+                            await specManager.saveConstitution(driftCheck.suggestedUpdates);
+                            task.logs.push(`> [Constitution]: Updated based on detected drift`);
+                        } else {
+                            task.logs.push(`> [Constitution]: Drift update declined, continuing with existing constitution`);
+                        }
+                    } else {
+                        task.logs.push(`> [Constitution]: No drift detected, proceeding with existing constitution`);
+                    }
+                }
+
+                specManager.setPhase(SpecPhase.SPECIFICATION);
+            } else {
+                task.logs.push(`> [Constitution]: Trivial request - skipping constitution check`);
+            }
+            // ========================================
+            // END SPEC-KIT
+            // ========================================
+
             // Step 2: Initialize Tools for this Workspace
             // Create AgentTools with everything needed
             // Note: We need a Gemini Client for the 'search_web' tool. 
@@ -566,15 +747,20 @@ export class TaskRunner {
                 - Create a file named 'implementation_plan.md'.This must detail your technical approach.
             3. ACT: Use write_file / run_command to implement the plan.
             4. UPDATE: After completing a step, OVERWRITE 'task.md' to mark the item as done (e.g., "- [x] Step 1").
-            5. VERIFY(MANDATORY):
-            - Run tests or verification scripts.
-                - ** Web Apps **: You MUST start the server(e.g. 'npm run dev') and call 'reload_browser()' to refresh the internal preview.
-                - ** Check Ports **: Ensure you are viewing the correct port.If the preview shows old content, the old server might still be running.Kill it.
+            5. VERIFY (ATTEMPT):
+            - Run tests or verification scripts if possible.
+                - ** Web Apps **: You MUST start the server (e.g. 'npm run dev') and call 'reload_browser()' to refresh the internal preview.
+                - ** Check Ports **: Ensure you are viewing the correct port. If the preview shows old content, the old server might still be running. Kill it.
                 - Confirm the output is correct.
-                - If verification fails, FIX IT before marking as complete.
-            6. FINISH:
-            - You MUST create a file named "mission_summary.md" in the root.
-            - Write a detailed summary of changes and verification instructions in it.
+                - If verification fails, note the failure but CONTINUE to the FINISH step.
+                - IMPORTANT: Verification failure should NOT block mission completion.
+            6. FINISH (ALWAYS REQUIRED):
+            - You MUST create a file named "mission_summary.md" in the root, REGARDLESS of verification outcome.
+            - Include:
+                - Summary of changes made
+                - Verification status (passed, failed, or skipped with reason)
+                - Any known issues or warnings
+                - Instructions for the user to verify manually if needed
             - Answer with "MISSION COMPLETE" only after creating this file.
             `;
             } else {
@@ -592,6 +778,28 @@ export class TaskRunner {
             `;
             }
 
+            // Inject constitution into system prompt if available
+            if (taskContext.specManager && taskContext.specManager.hasConstitution()) {
+                const constitution = taskContext.specManager.getConstitution();
+                systemPrompt += `
+            
+            === PROJECT CONSTITUTION ===
+            The following constitution defines the rules and patterns you MUST follow for this workspace.
+            Violating these rules will result in poor code quality and user rejection.
+            
+            ${constitution}
+            
+            === END CONSTITUTION ===
+            
+            IMPORTANT: Always respect the constitution when making decisions about:
+            - Technology choices
+            - File organization
+            - Coding patterns
+            - Testing approaches
+            `;
+                task.logs.push(`> [Constitution]: Injected into agent context`);
+            }
+
             // Start session with selected model
             let chat: ISession;
             if (isClaudeModel && useCopilotForClaude && taskContext.copilotClaude) {
@@ -607,6 +815,64 @@ export class TaskRunner {
 
             // Step 4: Start Execution Loop
             await this.runExecutionLoop(taskId, chat, tools);
+
+            // ========================================
+            // SPEC-KIT: Post-Mission Constitution Review
+            // ========================================
+            const completedTask = this.tasks.get(taskId);
+            if (completedTask && completedTask.status === 'completed' && taskContext.specManager && taskContext.specManager.hasConstitution()) {
+                try {
+                    completedTask.logs.push(`> [Constitution]: Checking if updates are needed...`);
+                    this.updateStatus(taskId, 'completed', 98, 'Reviewing constitution...');
+
+                    // Get list of files that were modified during this mission
+                    const changedFiles = (completedTask.fileEdits || []).map(edit => edit.path);
+
+                    if (changedFiles.length > 0) {
+                        // Create AI client for review
+                        let reviewAI: GeminiClient | ClaudeClient;
+                        if (isClaudeModel && claudeApiKey) {
+                            reviewAI = new ClaudeClient(claudeApiKey, modelId);
+                        } else if (geminiApiKey) {
+                            reviewAI = new GeminiClient(geminiApiKey, modelId);
+                        } else {
+                            throw new Error('No API key for constitution review');
+                        }
+
+                        const reviewPrompt = taskContext.specManager.getPostMissionReviewPrompt(changedFiles);
+                        const reviewSession = reviewAI.startSession(reviewPrompt, 'low');
+                        const reviewResult = await reviewSession.sendMessage('Analyze if constitution needs updates');
+                        const reviewResponse = (await reviewResult.response).text();
+
+                        const updateCheck = taskContext.specManager.parseUpdateCheckResponse(reviewResponse);
+
+                        if (updateCheck.needsUpdate) {
+                            taskContext.specManager.setPhase(SpecPhase.POST_MISSION_REVIEW);
+                            completedTask.logs.push(`> [Constitution]: Updates detected, requesting review...`);
+
+                            const approved = await this.waitForApproval(
+                                taskId,
+                                'constitution-update',
+                                updateCheck.suggestedChanges
+                            );
+                            if (approved) {
+                                await taskContext.specManager.saveConstitution(updateCheck.suggestedChanges);
+                                completedTask.logs.push(`> [Constitution]: Updated after mission completion`);
+                            } else {
+                                completedTask.logs.push(`> [Constitution]: Post-mission update declined`);
+                            }
+                        } else {
+                            completedTask.logs.push(`> [Constitution]: No updates needed`);
+                        }
+                    }
+                } catch (reviewError: any) {
+                    completedTask.logs.push(`> [Constitution]: Review error - ${reviewError.message}`);
+                    console.error('[TaskRunner] Post-mission constitution review failed:', reviewError);
+                }
+            }
+            // ========================================
+            // END POST-MISSION REVIEW
+            // ========================================
 
         } catch (error: any) {
             this.updateStatus(taskId, 'failed', 0, `Error: ${error.message} `);
@@ -630,7 +896,7 @@ export class TaskRunner {
         }
 
         try {
-            const maxTurns = 30;
+            const maxTurns = 100;
             for (let i = 0; i < maxTurns; i++) {
                 // If the user interrupted or we are just continuing
                 this.updateStatus(taskId, 'executing', task.progress, `Turn ${i + 1}: Thinking...`);
@@ -1413,44 +1679,41 @@ export class TaskRunner {
     /**
      * Detect if a user request is trivial (doesn't require planning).
      * Trivial requests include: basic questions, web searches, math, knowledge questions.
+     * 
+     * NOTE: Project exploration requests like "explain this project" are NOT trivial
+     * because they may require reading code and the constitution should guide the agent.
      */
     private isTrivialRequest(message: string): boolean {
         const lowerMsg = message.toLowerCase().trim();
 
         // Short messages are often trivial
         if (lowerMsg.length < 30) {
-            // Check for question patterns
+            // Check for question patterns - but NOT if they involve reading code/project
             const questionPatterns = [
-                /^what (is|are|was|were|did|does|do)/,
-                /^how (do|does|did|can|could|would)/,
-                /^why (is|are|did|does|do)/,
-                /^who (is|are|was|were)/,
-                /^where (is|are|was|were)/,
-                /^when (is|are|was|were|did)/,
-                /^can you (explain|tell|show|describe)/,
-                /^please (explain|tell|show|describe)/,
+                /^what (is|are|was|were|did|does|do)\s+(the result|your status|a|an|the difference)/,
+                /^how (do|does|did|can|could|would) (you|i|we) (calculate|compute)/,
+                /^who (is|are|was|were) \w+\?$/,
+                /^when (is|are|was|were|did)\s+\w+\s+(born|founded|created|started)/,
             ];
             if (questionPatterns.some(p => p.test(lowerMsg))) {
                 return true;
             }
         }
 
-        // Trivial keywords - basic questions about what was done
+        // Trivial keywords - but be more specific to avoid false positives
         const trivialKeywords = [
             'what did you do',
             'what have you done',
             'what was done',
-            'show me',
-            'explain',
             'search for',
             'search the web',
-            'look up',
-            'calculate',
-            'compute',
+            'look up on the web',
+            'calculate this',
+            'compute this',
             'what is the result',
-            'summarize',
-            'status',
-            'progress',
+            'summarize what you did',
+            'status update',
+            'progress update',
         ];
 
         if (trivialKeywords.some(kw => lowerMsg.includes(kw))) {
@@ -1462,6 +1725,8 @@ export class TaskRunner {
             return true;
         }
 
+        // Log for debugging
+        console.log(`[TaskRunner] isTrivialRequest("${lowerMsg.substring(0, 50)}...") = false`);
         return false;
     }
 

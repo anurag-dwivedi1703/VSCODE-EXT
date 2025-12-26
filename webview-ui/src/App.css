@@ -1542,3 +1542,193 @@
     border-top: 1px solid var(--vscode-panel-border);
     background: var(--vscode-sideBar-background);
 }
+
+/* =========================================
+   CONSTITUTION REVIEW MODAL
+   ========================================= */
+
+.constitution-modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.75);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(4px);
+    z-index: 1000;
+    animation: fadeIn 0.2s ease;
+}
+
+.constitution-modal {
+    background: var(--vscode-editor-background);
+    border: 1px solid var(--vscode-panel-border);
+    width: 90%;
+    max-width: 800px;
+    max-height: 85vh;
+    border-radius: 12px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    animation: modalSlideIn 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes modalSlideIn {
+    from {
+        transform: translateY(20px);
+        opacity: 0;
+    }
+
+    to {
+        transform: translateY(0);
+        opacity: 1;
+    }
+}
+
+.constitution-modal-header {
+    padding: 24px;
+    border-bottom: 1px solid var(--vscode-panel-border);
+    background: var(--vscode-sideBar-background);
+}
+
+.constitution-modal-header h2 {
+    margin: 0 0 8px 0;
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--vscode-foreground);
+}
+
+.constitution-description {
+    margin: 0;
+    font-size: 13px;
+    color: var(--vscode-descriptionForeground);
+    line-height: 1.5;
+}
+
+.constitution-modal-content {
+    flex: 1;
+    overflow-y: auto;
+    min-height: 300px;
+    max-height: 50vh;
+}
+
+.constitution-preview {
+    padding: 20px 24px;
+    font-size: 14px;
+    line-height: 1.6;
+}
+
+.constitution-preview h1,
+.constitution-preview h2,
+.constitution-preview h3 {
+    color: var(--vscode-foreground);
+    margin-top: 24px;
+    margin-bottom: 12px;
+}
+
+.constitution-preview h1:first-child,
+.constitution-preview h2:first-child {
+    margin-top: 0;
+}
+
+.constitution-preview ul,
+.constitution-preview ol {
+    padding-left: 24px;
+    margin: 12px 0;
+}
+
+.constitution-preview li {
+    margin-bottom: 6px;
+}
+
+.constitution-preview code {
+    background: rgba(255, 255, 255, 0.1);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 13px;
+}
+
+.constitution-preview pre {
+    background: rgba(0, 0, 0, 0.3);
+    padding: 16px;
+    border-radius: 8px;
+    overflow-x: auto;
+    margin: 16px 0;
+}
+
+.constitution-editor {
+    width: 100%;
+    height: 100%;
+    min-height: 300px;
+    padding: 20px 24px;
+    background: var(--vscode-editor-background);
+    color: var(--vscode-editor-foreground);
+    border: none;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    resize: none;
+}
+
+.constitution-editor:focus {
+    outline: none;
+}
+
+.constitution-modal-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 24px;
+    border-top: 1px solid var(--vscode-panel-border);
+    background: var(--vscode-sideBar-background);
+}
+
+.constitution-btn-group {
+    display: flex;
+    gap: 12px;
+}
+
+.constitution-btn {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.constitution-btn-edit {
+    background: var(--vscode-button-secondaryBackground);
+    color: var(--vscode-button-secondaryForeground);
+}
+
+.constitution-btn-edit:hover {
+    background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.constitution-btn-approve {
+    background: #238636;
+    color: white;
+}
+
+.constitution-btn-approve:hover {
+    background: #2ea043;
+}
+
+.constitution-btn-reject {
+    background: transparent;
+    color: var(--vscode-errorForeground);
+    border: 1px solid var(--vscode-errorForeground);
+}
+
+.constitution-btn-reject:hover {
+    background: rgba(248, 81, 73, 0.1);
+}

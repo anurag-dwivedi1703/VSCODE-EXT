@@ -6,6 +6,7 @@ import { vscode } from './utilities/vscode';
 import { BrowserPreview } from './components/BrowserPreview';
 import { ResizableLayout } from './components/ResizableLayout';
 import { DiffViewer } from './components/DiffViewer';
+import { ConstitutionReviewModal } from './components/ConstitutionReviewModal';
 
 // Mock Data
 const DEFAULT_WORKSPACES = [
@@ -269,6 +270,13 @@ function App() {
     // Review Comment State (ephemeral - for current session)
     const [reviewComment, setReviewComment] = useState('');
 
+    // Constitution Review State
+    const [constitutionReview, setConstitutionReview] = useState<{
+        taskId: string;
+        content: string;
+        type: 'constitution' | 'constitution-update' | 'constitution-drift';
+    } | null>(null);
+
     // Auto-scroll logic
     const logsEndRef = useRef<HTMLDivElement>(null);
 
@@ -333,6 +341,15 @@ function App() {
             if (message.command === 'approvalComplete') {
                 setPendingApproval(null);
                 setReviewComment('');
+                setConstitutionReview(null);  // Also clear constitution review
+            }
+            // Handle constitution review from backend
+            if (message.command === 'constitutionReview') {
+                setConstitutionReview({
+                    taskId: message.taskId,
+                    content: message.content,
+                    type: message.approvalType || 'constitution'
+                });
             }
         };
         window.addEventListener('message', messageHandler);
@@ -416,6 +433,26 @@ function App() {
         });
     };
 
+    // Constitution Review Handlers
+    const handleApproveConstitution = (editedContent?: string) => {
+        if (!constitutionReview) return;
+        vscode.postMessage({
+            command: 'approveConstitution',
+            taskId: constitutionReview.taskId,
+            feedback: editedContent || constitutionReview.content
+        });
+        setConstitutionReview(null);
+    };
+
+    const handleRejectConstitution = () => {
+        if (!constitutionReview) return;
+        vscode.postMessage({
+            command: 'rejectConstitution',
+            taskId: constitutionReview.taskId
+        });
+        setConstitutionReview(null);
+    };
+
     const activeAgent = activeAgents.find(a => a.id === expandedAgentId) || activeAgents[0];
     const logGroups = activeAgent ? parseLogs(activeAgent.logs, activeAgent.checkpoints || []) : [];
 
@@ -483,6 +520,17 @@ function App() {
                         </div>
                     </div>
                 </div>
+            )}
+
+            {/* Constitution Review Modal */}
+            {constitutionReview && (
+                <ConstitutionReviewModal
+                    content={constitutionReview.content}
+                    type={constitutionReview.type}
+                    taskId={constitutionReview.taskId}
+                    onApprove={handleApproveConstitution}
+                    onReject={handleRejectConstitution}
+                />
             )}
 
             <ResizableLayout
