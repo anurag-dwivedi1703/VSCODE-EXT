@@ -366,7 +366,7 @@ function App() {
     const activeAgents = dynamicAgents;
     // State for New Agent Composer
     const [composerMode, setComposerMode] = useState<'planning' | 'fast'>('planning');
-    const [composerModel, setComposerModel] = useState<'gemini-3-pro-preview' | 'gemini-3-flash-preview'>('gemini-3-pro-preview');
+    const [composerModel, setComposerModel] = useState<string>('gemini-3-pro-preview');
 
     const handleStartTask = (prompt: string) => {
         if (!prompt.trim()) return;
@@ -995,7 +995,7 @@ function App() {
                                         <select
                                             className="model-select"
                                             value={composerModel}
-                                            onChange={(e) => setComposerModel(e.target.value as any)}
+                                            onChange={(e) => setComposerModel(e.target.value)}
                                         >
                                             <option value="gemini-3-pro-preview">Gemini 3 Pro (Reasoning)</option>
                                             <option value="gemini-3-flash-preview">Gemini 3 Flash (Speed)</option>
