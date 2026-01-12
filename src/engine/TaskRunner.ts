@@ -1361,7 +1361,12 @@ ${contextData}
                     // Fallback: Scan logs if file missing
                     const outputRegex = /(?:\*\*|#|\s)*MISSION SUMMARY(?:\*\*|#|:|\s)*([\s\S]*?)(?:(?:\*\*|#|\s)*MISSION COMPLETE|$)/i;
                     for (let j = task.logs.length - 1; j >= Math.max(0, task.logs.length - 10); j--) {
-                        const log = task.logs[j].replace(/\*\*Gemini\*\*:/g, '').replace(/\*\* Gemini \*\*:/g, '');
+                        // Strip both Gemini and Claude prefixes
+                        let log = task.logs[j]
+                            .replace(/\*\*Gemini\*\*:/g, '')
+                            .replace(/\*\* Gemini \*\*:/g, '')
+                            .replace(/\*\*Claude\*\*:/g, '')
+                            .replace(/\*\* Claude \*\*:/g, '');
                         const match = log.match(outputRegex);
                         if (match && match[1] && match[1].trim().length > 10) {
                             summaryText = match[1].trim();
@@ -1372,6 +1377,11 @@ ${contextData}
 
                 if (summaryText) {
                     console.log(`[TaskRunner] Emitting Mission Summary Log.`);
+                    // Convert literal \n escape sequences to actual newlines for proper markdown
+                    summaryText = summaryText
+                        .replace(/\\n/g, '\n')  // literal \n to newline
+                        .replace(/\\t/g, '\t')  // literal \t to tab
+                        .replace(/\n{3,}/g, '\n\n');  // collapse multiple newlines
                     task.logs.push(`[MISSION_COMPLETE_SUMMARY]: ${summaryText}`);
                     // CRITICAL: Notify UI of the new log entry
                     this._onTaskUpdate.fire({ taskId, task });
