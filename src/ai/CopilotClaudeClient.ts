@@ -318,11 +318,11 @@ Provide a detailed, helpful response based on your training data. If you're unce
 
     /**
      * Analyze a screenshot using Copilot Claude Vision
-     * Note: vscode.lm API may not support images - this provides a fallback response
+     * Uses the new vscode.lm API with image content support
      */
     public async analyzeScreenshot(
-        _imageBase64: string,
-        _mimeType: string,
+        imageBase64: string,
+        mimeType: string,
         expectedDescription: string,
         missionObjective: string
     ): Promise<{
@@ -332,20 +332,137 @@ Provide a detailed, helpful response based on your training data. If you're unce
         suggestions: string[];
         analysis: string;
     }> {
-        // vscode.lm API may not support image input
-        // Provide a fallback that indicates manual verification is needed
-        console.warn('[CopilotClaudeClient] Vision analysis requested but vscode.lm may not support images');
+        if (!this.model) {
+            return {
+                matches: false,
+                confidence: 0,
+                issues: ['Copilot Claude model not initialized'],
+                suggestions: ['Ensure VS Code Copilot is available'],
+                analysis: 'Vision analysis failed: Model not initialized'
+            };
+        }
 
-        return {
-            matches: false,
-            confidence: 0,
-            issues: ['VS Code Language Model API does not support image analysis'],
-            suggestions: [
-                'Use Claude API mode (set API key) for vision analysis',
-                'Manually verify the UI matches expectations',
-                `Expected: ${expectedDescription.substring(0, 100)}...`
-            ],
-            analysis: `Vision analysis is not available through VS Code Copilot integration. Mission objective was: ${missionObjective}. Please verify manually or switch to Claude API mode.`
-        };
+        try {
+            // Save base64 image to a temp file and get URI
+            const fs = await import('fs');
+            const path = await import('path');
+            const os = await import('os');
+
+            const tempDir = os.tmpdir();
+            const ext = mimeType.includes('png') ? 'png' : 'jpg';
+            const tempPath = path.join(tempDir, `vibe_screenshot_${Date.now()}.${ext}`);
+
+            // Write base64 to file
+            const imageBuffer = Buffer.from(imageBase64, 'base64');
+            fs.writeFileSync(tempPath, imageBuffer);
+
+            const imageUri = vscode.Uri.file(tempPath);
+            console.log(`[CopilotClaudeClient] Vision analysis: saved temp image to ${tempPath}`);
+
+            const prompt = `You are a UI testing expert. Analyze this screenshot and determine if it matches the expected design.
+
+MISSION OBJECTIVE: ${missionObjective}
+
+EXPECTED UI DESCRIPTION: ${expectedDescription}
+
+Analyze the screenshot and respond in this EXACT JSON format:
+{
+"matches": true/false,
+"confidence": 0-100,
+"issues": ["list of specific UI problems found"],
+"suggestions": ["list of specific code fixes to address the issues"],
+"analysis": "Brief description of what you see vs what was expected"
+}
+
+IMPORTANT:
+- Set "matches" to true ONLY if the UI clearly fulfills the expected description
+- Be specific about issues (e.g., "Button text is 'Submit' but should be 'Login'")
+- Provide actionable suggestions (e.g., "Change the h1 text from 'Welcome' to 'Login Form'")
+- If the page is blank, loading, or shows an error, that's a critical issue
+
+Respond ONLY with the JSON, no other text.`;
+
+            // Create multimodal message with text and image
+            const messages = [
+                vscode.LanguageModelChatMessage.User([
+                    { type: 'text', value: prompt },
+                    { type: 'image', value: imageUri }
+                ] as any) // Using 'as any' for the new content array format
+            ];
+
+            const response = await this.model.sendRequest(
+                messages,
+                {},
+                new vscode.CancellationTokenSource().token
+            );
+
+            let responseText = '';
+            for await (const fragment of response.text) {
+                responseText += fragment;
+            }
+
+            // Clean up temp file
+            try {
+                fs.unlinkSync(tempPath);
+            } catch { /* ignore cleanup errors */ }
+
+            console.log(`[CopilotClaudeClient] Vision response: ${responseText.substring(0, 100)}...`);
+
+            // Parse the JSON response
+            try {
+                let jsonText = responseText.trim();
+                if (jsonText.startsWith('```json')) jsonText = jsonText.slice(7);
+                if (jsonText.startsWith('```')) jsonText = jsonText.slice(3);
+                if (jsonText.endsWith('```')) jsonText = jsonText.slice(0, -3);
+                jsonText = jsonText.trim();
+
+                const parsed = JSON.parse(jsonText);
+                return {
+                    matches: parsed.matches === true,
+                    confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 50,
+                    issues: Array.isArray(parsed.issues) ? parsed.issues : [],
+                    suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions : [],
+                    analysis: parsed.analysis || 'No analysis provided'
+                };
+            } catch (parseError) {
+                // If JSON parsing fails, try to extract meaning from text
+                const lowerText = responseText.toLowerCase();
+                const matches = lowerText.includes('matches": true') ||
+                    (lowerText.includes('looks correct') && !lowerText.includes('not'));
+
+                return {
+                    matches: matches,
+                    confidence: 30,
+                    issues: ['Could not parse vision analysis response'],
+                    suggestions: ['Manual review recommended'],
+                    analysis: responseText.substring(0, 500)
+                };
+            }
+        } catch (error: any) {
+            console.error('[CopilotClaudeClient] Vision analysis failed:', error.message);
+
+            // Check if it's a "not supported" error - fall back gracefully
+            if (error.message?.includes('image') || error.message?.includes('multimodal') || error.message?.includes('content')) {
+                return {
+                    matches: false,
+                    confidence: 0,
+                    issues: ['This Claude model may not support vision through Copilot'],
+                    suggestions: [
+                        'Use Gemini for vision analysis (set Gemini API key)',
+                        'Use Claude API mode for full vision support',
+                        `Expected: ${expectedDescription.substring(0, 100)}...`
+                    ],
+                    analysis: `Vision analysis not available for this model. Mission objective: ${missionObjective}`
+                };
+            }
+
+            return {
+                matches: false,
+                confidence: 0,
+                issues: [`Vision analysis error: ${error.message}`],
+                suggestions: ['Check Copilot connection and try again'],
+                analysis: 'Analysis failed due to API error'
+            };
+        }
     }
 }
