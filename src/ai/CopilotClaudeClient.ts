@@ -157,9 +157,13 @@ You MUST use this exact format. Do NOT just describe what you want to do - actua
                     // Parse for tool calls (text-based parsing since vscode.lm doesn't support native tool_use)
                     const functionCalls = this.parseToolCalls(responseText);
 
+                    // Strip tool call blocks from text to avoid showing JSON in UI
+                    // This makes the output match Gemini's behavior where text and tool calls are separate
+                    const cleanedText = this.stripToolCallsFromText(responseText);
+
                     return {
                         response: {
-                            text: () => responseText,
+                            text: () => cleanedText,
                             functionCalls: () => functionCalls.length > 0 ? functionCalls : undefined
                         }
                     };
@@ -247,6 +251,24 @@ You MUST use this exact format. Do NOT just describe what you want to do - actua
 
         console.log(`[CopilotClaudeClient] Total tool calls found: ${calls.length}`);
         return calls;
+    }
+
+    /**
+     * Strip tool call blocks from text to avoid showing raw JSON in the UI
+     * This makes the output match Gemini's behavior where text and tool calls are separate
+     */
+    private stripToolCallsFromText(text: string): string {
+        // Remove fenced tool_call blocks: ```tool_call\n{...}\n```
+        let cleaned = text.replace(/```tool_call\s*\n?[\s\S]*?\n?```/g, '');
+
+        // Remove inline JSON tool calls that might be at the end of lines
+        // Pattern: {"name": "...", "args": {...}}
+        cleaned = cleaned.replace(/\{"name"\s*:\s*"[^"]+"\s*,\s*"args"\s*:\s*\{[^}]*\}\s*\}/g, '');
+
+        // Clean up any extra whitespace left behind
+        cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
+
+        return cleaned;
     }
 
     /**
