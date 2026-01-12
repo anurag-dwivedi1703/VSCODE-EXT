@@ -177,7 +177,17 @@ You MUST use this exact format. Do NOT just describe what you want to do - actua
                                 text: () => `Error: Copilot access denied. Please grant permission when prompted, or use API mode instead.\n\nDetails: ${error.message}`,
                                 functionCalls: () => undefined
                             }
-                        };
+                        }
+
+                        // Check for content filtering (Enterprise/Org policies)
+                        if (error.message?.includes('filtered') || error.message?.includes('content policy')) {
+                            return {
+                                response: {
+                                    text: () => `**⚠️ Copilot Response Filtered**\n\nThe response was blocked by your organization's Copilot content filters (Responsible AI).\n\n**Why this happens:**\n- Code might resemble a security violation\n- System prompt complexity triggering safety guards\n- Enterprise policy restrictions\n\n**Workaround:**\nTry using the **Claude API Mode** (via API Key) instead, which bypasses these enterprise filters.`,
+                                    functionCalls: () => undefined
+                                }
+                            };
+                        }
                     }
 
                     return {
