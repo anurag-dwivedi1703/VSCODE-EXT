@@ -524,8 +524,10 @@ export class AgentTools {
             const screenshotBuffer = fs.readFileSync(screenshotResult.path);
             const screenshotBase64 = screenshotBuffer.toString('base64');
 
-            // Use Gemini Vision for semantic analysis if available
-            // Try Gemini first, then Claude API, then Copilot Claude
+            // Vision analysis priority:
+            // 1. Gemini (best vision quality) - use passed client or create on-demand
+            // 2. Claude API (good vision)
+            // 3. Copilot Claude (fallback - no actual vision support)
             let analysis: {
                 matches: boolean;
                 confidence: number;
@@ -534,8 +536,21 @@ export class AgentTools {
                 analysis: string;
             } | null = null;
 
-            if (this.geminiClient) {
-                analysis = await this.geminiClient.analyzeScreenshot(
+            // Try Gemini first - if not passed, try to create one from API key
+            let visionClient = this.geminiClient;
+            if (!visionClient) {
+                // Try to create a temporary Gemini client for vision analysis
+                const config = vscode.workspace.getConfiguration('vibearchitect');
+                const geminiApiKey = config.get<string>('geminiApiKey') || '';
+                if (geminiApiKey) {
+                    const { GeminiClient } = await import('../ai/GeminiClient');
+                    visionClient = new GeminiClient(geminiApiKey, 'gemini-2.0-flash');
+                    console.log('[AgentTools] Created on-demand Gemini client for vision analysis');
+                }
+            }
+
+            if (visionClient) {
+                analysis = await visionClient.analyzeScreenshot(
                     screenshotBase64,
                     'image/png',
                     description,
@@ -549,6 +564,7 @@ export class AgentTools {
                     missionObjective || 'Verify the UI looks correct'
                 );
             } else if (this.copilotClaudeClient) {
+                // Copilot Claude can't do vision - provide helpful fallback
                 analysis = await this.copilotClaudeClient.analyzeScreenshot(
                     screenshotBase64,
                     'image/png',
