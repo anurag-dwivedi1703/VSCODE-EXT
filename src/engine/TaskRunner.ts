@@ -506,9 +506,16 @@ export class TaskRunner {
 
                     // We need an AI client to generate the constitution
                     // IMPORTANT: Always use top-tier models for constitution - it's the "brain" document
-                    let constitutionAI: GeminiClient | ClaudeClient;
-                    if (isClaudeModel && claudeApiKey) {
-                        // User selected Claude - use Claude Opus 4
+                    let constitutionAI: GeminiClient | ClaudeClient | CopilotClaudeClient;
+                    if (isClaudeModel && useCopilotForClaude) {
+                        // User selected Claude via Copilot
+                        console.log(`[TaskRunner] Constitution: Using Copilot Claude for generation`);
+                        const copilotClient = new CopilotClaudeClient();
+                        const initialized = await copilotClient.initialize();
+                        if (!initialized) throw new Error('Failed to initialize Copilot Claude for constitution');
+                        constitutionAI = copilotClient;
+                    } else if (isClaudeModel && claudeApiKey) {
+                        // User selected Claude with API key - use Claude Opus 4
                         const CLAUDE_CONSTITUTION_MODEL = 'claude-opus-4-20250514';
                         console.log(`[TaskRunner] Constitution: Using ${CLAUDE_CONSTITUTION_MODEL} for generation`);
                         constitutionAI = new ClaudeClient(claudeApiKey, CLAUDE_CONSTITUTION_MODEL);
@@ -518,7 +525,7 @@ export class TaskRunner {
                         console.log(`[TaskRunner] Constitution: Using ${GEMINI_CONSTITUTION_MODEL} for generation`);
                         constitutionAI = new GeminiClient(geminiApiKey, GEMINI_CONSTITUTION_MODEL);
                     } else {
-                        throw new Error('No API key available for constitution generation');
+                        throw new Error('No API key available for constitution generation. Configure Claude API key, enable Copilot Claude, or add Gemini API key.');
                     }
 
                     // Generate constitution using AI with proper error handling
@@ -586,13 +593,18 @@ ${contextData}
                     const currentContext = await harvester.scanWorkspace(workspaceRoot);
 
                     // Create a temporary AI client for drift detection
-                    let driftAI: GeminiClient | ClaudeClient;
-                    if (isClaudeModel && claudeApiKey) {
+                    let driftAI: GeminiClient | ClaudeClient | CopilotClaudeClient;
+                    if (isClaudeModel && useCopilotForClaude) {
+                        const copilotClient = new CopilotClaudeClient();
+                        const initialized = await copilotClient.initialize();
+                        if (!initialized) throw new Error('Failed to initialize Copilot Claude for drift detection');
+                        driftAI = copilotClient;
+                    } else if (isClaudeModel && claudeApiKey) {
                         driftAI = new ClaudeClient(claudeApiKey, modelId);
                     } else if (geminiApiKey) {
                         driftAI = new GeminiClient(geminiApiKey, modelId);
                     } else {
-                        throw new Error('No API key available for drift detection');
+                        throw new Error('No API key available for drift detection. Configure Claude API key, enable Copilot Claude, or add Gemini API key.');
                     }
 
                     // Check for drift
