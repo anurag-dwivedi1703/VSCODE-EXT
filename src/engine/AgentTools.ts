@@ -3,6 +3,8 @@ import * as cp from 'child_process';
 import * as path from 'path';
 import { TerminalManager } from './TerminalManager';
 import { GeminiClient } from '../ai/GeminiClient';
+import { ClaudeClient } from '../ai/ClaudeClient';
+import { CopilotClaudeClient } from '../ai/CopilotClaudeClient';
 import { FileLockManager } from '../services/FileLockManager';
 import { BrowserAutomationService, ScreenshotResult, RecordingResult } from '../services/BrowserAutomationService';
 import { VisualComparisonService, ComparisonResult } from '../services/VisualComparisonService';
@@ -16,6 +18,8 @@ export class AgentTools {
         private readonly worktreeRoot: string,
         private readonly terminalManager?: TerminalManager,
         private readonly geminiClient?: GeminiClient,
+        private readonly claudeClient?: ClaudeClient,
+        private readonly copilotClaudeClient?: CopilotClaudeClient,
         private readonly onReloadBrowserCallback?: () => void,
         private readonly onNavigateBrowserCallback?: (url: string) => void,
         private readonly fileLockManager?: FileLockManager,
@@ -251,10 +255,15 @@ export class AgentTools {
     }
 
     async searchWeb(query: string): Promise<string> {
-        if (!this.geminiClient) {
-            return "Error: Web Search (GeminiClient) not available in this context.";
+        // Try Gemini first, then Claude API, then Copilot Claude
+        if (this.geminiClient) {
+            return await this.geminiClient.research(query);
+        } else if (this.claudeClient) {
+            return await this.claudeClient.research(query);
+        } else if (this.copilotClaudeClient) {
+            return await this.copilotClaudeClient.research(query);
         }
-        return await this.geminiClient.research(query);
+        return "Error: No AI client available for web search. Configure either Gemini or Claude API key.";
     }
 
     async reload_browser(): Promise<string> {
@@ -516,14 +525,39 @@ export class AgentTools {
             const screenshotBase64 = screenshotBuffer.toString('base64');
 
             // Use Gemini Vision for semantic analysis if available
+            // Try Gemini first, then Claude API, then Copilot Claude
+            let analysis: {
+                matches: boolean;
+                confidence: number;
+                issues: string[];
+                suggestions: string[];
+                analysis: string;
+            } | null = null;
+
             if (this.geminiClient) {
-                const analysis = await this.geminiClient.analyzeScreenshot(
+                analysis = await this.geminiClient.analyzeScreenshot(
                     screenshotBase64,
                     'image/png',
                     description,
                     missionObjective || 'Verify the UI looks correct'
                 );
+            } else if (this.claudeClient) {
+                analysis = await this.claudeClient.analyzeScreenshot(
+                    screenshotBase64,
+                    'image/png',
+                    description,
+                    missionObjective || 'Verify the UI looks correct'
+                );
+            } else if (this.copilotClaudeClient) {
+                analysis = await this.copilotClaudeClient.analyzeScreenshot(
+                    screenshotBase64,
+                    'image/png',
+                    description,
+                    missionObjective || 'Verify the UI looks correct'
+                );
+            }
 
+            if (analysis) {
                 // Build detailed result for the agent
                 let result = `\n=== UI VERIFICATION: "${category}" ===\n`;
                 result += `📊 VERDICT: ${analysis.matches ? '✅ PASS' : '❌ FAIL'}\n`;
@@ -575,11 +609,11 @@ export class AgentTools {
 
                 return result;
             } else {
-                // Fallback: Basic analysis without Gemini Vision
+                // Fallback: Basic analysis without vision AI
                 let result = `UI Verification for "${category}":\n`;
                 result += `- Screenshot taken: ${screenshotResult.path}\n`;
                 result += `- Expected: ${description}\n`;
-                result += `- Note: Gemini Vision not available for semantic analysis. `;
+                result += `- Note: No AI vision available for semantic analysis. `;
                 result += `Please visually inspect the screenshot.\n`;
 
                 if (this.visualService) {

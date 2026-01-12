@@ -248,4 +248,72 @@ You MUST use this exact format. Do NOT just describe what you want to do - actua
         console.log(`[CopilotClaudeClient] Total tool calls found: ${calls.length}`);
         return calls;
     }
+
+    /**
+     * Research/search the web using Copilot Claude
+     * Note: vscode.lm API doesn't have native web search, so we simulate with a research prompt
+     */
+    public async research(query: string): Promise<string> {
+        if (!this.model) {
+            return 'Error: Copilot Claude model not initialized.';
+        }
+
+        try {
+            const messages = [
+                vscode.LanguageModelChatMessage.User(`You are a research assistant. Please provide comprehensive, factual information about the following query. Include relevant technical details, best practices, and current recommendations. If this is about a specific technology or library, include version-specific information where relevant.
+
+Query: ${query}
+
+Provide a detailed, helpful response based on your training data. If you're uncertain about specific details, indicate that clearly.`)
+            ];
+
+            const response = await this.model.sendRequest(
+                messages,
+                {},
+                new vscode.CancellationTokenSource().token
+            );
+
+            let result = '';
+            for await (const fragment of response.text) {
+                result += fragment;
+            }
+
+            return result || 'No research results found.';
+        } catch (error: any) {
+            return `Research failed: ${error.message}`;
+        }
+    }
+
+    /**
+     * Analyze a screenshot using Copilot Claude Vision
+     * Note: vscode.lm API may not support images - this provides a fallback response
+     */
+    public async analyzeScreenshot(
+        _imageBase64: string,
+        _mimeType: string,
+        expectedDescription: string,
+        missionObjective: string
+    ): Promise<{
+        matches: boolean;
+        confidence: number;
+        issues: string[];
+        suggestions: string[];
+        analysis: string;
+    }> {
+        // vscode.lm API may not support image input
+        // Provide a fallback that indicates manual verification is needed
+        console.warn('[CopilotClaudeClient] Vision analysis requested but vscode.lm may not support images');
+
+        return {
+            matches: false,
+            confidence: 0,
+            issues: ['VS Code Language Model API does not support image analysis'],
+            suggestions: [
+                'Use Claude API mode (set API key) for vision analysis',
+                'Manually verify the UI matches expectations',
+                `Expected: ${expectedDescription.substring(0, 100)}...`
+            ],
+            analysis: `Vision analysis is not available through VS Code Copilot integration. Mission objective was: ${missionObjective}. Please verify manually or switch to Claude API mode.`
+        };
+    }
 }

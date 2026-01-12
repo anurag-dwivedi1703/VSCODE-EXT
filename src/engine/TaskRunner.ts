@@ -666,6 +666,8 @@ ${contextData}
                 workspaceRoot,
                 terminalManager,
                 searchClient,
+                taskContext.claude,
+                taskContext.copilotClaude,
                 () => { this._onReloadBrowser.fire(); },
                 (url: string) => { this._onNavigateBrowser.fire(url); },
                 FileLockManager.getInstance(), // Inject Lock Manager
@@ -1535,6 +1537,8 @@ ${contextData}
                         worktreePath,
                         terminalManager,
                         searchClient,
+                        this.taskContexts.get(taskId)?.claude,
+                        this.taskContexts.get(taskId)?.copilotClaude,
                         () => { this._onReloadBrowser.fire(); },
                         (url: string) => { this._onNavigateBrowser.fire(url); },
                         FileLockManager.getInstance(),

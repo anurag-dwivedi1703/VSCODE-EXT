@@ -295,4 +295,154 @@ export class ClaudeClient {
             }
         };
     }
+
+    /**
+     * Research/search the web using Claude
+     * Note: Claude doesn't have native web search, so we simulate with a research prompt
+     */
+    public async research(query: string): Promise<string> {
+        try {
+            const response = await this.client.messages.create({
+                model: this.modelName,
+                max_tokens: 4096,
+                messages: [{
+                    role: 'user',
+                    content: `You are a research assistant. Please provide comprehensive, factual information about the following query. Include relevant technical details, best practices, and current recommendations. If this is about a specific technology or library, include version-specific information where relevant.
+
+Query: ${query}
+
+Provide a detailed, helpful response based on your training data. If you're uncertain about specific details, indicate that clearly.`
+                }]
+            });
+
+            // Extract text from response
+            let result = '';
+            for (const block of response.content) {
+                if (block.type === 'text') {
+                    result += block.text;
+                }
+            }
+            return result || 'No research results found.';
+        } catch (error: any) {
+            return `Research failed: ${error.message}`;
+        }
+    }
+
+    /**
+     * Analyze a screenshot using Claude Vision to verify it matches expectations
+     * This enables the browser_verify_ui tool to work with Claude
+     */
+    public async analyzeScreenshot(
+        imageBase64: string,
+        mimeType: string,
+        expectedDescription: string,
+        missionObjective: string
+    ): Promise<{
+        matches: boolean;
+        confidence: number;
+        issues: string[];
+        suggestions: string[];
+        analysis: string;
+    }> {
+        try {
+            const response = await this.client.messages.create({
+                model: this.modelName,
+                max_tokens: 4096,
+                messages: [{
+                    role: 'user',
+                    content: [
+                        {
+                            type: 'image',
+                            source: {
+                                type: 'base64',
+                                media_type: mimeType as 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp',
+                                data: imageBase64
+                            }
+                        },
+                        {
+                            type: 'text',
+                            text: `You are a UI testing expert. Analyze this screenshot and determine if it matches the expected design.
+
+MISSION OBJECTIVE: ${missionObjective}
+
+EXPECTED UI DESCRIPTION: ${expectedDescription}
+
+Analyze the screenshot and respond in this EXACT JSON format:
+{
+"matches": true/false,
+"confidence": 0-100,
+"issues": ["list of specific UI problems found"],
+"suggestions": ["list of specific code fixes to address the issues"],
+"analysis": "Brief description of what you see vs what was expected"
+}
+
+IMPORTANT:
+- Set "matches" to true ONLY if the UI clearly fulfills the expected description
+- Be specific about issues (e.g., "Button text is 'Submit' but should be 'Login'")
+- Provide actionable suggestions (e.g., "Change the h1 text from 'Welcome' to 'Login Form'")
+- Consider: layout, colors, text content, element presence, responsiveness
+- If the page is blank, loading, or shows an error, that's a critical issue
+
+Respond ONLY with the JSON, no other text.`
+                        }
+                    ]
+                }]
+            });
+
+            // Extract text from response
+            let responseText = '';
+            for (const block of response.content) {
+                if (block.type === 'text') {
+                    responseText += block.text;
+                }
+            }
+
+            // Parse the JSON response
+            try {
+                // Clean up the response (remove markdown code blocks if present)
+                let jsonText = responseText.trim();
+                if (jsonText.startsWith('```json')) {
+                    jsonText = jsonText.slice(7);
+                }
+                if (jsonText.startsWith('```')) {
+                    jsonText = jsonText.slice(3);
+                }
+                if (jsonText.endsWith('```')) {
+                    jsonText = jsonText.slice(0, -3);
+                }
+                jsonText = jsonText.trim();
+
+                const parsed = JSON.parse(jsonText);
+                return {
+                    matches: parsed.matches === true,
+                    confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 50,
+                    issues: Array.isArray(parsed.issues) ? parsed.issues : [],
+                    suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions : [],
+                    analysis: parsed.analysis || 'No analysis provided'
+                };
+            } catch (parseError) {
+                // If JSON parsing fails, try to extract meaning from text
+                const lowerText = responseText.toLowerCase();
+                const matches = lowerText.includes('matches": true') ||
+                    (lowerText.includes('looks correct') && !lowerText.includes('not'));
+
+                return {
+                    matches: matches,
+                    confidence: 30,
+                    issues: ['Could not parse vision analysis response'],
+                    suggestions: ['Manual review recommended'],
+                    analysis: responseText.substring(0, 500)
+                };
+            }
+        } catch (error: any) {
+            console.error('[ClaudeClient] Vision analysis failed:', error.message);
+            return {
+                matches: false,
+                confidence: 0,
+                issues: [`Vision analysis error: ${error.message}`],
+                suggestions: ['Check Claude API connection and try again'],
+                analysis: 'Analysis failed due to API error'
+            };
+        }
+    }
 }
