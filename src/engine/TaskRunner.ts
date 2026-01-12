@@ -1453,19 +1453,29 @@ ${contextData}
 
                     // Detect if this is a trivial request (skip planning for questions, math, etc.)
                     const isTrivial = this.isTrivialRequest(message);
-                    const modeWorkflow = this.buildModeWorkflow(task.mode || 'planning', isTrivial);
 
-                    // Detect if user is starting a completely NEW mission (not continuing old work)
-                    // Be AGGRESSIVE about detecting new missions to avoid old context bleeding
+                    // Detect if this is a substantial code change request (should use planning mode)
                     const msgLower = message.toLowerCase();
-                    const hasCreateCommand = msgLower.includes('create') || msgLower.includes('make') || msgLower.includes('build') || msgLower.includes('write');
+                    const hasChangeCommand = msgLower.includes('change') || msgLower.includes('modify') ||
+                        msgLower.includes('update') || msgLower.includes('add') || msgLower.includes('fix') ||
+                        msgLower.includes('implement') || msgLower.includes('refactor');
+                    const hasCreateCommand = msgLower.includes('create') || msgLower.includes('make') ||
+                        msgLower.includes('build') || msgLower.includes('write');
                     const specifiesNewFile = /create\s+\w+\.\w+|make\s+\w+\.\w+|build\s+\w+|write\s+\w+\.\w+/i.test(message);
                     const refersToOldWork = msgLower.includes('continue') || msgLower.includes('the file') ||
-                        msgLower.includes('the code') || msgLower.includes('that file') || msgLower.includes('fix it');
+                        msgLower.includes('that file') || msgLower.includes('fix it');
 
-                    // NEW MISSION if: user is giving a CREATE command with a specific file AND not referencing old work
+                    // Substantial work = code changes/creates (not just viewing or asking questions)
+                    const isSubstantialWork = hasChangeCommand || hasCreateCommand;
+
+                    // NEW MISSION if: user is giving a CREATE/CHANGE command with specific intent AND not just saying "continue"
                     const isNewMission = (hasCreateCommand && specifiesNewFile && !refersToOldWork) ||
-                        (message.length > 50 && !refersToOldWork);
+                        (message.length > 50 && !refersToOldWork && !msgLower.includes('the code'));
+
+                    // CRITICAL: For substantial work, ALWAYS use planning mode regardless of original task.mode
+                    // This ensures code changes get proper task.md / implementation_plan.md / validation
+                    const effectiveMode = (isSubstantialWork && !isTrivial) ? 'planning' : (task.mode || 'planning');
+                    const modeWorkflow = this.buildModeWorkflow(effectiveMode, isTrivial);
 
                     const contextSection = isNewMission
                         ? `⚠️ CRITICAL: IGNORE all previous task context. The user is starting a BRAND NEW mission. Do exactly what they ask in their new request. Do NOT reference or continue any previous work.`
