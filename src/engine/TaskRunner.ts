@@ -1789,7 +1789,11 @@ CORE WORKFLOW (FAST MODE):
 3. EXPLORE (optional): Only if needed to locate files.
 4. VERIFY (MANDATORY):
    - Run the code or start the server.
-   - **Web Apps**: Call 'reload_browser()' to refresh the preview.
+   - **Web Apps**: 
+     a) Call 'reload_browser()' to refresh the preview
+     b) Call 'browser_verify_ui("page-name", "description of expected UI")' for AI-powered verification
+     c) If FAIL: Fix the issues and call browser_verify_ui AGAIN
+   - Never say "verified" unless browser_verify_ui returned PASS
 5. FINISH:
    - Answer with "MISSION COMPLETE" at the end.
             `.trim();
@@ -1804,15 +1808,18 @@ CORE WORKFLOW (PLANNING MODE):
    - Create a file named 'implementation_plan.md'. This must detail your technical approach.
 3. ACT: Use write_file / run_command to implement the plan.
 4. UPDATE: After completing a step, OVERWRITE 'task.md' to mark the item as done (e.g., "- [x] Step 1").
-5. VERIFY (MANDATORY):
+5. VERIFY (MANDATORY - AI-POWERED):
    - Run tests or verification scripts.
-   - **Web Apps**: You MUST start the server (e.g. 'npm run dev') and call 'reload_browser()' to refresh the internal preview.
-   - **Check Ports**: Ensure you are viewing the correct port. If the preview shows old content, the old server might still be running. Kill it.
-   - Confirm the output is correct.
-   - If verification fails, FIX IT before marking as complete.
+   - **Web Apps**: You MUST:
+     a) Start the server (e.g. 'npm run dev')
+     b) Call 'reload_browser()' to refresh the preview
+     c) Call 'browser_verify_ui("page-name", "description of expected UI")' for AI vision verification
+     d) If FAIL: Read the issues, fix the code, and call browser_verify_ui AGAIN
+   - **Check Ports**: Ensure you are viewing the correct port.
+   - CRITICAL: browser_verify_ui() provides actual AI verification. Never say "verified" unless you got PASS.
 6. FINISH:
    - You MUST create a file named "mission_summary.md" in the root.
-   - Write a detailed summary of changes and verification instructions in it.
+   - Write a detailed summary of changes and verification results.
    - Answer with "MISSION COMPLETE" only after creating this file.
         `.trim();
     }
