@@ -945,6 +945,7 @@ function App() {
                                             <option value="gemini-3-pro-preview">Gemini 3 Pro</option>
                                             <option value="gemini-3-flash-preview">Gemini 3 Flash</option>
                                             <option value="claude-opus-4-5-20251101">Claude Opus 4.5</option>
+                                            <option value="claude-sonnet-4-5-20251101">Claude Sonnet 4.5</option>
                                         </select>
                                         <span className="submit-arrow">→</span>
                                     </div>
@@ -1000,6 +1001,7 @@ function App() {
                                             <option value="gemini-3-pro-preview">Gemini 3 Pro (Reasoning)</option>
                                             <option value="gemini-3-flash-preview">Gemini 3 Flash (Speed)</option>
                                             <option value="claude-opus-4-5-20251101">Claude Opus 4.5 (Thinking)</option>
+                                            <option value="claude-sonnet-4-5-20251101">Claude Sonnet 4.5 (Fast)</option>
                                         </select>
                                     </div>
                                 </div>

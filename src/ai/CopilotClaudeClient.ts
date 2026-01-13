@@ -12,19 +12,87 @@ export class CopilotClaudeClient {
         // Model will be selected when session starts
     }
 
-    public async initialize(): Promise<boolean> {
+    /**
+     * Static method to discover and log all available vscode.lm models
+     * Call this to see what models are available in your environment
+     */
+    public static async discoverModels(): Promise<vscode.LanguageModelChat[]> {
         try {
-            // First, list ALL available models to debug
             const allModels = await vscode.lm.selectChatModels({});
-            console.log('[CopilotClaudeClient] All available models:');
-            allModels.forEach(m => {
-                console.log(`  - id: ${m.id}, name: ${m.name}, vendor: ${m.vendor}, family: ${m.family}`);
+
+            console.log('╔══════════════════════════════════════════════════════════════════╗');
+            console.log('║           VS CODE LANGUAGE MODEL API - AVAILABLE MODELS          ║');
+            console.log('╠══════════════════════════════════════════════════════════════════╣');
+
+            allModels.forEach((m, i) => {
+                console.log(`║ [${i + 1}] ID: ${m.id}`);
+                console.log(`║     Name: ${m.name}`);
+                console.log(`║     Vendor: ${m.vendor}`);
+                console.log(`║     Family: ${m.family}`);
+                console.log(`║     Max Input Tokens: ${m.maxInputTokens || 'N/A'}`);
+                console.log('╟──────────────────────────────────────────────────────────────────╢');
             });
 
-            // Try to find Claude model - prefer opus if available
-            let claudeModel = allModels.find(m =>
-                m.id.toLowerCase().includes('claude-opus')
+            console.log(`║ TOTAL MODELS AVAILABLE: ${allModels.length}`);
+            console.log('╚══════════════════════════════════════════════════════════════════╝');
+
+            return allModels;
+        } catch (error: any) {
+            console.error('[CopilotClaudeClient] Error discovering models:', error.message);
+            return [];
+        }
+    }
+
+    /**
+     * Get a Gemini model for vision analysis via vscode.lm
+     */
+    public static async getGeminiVisionModel(): Promise<vscode.LanguageModelChat | undefined> {
+        try {
+            const allModels = await vscode.lm.selectChatModels({});
+
+            // Look for Gemini Flash 3 first (best for vision)
+            let geminiModel = allModels.find(m =>
+                m.id.toLowerCase().includes('gemini-3-flash') ||
+                m.id.toLowerCase().includes('gemini-flash-3')
             );
+
+            // Fallback to any Gemini model
+            if (!geminiModel) {
+                geminiModel = allModels.find(m =>
+                    m.id.toLowerCase().includes('gemini') ||
+                    m.family.toLowerCase().includes('gemini')
+                );
+            }
+
+            if (geminiModel) {
+                console.log(`[CopilotClaudeClient] Found Gemini vision model: ${geminiModel.id}`);
+            }
+
+            return geminiModel;
+        } catch (error: any) {
+            console.error('[CopilotClaudeClient] Error finding Gemini model:', error.message);
+            return undefined;
+        }
+    }
+
+    public async initialize(): Promise<boolean> {
+        try {
+            // Log all available models for discovery
+            const allModels = await CopilotClaudeClient.discoverModels();
+
+            // Try to find Claude model - prefer opus, then sonnet
+            let claudeModel = allModels.find(m =>
+                m.id.toLowerCase().includes('claude-opus-4') ||
+                m.id.toLowerCase().includes('claude-4-opus')
+            );
+
+            // Try Claude Sonnet 4.5
+            if (!claudeModel) {
+                claudeModel = allModels.find(m =>
+                    m.id.toLowerCase().includes('claude-sonnet-4') ||
+                    m.id.toLowerCase().includes('claude-4-sonnet')
+                );
+            }
 
             // Fallback to any Claude model
             if (!claudeModel) {
@@ -37,22 +105,22 @@ export class CopilotClaudeClient {
 
             if (claudeModel) {
                 this.model = claudeModel;
-                console.log(`[CopilotClaudeClient] Found Claude model: ${this.model.id} (${this.model.name})`);
+                console.log(`[CopilotClaudeClient] ✓ Selected Claude model: ${this.model.id} (${this.model.name})`);
                 return true;
             }
 
             // Fallback: try specific family filters that might work
-            const familyAttempts = ['claude', 'anthropic', 'claude-3', 'claude-opus'];
+            const familyAttempts = ['claude', 'anthropic', 'claude-3', 'claude-opus', 'claude-sonnet'];
             for (const family of familyAttempts) {
                 const models = await vscode.lm.selectChatModels({ family });
                 if (models.length > 0) {
                     this.model = models[0];
-                    console.log(`[CopilotClaudeClient] Found Claude model via family '${family}': ${this.model.id}`);
+                    console.log(`[CopilotClaudeClient] ✓ Found Claude model via family '${family}': ${this.model.id}`);
                     return true;
                 }
             }
 
-            console.error('[CopilotClaudeClient] No Claude models found. Available models:', allModels.map(m => m.id).join(', '));
+            console.error('[CopilotClaudeClient] ✗ No Claude models found. Available:', allModels.map(m => m.id).join(', '));
             return false;
         } catch (error: any) {
             console.error('[CopilotClaudeClient] Error initializing:', error.message);

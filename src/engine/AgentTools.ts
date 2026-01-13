@@ -536,35 +536,117 @@ export class AgentTools {
                 analysis: string;
             } | null = null;
 
-            // Try Gemini first - if not passed, try to create one from API key
+            // Try Gemini first - either passed client or via vscode.lm
             let visionClient = this.geminiClient;
-            if (!visionClient) {
-                // Try to create a temporary Gemini client for vision analysis
+
+            // Priority 1: Try Gemini via vscode.lm (works with Copilot subscription)
+            if (!visionClient && !analysis) {
+                try {
+                    const { CopilotClaudeClient } = await import('../ai/CopilotClaudeClient');
+                    const geminiVisionModel = await CopilotClaudeClient.getGeminiVisionModel();
+
+                    if (geminiVisionModel) {
+                        console.log(`[AgentTools] Using Gemini vision via vscode.lm: ${geminiVisionModel.id}`);
+
+                        // Send vision request using the Gemini model
+                        const fs = await import('fs');
+                        const path = await import('path');
+                        const os = await import('os');
+
+                        const tempDir = os.tmpdir();
+                        const tempPath = path.join(tempDir, `vibe_vision_${Date.now()}.png`);
+                        const imageBuffer = Buffer.from(screenshotBase64, 'base64');
+                        fs.writeFileSync(tempPath, imageBuffer);
+
+                        const imageUri = vscode.Uri.file(tempPath);
+
+                        const prompt = `You are a UI testing expert. Analyze this screenshot and determine if it matches the expected design.
+
+EXPECTED UI DESCRIPTION: ${description}
+MISSION OBJECTIVE: ${missionObjective || 'Verify the UI looks correct'}
+
+Respond in this EXACT JSON format:
+{"matches": true/false, "confidence": 0-100, "issues": ["list"], "suggestions": ["list"], "analysis": "description"}`;
+
+                        const messages = [
+                            vscode.LanguageModelChatMessage.User([
+                                { type: 'text', value: prompt },
+                                { type: 'image', value: imageUri }
+                            ] as any)
+                        ];
+
+                        const response = await geminiVisionModel.sendRequest(
+                            messages,
+                            {},
+                            new vscode.CancellationTokenSource().token
+                        );
+
+                        let responseText = '';
+                        for await (const fragment of response.text) {
+                            responseText += fragment;
+                        }
+
+                        // Clean up temp file
+                        try { fs.unlinkSync(tempPath); } catch { }
+
+                        // Parse response
+                        let jsonText = responseText.trim();
+                        if (jsonText.startsWith('```json')) jsonText = jsonText.slice(7);
+                        if (jsonText.startsWith('```')) jsonText = jsonText.slice(3);
+                        if (jsonText.endsWith('```')) jsonText = jsonText.slice(0, -3);
+                        jsonText = jsonText.trim();
+
+                        try {
+                            const parsed = JSON.parse(jsonText);
+                            analysis = {
+                                matches: parsed.matches === true,
+                                confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 50,
+                                issues: Array.isArray(parsed.issues) ? parsed.issues : [],
+                                suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions : [],
+                                analysis: parsed.analysis || responseText.substring(0, 500)
+                            };
+                        } catch {
+                            analysis = {
+                                matches: responseText.toLowerCase().includes('matches": true'),
+                                confidence: 30,
+                                issues: ['Could not parse Gemini vision response'],
+                                suggestions: [],
+                                analysis: responseText.substring(0, 500)
+                            };
+                        }
+                    }
+                } catch (e: any) {
+                    console.log(`[AgentTools] Gemini vscode.lm vision failed: ${e.message}`);
+                }
+            }
+
+            // Priority 2: Try Gemini API client
+            if (!analysis && !visionClient) {
                 const config = vscode.workspace.getConfiguration('vibearchitect');
                 const geminiApiKey = config.get<string>('geminiApiKey') || '';
                 if (geminiApiKey) {
                     const { GeminiClient } = await import('../ai/GeminiClient');
                     visionClient = new GeminiClient(geminiApiKey, 'gemini-2.0-flash');
-                    console.log('[AgentTools] Created on-demand Gemini client for vision analysis');
+                    console.log('[AgentTools] Created on-demand Gemini API client for vision analysis');
                 }
             }
 
-            if (visionClient) {
+            if (!analysis && visionClient) {
                 analysis = await visionClient.analyzeScreenshot(
                     screenshotBase64,
                     'image/png',
                     description,
                     missionObjective || 'Verify the UI looks correct'
                 );
-            } else if (this.claudeClient) {
+            } else if (!analysis && this.claudeClient) {
                 analysis = await this.claudeClient.analyzeScreenshot(
                     screenshotBase64,
                     'image/png',
                     description,
                     missionObjective || 'Verify the UI looks correct'
                 );
-            } else if (this.copilotClaudeClient) {
-                // Copilot Claude can't do vision - provide helpful fallback
+            } else if (!analysis && this.copilotClaudeClient) {
+                // Copilot Claude vision (uses currently selected Claude model)
                 analysis = await this.copilotClaudeClient.analyzeScreenshot(
                     screenshotBase64,
                     'image/png',
