@@ -1031,7 +1031,7 @@ ${contextData}
                             const taskContext = this.taskContexts.get(taskId);
                             if (taskContext && taskContext.shadowRepo) {
                                 // Only checkpoint for state-changing tools
-                                if (['write_file', 'run_command'].includes(fnName)) {
+                                if (['write_file', 'apply_diff', 'run_command'].includes(fnName)) {
                                     const snapMsg = `Pre - Tool: ${fnName} (${JSON.stringify(args)})`;
                                     if (taskContext.shadowRepo) {
                                         const snapHash = await taskContext.shadowRepo.snapshot(snapMsg);
@@ -1618,13 +1618,14 @@ ${contextData}
                     // Ensure Context exists because we need to store the client there
                     let taskContext = this.taskContexts.get(taskId);
                     if (!taskContext) {
-                        // Create basic context (ShadowRepo needed for tools)
+                        // Create and initialize context (ShadowRepo needed for tools and revert)
                         const shadowRepo = new ShadowRepository(this.context, worktreePath);
-                        // We assume it was initialized before if task exists
+                        await shadowRepo.initialize(); // Essential for checkpoints to work!
                         const revertManager = new RevertManager(shadowRepo);
                         taskContext = { shadowRepo, revertManager };
                         this.taskContexts.set(taskId, taskContext);
                     }
+
 
                     if (isClaudeModel && useCopilotForClaude) {
                         task.logs.push('> [System]: Resuming with Claude via Copilot...');
@@ -1708,10 +1709,11 @@ ${contextData}
             if (task.worktreePath) {
                 console.log(`[TaskRunner] Re-initializing Context for ${task.worktreePath}`);
                 const shadowRepo = new ShadowRepository(this.context, task.worktreePath);
-                // We assume it was already init'd before
+                await shadowRepo.initialize(); // Must initialize for revert to work!
                 const revertManager = new RevertManager(shadowRepo);
                 taskContext = { shadowRepo, revertManager };
                 this.taskContexts.set(taskId, taskContext);
+
             } else {
                 console.error(`[TaskRunner] Revert failed: No worktree path for task ${taskId}`);
                 return;
