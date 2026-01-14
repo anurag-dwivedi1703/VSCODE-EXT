@@ -546,7 +546,7 @@ export class AgentTools {
                 console.log('[AgentTools] Using Copilot Claude for vision analysis');
                 try {
                     analysis = await this.copilotClaudeClient.analyzeScreenshot(
-                        screenshotBase64,
+                        screenshotBuffer,
                         'image/png',
                         description,
                         missionObjective || 'Verify the UI looks correct'
@@ -563,7 +563,7 @@ export class AgentTools {
                     const config = vscode.workspace.getConfiguration('vibearchitect');
                     const geminiApiKey = config.get<string>('geminiApiKey') || '';
                     if (geminiApiKey) {
-                        const { GeminiClient } = await import('../ai/GeminiClient');
+                        const { GeminiClient } = await import('../ai/GeminiClient.js');
                         visionClient = new GeminiClient(geminiApiKey, 'gemini-2.0-flash');
                         console.log('[AgentTools] Created on-demand Gemini API client for vision analysis');
                     }

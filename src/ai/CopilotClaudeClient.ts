@@ -389,7 +389,7 @@ Provide a detailed, helpful response based on your training data. If you're unce
      * Uses the new vscode.lm API with image content support
      */
     public async analyzeScreenshot(
-        imageBase64: string,
+        imageBase64: Uint8Array,
         mimeType: string,
         expectedDescription: string,
         missionObjective: string
@@ -421,11 +421,11 @@ Provide a detailed, helpful response based on your training data. If you're unce
             const tempPath = path.join(tempDir, `vibe_screenshot_${Date.now()}.${ext}`);
 
             // Write base64 to file
-            const imageBuffer = Buffer.from(imageBase64, 'base64');
-            fs.writeFileSync(tempPath, imageBuffer);
+            //const imageBuffer = Buffer.from(imageBase64, 'base64');
+            //fs.writeFileSync(tempPath, imageBuffer);
 
-            const imageUri = vscode.Uri.file(tempPath);
-            console.log(`[CopilotClaudeClient] Vision analysis: saved temp image to ${tempPath}`);
+            //const imageUri = vscode.Uri.file(tempPath);
+            //console.log(`[CopilotClaudeClient] Vision analysis: saved temp image to ${tempPath}`);
 
             const prompt = `You are a UI testing expert. Analyze this screenshot and determine if it matches the expected design.
 
@@ -452,11 +452,8 @@ Respond ONLY with the JSON, no other text.`;
 
             // Create multimodal message with text and image
             const messages = [
-                vscode.LanguageModelChatMessage.User([
-                    { type: 'text', value: prompt },
-                    { type: 'image', value: imageUri }
-                ] as any) // Using 'as any' for the new content array format
-            ];
+                vscode.LanguageModelChatMessage.User([new vscode.LanguageModelDataPart(imageBase64, mimeType)]),
+                vscode.LanguageModelChatMessage.User(prompt),];
 
             const response = await this.model.sendRequest(
                 messages,
