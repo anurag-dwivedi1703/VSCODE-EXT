@@ -150,8 +150,15 @@ Available tools and their formats:
 {"name": "read_file", "args": {"path": "path/to/file"}}
 \`\`\`
 - \`\`\`tool_call
+{"name": "apply_diff", "args": {"path": "path/to/file", "diff": "<<<<<<< SEARCH\\nold code\\n=======\\nnew code\\n>>>>>>> REPLACE"}}
+\`\`\`
+  ^ PREFERRED for modifying existing files - reduces token usage by 90%!
+  
+- \`\`\`tool_call
 {"name": "write_file", "args": {"path": "path/to/file", "content": "file content"}}
 \`\`\`
+  ^ Use ONLY for NEW files or complete rewrites
+  
 - \`\`\`tool_call
 {"name": "run_command", "args": {"command": "npm start"}}
 \`\`\`
@@ -165,8 +172,15 @@ Available tools and their formats:
 {"name": "search_web", "args": {"query": "search query"}}
 \`\`\`
 
+IMPORTANT - apply_diff Rules:
+1. The SEARCH block must match the file content EXACTLY (including whitespace)
+2. Include enough unique context to identify the location
+3. For multiple changes, use multiple SEARCH/REPLACE blocks in the same diff
+4. ALWAYS prefer apply_diff over write_file when modifying existing files
+
 You MUST use this exact format. Do NOT just describe what you want to do - actually output the tool_call block!
 `;
+
 
         // Add system context as first user message (vscode.lm may not support system role)
         messages.push(vscode.LanguageModelChatMessage.User(`[SYSTEM CONTEXT]\n${systemPrompt}\n${toolCallInstructions}\n[END SYSTEM CONTEXT]`));

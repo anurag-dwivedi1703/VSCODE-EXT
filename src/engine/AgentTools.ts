@@ -9,6 +9,7 @@ import { FileLockManager } from '../services/FileLockManager';
 import { BrowserAutomationService, ScreenshotResult, RecordingResult } from '../services/BrowserAutomationService';
 import { VisualComparisonService, ComparisonResult } from '../services/VisualComparisonService';
 import { detectSecrets, detectPII, DetectedSecret, DetectedPII } from '../ai/SecurityInstructions';
+import { parseSearchReplaceBlocks, applySearchReplace, containsSearchReplaceBlocks, ApplyResult } from '../utils/SearchReplaceParser';
 
 export class AgentTools {
     private browserService: BrowserAutomationService | null = null;
@@ -162,6 +163,96 @@ export class AgentTools {
             }
         } catch (error: any) {
             return `Error writing file ${relativePath}: ${error.message}`;
+        }
+    }
+
+    /**
+     * Apply a SEARCH/REPLACE diff to a file
+     * This is much more token-efficient than rewriting entire files
+     * 
+     * Format:
+     * <<<<<<< SEARCH
+     * exact code to find
+     * =======
+     * replacement code
+     * >>>>>>> REPLACE
+     */
+    async applyDiff(relativePath: string, diffContent: string): Promise<string> {
+        try {
+            const fileUri = this.getUri(relativePath);
+            const absolutePath = fileUri.fsPath;
+
+            // Read existing file content
+            let existingContent: string;
+            try {
+                const uint8Array = await vscode.workspace.fs.readFile(fileUri);
+                existingContent = new TextDecoder().decode(uint8Array);
+            } catch (error: any) {
+                return `Error: Cannot apply diff - file does not exist: ${relativePath}. Use write_file to create new files.`;
+            }
+
+            // Parse SEARCH/REPLACE blocks from diff content
+            const blocks = parseSearchReplaceBlocks(diffContent);
+            if (blocks.length === 0) {
+                return `Error: No valid SEARCH/REPLACE blocks found in diff content. Expected format:
+<<<<<<< SEARCH
+exact code to find
+=======
+replacement code
+>>>>>>> REPLACE`;
+            }
+
+            // Apply the diff
+            const result: ApplyResult = applySearchReplace(existingContent, blocks);
+
+            if (!result.success && result.appliedBlocks === 0) {
+                // Complete failure
+                return `Error applying diff to ${relativePath}:\n` +
+                    result.errors.join('\n') +
+                    `\n\nTip: The SEARCH block must match the file content EXACTLY, including whitespace.`;
+            }
+
+            // Enforce locking
+            if (this.fileLockManager && this.taskId) {
+                if (!this.fileLockManager.acquireLock(absolutePath, this.taskId)) {
+                    return `Error: File ${relativePath} is currently locked by another agent. Please wait.`;
+                }
+            }
+
+            try {
+                // Write the updated content
+                const uint8Array = new TextEncoder().encode(result.newContent);
+                await vscode.workspace.fs.writeFile(fileUri, uint8Array);
+
+                // Build response
+                let response = `✅ Successfully applied diff to ${relativePath}\n`;
+                response += `   • Blocks applied: ${result.appliedBlocks}/${blocks.length}\n`;
+
+                if (result.failedBlocks.length > 0) {
+                    response += `   ⚠️ ${result.failedBlocks.length} block(s) failed to apply:\n`;
+                    result.errors.forEach((err, i) => {
+                        response += `      ${i + 1}. ${err}\n`;
+                    });
+                }
+
+                // Auto-reload for frontend files
+                const p = relativePath.toLowerCase();
+                if (p.endsWith('.html') || p.endsWith('.css') || p.endsWith('.js') || p.endsWith('.jsx') || p.endsWith('.tsx')) {
+                    if (this.onReloadBrowserCallback) {
+                        this.onReloadBrowserCallback();
+                        response += `   • Browser preview auto-reloaded\n`;
+                    }
+                }
+
+                return response;
+            } finally {
+                // Always release lock
+                if (this.fileLockManager && this.taskId) {
+                    this.fileLockManager.releaseLock(absolutePath, this.taskId);
+                }
+            }
+        } catch (error: any) {
+            return `Error applying diff to ${relativePath}: ${error.message}`;
         }
     }
 

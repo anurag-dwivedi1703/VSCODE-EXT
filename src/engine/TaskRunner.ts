@@ -696,10 +696,34 @@ ${contextData}
             
             === BASIC TOOLS ===
             - read_file(path): Read file content.
-            - write_file(path, content): Write file content (auto-creates dirs).
+            - write_file(path, content): Write file content (auto-creates dirs). Use for NEW files only.
+            - apply_diff(path, diff): Apply SEARCH/REPLACE diff to modify existing files. PREFERRED for edits.
             - list_files(path): List directory.
             - run_command(command): Execute shell command (git, npm, etc).
             - search_web(query): Search the web for documentation, solutions, or new concepts.
+            
+            === TOKEN EFFICIENCY (CRITICAL) ===
+            When MODIFYING existing files, ALWAYS use apply_diff instead of write_file.
+            
+            apply_diff Format:
+            <<<<<<< SEARCH
+            exact code to find (must match perfectly)
+            =======
+            replacement code
+            >>>>>>> REPLACE
+            
+            Example - to change a function name:
+            apply_diff("src/utils.ts", "<<<<<<< SEARCH
+            function oldName() {
+            =======
+            function newName() {
+            >>>>>>> REPLACE")
+            
+            Rules for apply_diff:
+            - SEARCH block must match file content EXACTLY (including whitespace)
+            - Include enough context to make the match unique
+            - For multiple changes in the same file, use multiple SEARCH/REPLACE blocks
+            - Use write_file ONLY for creating NEW files or complete rewrites
             
             === SIMPLE PREVIEW (just for quick display to user) ===
             - reload_browser(): Reload the embedded preview pane. Use ONLY to show the user what you built.
@@ -750,6 +774,8 @@ ${contextData}
                
             7. **REASONING**: Before calling ANY tool, explain your plan in 1-2 sentences.
             `;
+
+
 
 
             if (task.mode === 'planning') {
@@ -1191,9 +1217,56 @@ ${contextData}
                                         }
                                     }
                                     break;
+                                case 'apply_diff':
+                                    // Token-efficient differential editing
+                                    const diffPath = args.path as string;
+                                    const diffContent = args.diff as string;
+                                    const diffTimestamp = Date.now();
+
+                                    // Read existing content for diff tracking
+                                    let diffBeforeContent: string | null = null;
+                                    try {
+                                        const existing = await tools.readFile(diffPath);
+                                        if (!existing.startsWith('Error reading file')) {
+                                            diffBeforeContent = existing;
+                                        }
+                                    } catch {
+                                        // File doesn't exist
+                                    }
+
+                                    // Apply the diff
+                                    toolResult = await tools.applyDiff(diffPath, diffContent);
+
+                                    // Track file edit if successful (for diff viewing in UI)
+                                    if (toolResult.includes('Successfully applied diff')) {
+                                        if (!task.fileEdits) {
+                                            task.fileEdits = [];
+                                        }
+                                        // Read new content
+                                        let diffAfterContent = '';
+                                        try {
+                                            diffAfterContent = await tools.readFile(diffPath);
+                                        } catch { /* ignore */ }
+
+                                        task.fileEdits.push({
+                                            path: diffPath,
+                                            beforeContent: diffBeforeContent,
+                                            afterContent: diffAfterContent,
+                                            timestamp: diffTimestamp,
+                                            checkpointId: task.checkpoints?.[task.checkpoints.length - 1]?.id
+                                        });
+
+                                        // Artifact tracking
+                                        if (!task.artifacts.includes(diffPath)) {
+                                            task.artifacts.push(diffPath);
+                                            task.logs.push(`[Artifact Modified]: ${diffPath}`);
+                                        }
+                                    }
+                                    break;
                                 case 'list_files':
                                     toolResult = await tools.listFiles(args.path as string);
                                     break;
+
                                 case 'run_command':
                                     const cmd = (args.command as string || '').trim();
 
@@ -1494,12 +1567,21 @@ ${contextData}
                     
                     Available Tools:
                     - read_file(path): Read file content.
-                    - write_file(path, content): Write file content (auto-creates dirs).
+                    - apply_diff(path, diff): Apply SEARCH/REPLACE diff to modify existing files. PREFERRED for edits!
+                    - write_file(path, content): Write file content. Use for NEW files only.
                     - list_files(path): List directory.
                     - run_command(command): Execute shell command (git, npm, etc).
                     - reload_browser(): Reload the browser preview to verify changes. (Tool, NOT a shell command)
                     - navigate_browser(url): Navigate the browser preview to a specific URL (e.g., 'http://localhost:8080').
                     - search_web(query): Search the web for documentation, solutions, or new concepts.
+                    
+                    TOKEN EFFICIENCY (IMPORTANT):
+                    When MODIFYING existing files, use apply_diff instead of write_file:
+                    apply_diff("file.ts", "<<<<<<< SEARCH
+                    old code
+                    =======
+                    new code
+                    >>>>>>> REPLACE")
 
                     UI VERIFICATION RULE:
                     If you make ANY changes to the Frontend (HTML/CSS/JS), you MUST execute 'reload_browser()' right after.
@@ -1509,6 +1591,7 @@ ${contextData}
                     PREFERRED: If 'restart.js' exists, run it: 'run_command("node restart.js")'. It handles killing old processes and starting new ones safely.
                     If no script, use 'run_command("npm start &")'.
                     `;
+
 
                     const useCopilotForClaude = config.get<boolean>('useCopilotForClaude') || false;
 
