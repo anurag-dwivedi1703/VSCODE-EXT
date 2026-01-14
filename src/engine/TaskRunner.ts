@@ -856,72 +856,8 @@ ${contextData}
             // Step 4: Start Execution Loop
             await this.runExecutionLoop(taskId, chat, tools);
 
-            // ========================================
-            // SPEC-KIT: Post-Mission Constitution Review
-            // ========================================
-            const completedTask = this.tasks.get(taskId);
-            if (completedTask && completedTask.status === 'completed' && taskContext.specManager && taskContext.specManager.hasConstitution()) {
-                try {
-                    completedTask.logs.push(`> [Constitution]: Checking if updates are needed...`);
-                    this.updateStatus(taskId, 'completed', 98, 'Reviewing constitution...');
-
-                    // Get list of files that were modified during this mission
-                    const changedFiles = (completedTask.fileEdits || []).map(edit => edit.path);
-
-                    if (changedFiles.length > 0) {
-                        // Create AI client for review - prioritize Copilot Claude if that's what we're using
-                        let reviewAI: GeminiClient | ClaudeClient | CopilotClaudeClient;
-                        if (isClaudeModel && useCopilotForClaude) {
-                            // Use Copilot Claude for review (same as main task)
-                            const copilotClient = new CopilotClaudeClient();
-                            const initialized = await copilotClient.initialize();
-                            if (!initialized) {
-                                throw new Error('Failed to initialize Copilot Claude for constitution review');
-                            }
-                            reviewAI = copilotClient;
-                        } else if (isClaudeModel && claudeApiKey) {
-                            reviewAI = new ClaudeClient(claudeApiKey, modelId);
-                        } else if (geminiApiKey) {
-                            reviewAI = new GeminiClient(geminiApiKey, modelId);
-                        } else {
-                            throw new Error('No API key for constitution review');
-                        }
-
-                        const reviewPrompt = taskContext.specManager.getPostMissionReviewPrompt(changedFiles);
-                        const reviewSession = reviewAI.startSession(reviewPrompt, 'low');
-                        const reviewResult = await reviewSession.sendMessage('Analyze if constitution needs updates');
-                        const reviewResponse = (await reviewResult.response).text();
-
-
-                        const updateCheck = taskContext.specManager.parseUpdateCheckResponse(reviewResponse);
-
-                        if (updateCheck.needsUpdate) {
-                            taskContext.specManager.setPhase(SpecPhase.POST_MISSION_REVIEW);
-                            completedTask.logs.push(`> [Constitution]: Updates detected, requesting review...`);
-
-                            const approved = await this.waitForApproval(
-                                taskId,
-                                'constitution-update',
-                                updateCheck.suggestedChanges
-                            );
-                            if (approved) {
-                                await taskContext.specManager.saveConstitution(updateCheck.suggestedChanges);
-                                completedTask.logs.push(`> [Constitution]: Updated after mission completion`);
-                            } else {
-                                completedTask.logs.push(`> [Constitution]: Post-mission update declined`);
-                            }
-                        } else {
-                            completedTask.logs.push(`> [Constitution]: No updates needed`);
-                        }
-                    }
-                } catch (reviewError: any) {
-                    completedTask.logs.push(`> [Constitution]: Review error - ${reviewError.message}`);
-                    console.error('[TaskRunner] Post-mission constitution review failed:', reviewError);
-                }
-            }
-            // ========================================
-            // END POST-MISSION REVIEW
-            // ========================================
+            // Note: Post-mission constitution review is now handled inside runExecutionLoop
+            // so it works for both processTask and replyToTask
 
         } catch (error: any) {
             this.updateStatus(taskId, 'failed', 0, `Error: ${error.message} `);
@@ -1469,7 +1405,82 @@ ${contextData}
                     this._onTaskUpdate.fire({ taskId, task });
                     this.saveTask(task);
                 }
+
+                // ========================================
+                // POST-MISSION CONSTITUTION REVIEW (in runExecutionLoop)
+                // ========================================
+                const taskContext = this.taskContexts.get(taskId);
+                if (taskContext?.specManager?.hasConstitution()) {
+                    try {
+                        task.logs.push(`> [Constitution]: Checking if updates are needed...`);
+                        this.updateStatus(taskId, 'completed', 98, 'Reviewing constitution...');
+
+                        const changedFiles = (task.fileEdits || []).map(edit => edit.path);
+
+                        if (changedFiles.length > 0) {
+                            // Read settings dynamically
+                            const config = vscode.workspace.getConfiguration('vibearchitect');
+                            const modelId = task.model || 'gemini-3-pro-preview';
+                            const isClaudeModel = modelId.startsWith('claude');
+                            const useCopilotForClaude = config.get<boolean>('useCopilotForClaude') || false;
+                            const claudeApiKey = config.get<string>('claudeApiKey') || '';
+                            const geminiApiKey = config.get<string>('geminiApiKey') || '';
+
+                            // Create AI client for review - prioritize Copilot Claude if that's what we're using
+                            let reviewAI: GeminiClient | ClaudeClient | CopilotClaudeClient;
+                            if (isClaudeModel && useCopilotForClaude) {
+                                const copilotClient = new CopilotClaudeClient();
+                                const initialized = await copilotClient.initialize();
+                                if (!initialized) {
+                                    throw new Error('Failed to initialize Copilot Claude for constitution review');
+                                }
+                                reviewAI = copilotClient;
+                            } else if (isClaudeModel && claudeApiKey) {
+                                reviewAI = new ClaudeClient(claudeApiKey, modelId);
+                            } else if (geminiApiKey) {
+                                reviewAI = new GeminiClient(geminiApiKey, modelId);
+                            } else {
+                                throw new Error('No API key for constitution review');
+                            }
+
+                            const reviewPrompt = taskContext.specManager.getPostMissionReviewPrompt(changedFiles);
+                            const reviewSession = reviewAI.startSession(reviewPrompt, 'low');
+                            const reviewResult = await reviewSession.sendMessage('Analyze if constitution needs updates');
+                            const reviewResponse = (await reviewResult.response).text();
+
+                            const updateCheck = taskContext.specManager.parseUpdateCheckResponse(reviewResponse);
+
+                            if (updateCheck.needsUpdate) {
+                                taskContext.specManager.setPhase(SpecPhase.POST_MISSION_REVIEW);
+                                task.logs.push(`> [Constitution]: Updates detected, requesting review...`);
+
+                                const approved = await this.waitForApproval(
+                                    taskId,
+                                    'constitution-update',
+                                    updateCheck.suggestedChanges
+                                );
+                                if (approved) {
+                                    await taskContext.specManager.saveConstitution(updateCheck.suggestedChanges);
+                                    task.logs.push(`> [Constitution]: Updated after mission completion`);
+                                } else {
+                                    task.logs.push(`> [Constitution]: Post-mission update declined`);
+                                }
+                            } else {
+                                task.logs.push(`> [Constitution]: No updates needed`);
+                            }
+                        }
+                    } catch (reviewError: any) {
+                        task.logs.push(`> [Constitution]: Review error - ${reviewError.message}`);
+                        console.error('[TaskRunner] Post-mission constitution review failed:', reviewError);
+                    }
+                    this._onTaskUpdate.fire({ taskId, task });
+                }
+                // ========================================
+                // END POST-MISSION CONSTITUTION REVIEW
+                // ========================================
+
             } else {
+
                 // Did we stop because of user input?
                 // If the last thing was "Proceed", likely user input or just a break?
                 // Actually, I set currentPrompt="Proceed." in line 450.
