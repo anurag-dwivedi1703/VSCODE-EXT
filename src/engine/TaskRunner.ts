@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { GeminiClient, ISession } from '../ai/GeminiClient';
 import { ClaudeClient } from '../ai/ClaudeClient';
 import { CopilotClaudeClient } from '../ai/CopilotClaudeClient';
+import { CopilotGPTClient } from '../ai/CopilotGPTClient';
 import { Part } from '@google/generative-ai';
 import { WorktreeManager } from './WorktreeManager';
 import { AgentTools } from './AgentTools';
@@ -24,6 +25,7 @@ interface TaskContext {
     gemini?: GeminiClient;
     claude?: ClaudeClient;
     copilotClaude?: CopilotClaudeClient;
+    copilotGPT?: CopilotGPTClient;  // GPT-5-mini via Copilot
 }
 
 interface FileEdit {
@@ -285,6 +287,60 @@ export class TaskRunner {
         }
 
         return { isRisk: false };
+    }
+
+    /**
+     * Intelligently truncate tool results before sending to AI to prevent token limit issues.
+     * Special handling for compile errors: summarizes first errors, shows total count.
+     */
+    private truncateToolResult(toolName: string, result: string, maxChars: number = 8000): string {
+        if (result.length <= maxChars) {
+            return result;
+        }
+
+        // Special handling for compile/build output - summarize errors
+        if (toolName === 'run_command') {
+            // TypeScript errors
+            if (result.includes('error TS') || result.includes('Error:') || result.includes('error:')) {
+                const lines = result.split('\n');
+                const errorLines = lines.filter(line =>
+                    line.includes('error TS') ||
+                    line.includes('Error:') ||
+                    line.includes('error:') ||
+                    line.includes('warning:')
+                );
+
+                if (errorLines.length > 0) {
+                    const totalErrors = errorLines.length;
+                    const previewCount = Math.min(15, totalErrors);
+                    const preview = errorLines.slice(0, previewCount).join('\n');
+
+                    return `[COMPILE OUTPUT TRUNCATED - ${totalErrors} total errors/warnings found]\n\n` +
+                        `First ${previewCount} errors:\n${preview}\n\n` +
+                        (totalErrors > previewCount
+                            ? `[...${totalErrors - previewCount} more errors truncated]\n\n`
+                            : '') +
+                        `ACTION: Fix the above issues first, then recompile to check for remaining errors.`;
+                }
+            }
+
+            // npm install / general verbose output
+            if (result.includes('npm WARN') || result.includes('added ') || result.includes('packages in')) {
+                // Keep just the summary line at the end
+                const lines = result.split('\n');
+                const summaryLine = lines.find(l => l.includes('packages in') || l.includes('added '));
+                const warningLines = lines.filter(l => l.includes('npm WARN')).slice(0, 5);
+
+                return `[NPM OUTPUT TRUNCATED]\n\n` +
+                    (warningLines.length > 0 ? `Key warnings:\n${warningLines.join('\n')}\n\n` : '') +
+                    (summaryLine ? `Summary: ${summaryLine}` : 'Installation completed.');
+            }
+        }
+
+        // Default truncation with note
+        return result.substring(0, maxChars) +
+            `\n\n[OUTPUT TRUNCATED - original was ${result.length} chars]\n` +
+            `TIP: If you need more details, run a more specific command or check specific parts of the output.`;
     }
 
     private get storageDir(): string {
@@ -650,7 +706,16 @@ ${contextData}
             // Actually, we haven't assigned clients to context yet.
 
             // Let's instantiate the correct client FIRST.
-            if (isClaudeModel) {
+            const isGPTModel = modelId.startsWith('gpt');
+
+            if (isGPTModel) {
+                // GPT-5-mini via Copilot
+                task.logs.push(`> [System]: Using GPT-5-mini via GitHub Copilot subscription`);
+                const gptClient = new CopilotGPTClient();
+                const initialized = await gptClient.initialize();
+                if (!initialized) throw new Error('Failed to init Copilot GPT');
+                taskContext.copilotGPT = gptClient;
+            } else if (isClaudeModel) {
                 if (useCopilotForClaude) {
                     task.logs.push(`> [System]: Using Claude via GitHub Copilot subscription`);
                     const copilotClient = new CopilotClaudeClient();
@@ -842,7 +907,10 @@ ${contextData}
 
             // Start session with selected model
             let chat: ISession;
-            if (isClaudeModel && useCopilotForClaude && taskContext.copilotClaude) {
+
+            if (isGPTModel && taskContext.copilotGPT) {
+                chat = taskContext.copilotGPT.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
+            } else if (isClaudeModel && useCopilotForClaude && taskContext.copilotClaude) {
                 chat = taskContext.copilotClaude.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
             } else if (isClaudeModel && taskContext.claude) {
                 chat = taskContext.claude.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
@@ -1310,10 +1378,14 @@ ${contextData}
                         const preview = toolResult.length > 500 ? toolResult.substring(0, 500) + '... (truncated)' : toolResult;
                         task.logs.push(`> [Result]: ${preview} `);
 
+                        // CRITICAL: Truncate tool result BEFORE sending to AI to prevent token limit issues
+                        // This is especially important for compile errors which can be 50,000+ chars
+                        const truncatedForAI = this.truncateToolResult(fnName, toolResult);
+
                         toolParts.push({
                             functionResponse: {
                                 name: fnName,
-                                response: { content: toolResult }
+                                response: { content: truncatedForAI }
                             }
                         });
                     }
@@ -1637,6 +1709,17 @@ ${contextData}
                         }
                         taskContext.copilotClaude = copilotClient;
                         session = copilotClient.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
+                    } else if (modelId.startsWith('gpt')) {
+                        // GPT-5-mini via Copilot
+                        task.logs.push('> [System]: Resuming with GPT-5-mini via Copilot...');
+                        const gptClient = new CopilotGPTClient();
+                        const initialized = await gptClient.initialize();
+                        if (!initialized) {
+                            task.logs.push('> [Error]: Failed to initialize GPT via Copilot');
+                            return;
+                        }
+                        taskContext.copilotGPT = gptClient;
+                        session = gptClient.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
                     } else if (isClaudeModel) {
                         const claudeApiKey = config.get<string>('claudeApiKey') || '';
                         if (!claudeApiKey) {
@@ -1764,13 +1847,16 @@ ${contextData}
     /**
      * Build context string from previous task history for session restoration.
      * This helps the agent understand what was done before when resuming a session.
+     * 
+     * ENHANCED: Now includes AI responses, tool calls, and tool results for full context restoration.
+     * This is critical for Copilot Claude models which start with fresh message history on resume.
      */
     private buildContextFromTask(task: AgentTask): string {
         const contextLines: string[] = [];
 
         // Add artifacts (files created/modified)
         if (task.artifacts && task.artifacts.length > 0) {
-            contextLines.push('Files created/modified in this mission:');
+            contextLines.push('## Files Created/Modified in This Mission:');
             for (const artifact of task.artifacts) {
                 contextLines.push(`  - ${artifact}`);
             }
@@ -1790,29 +1876,99 @@ ${contextData}
 
         if (writeFileCalls.length > 0 && task.artifacts?.length === 0) {
             // Only add if not already covered by artifacts
-            contextLines.push('Files written:');
+            contextLines.push('## Files Written:');
             for (const filePath of writeFileCalls) {
                 contextLines.push(`  - ${filePath}`);
             }
         }
 
-        // Add user messages for conversation context
-        const userMessages: string[] = [];
+        // ========================================
+        // ENHANCED: Extract AI responses and tool execution history
+        // This is critical for Copilot Claude context restoration
+        // ========================================
+        const conversationHistory: string[] = [];
+        let lastToolCall = '';
+        let lastToolResult = '';
+
         for (const log of task.logs) {
-            if (log.startsWith('**User**:')) {
-                userMessages.push(log.replace('**User**:', 'User said:'));
+            // Extract AI (Claude/Gemini) responses
+            if (log.startsWith('**Claude**:') || log.startsWith('** Claude **:')) {
+                const aiResponse = log.replace(/\*\*\s*Claude\s*\*\*:/g, '').trim();
+                // Truncate long responses to avoid token bloat
+                const truncated = aiResponse.length > 500
+                    ? aiResponse.substring(0, 500) + '... [truncated]'
+                    : aiResponse;
+                if (truncated.length > 10) { // Skip empty or tiny responses
+                    conversationHistory.push(`[AI Response]: ${truncated}`);
+                }
+            } else if (log.startsWith('**Gemini**:') || log.startsWith('** Gemini **:')) {
+                const aiResponse = log.replace(/\*\*\s*Gemini\s*\*\*:/g, '').trim();
+                const truncated = aiResponse.length > 500
+                    ? aiResponse.substring(0, 500) + '... [truncated]'
+                    : aiResponse;
+                if (truncated.length > 10) {
+                    conversationHistory.push(`[AI Response]: ${truncated}`);
+                }
+            }
+            // Extract user messages
+            else if (log.startsWith('**User**:')) {
+                const userMsg = log.replace('**User**:', '').trim();
+                conversationHistory.push(`[User]: ${userMsg}`);
+            }
+            // Extract tool calls (important for understanding what was attempted)
+            else if (log.includes('[Tool Call]:')) {
+                // Extract tool name and key args
+                const toolMatch = log.match(/\[Tool Call\]:\s*(\w+)\s*\(/);
+                if (toolMatch) {
+                    lastToolCall = toolMatch[1];
+                    // For file operations, extract the path
+                    const pathMatch = log.match(/["']path["']\s*:\s*["']([^"']+)["']/);
+                    if (pathMatch) {
+                        conversationHistory.push(`[Tool: ${lastToolCall}] path: ${pathMatch[1]}`);
+                    } else {
+                        conversationHistory.push(`[Tool: ${lastToolCall}]`);
+                    }
+                }
+            }
+            // Extract tool results (important for understanding what succeeded/failed)
+            else if (log.includes('[Result]:')) {
+                const resultContent = log.replace(/>\s*\[Result\]:\s*/, '').trim();
+                // Truncate long results
+                const truncatedResult = resultContent.length > 200
+                    ? resultContent.substring(0, 200) + '...'
+                    : resultContent;
+                // Only include meaningful results
+                if (truncatedResult.length > 5 && !truncatedResult.includes('[object Object]')) {
+                    conversationHistory.push(`[Result]: ${truncatedResult}`);
+                }
+            }
+            // Capture errors (critical for understanding where it failed)
+            else if (log.toLowerCase().includes('error') && log.includes(':')) {
+                conversationHistory.push(`[Error]: ${log.substring(0, 300)}`);
             }
         }
-        if (userMessages.length > 0) {
-            contextLines.push('\nPrevious conversation:');
-            // Only include last 5 user messages to avoid token bloat
-            for (const msg of userMessages.slice(-5)) {
-                contextLines.push(`  ${msg}`);
+
+        // Add conversation history with truncation to last N exchanges
+        if (conversationHistory.length > 0) {
+            contextLines.push('\n## Previous Conversation & Tool Execution History:');
+            contextLines.push('(This is a summary of what happened before the session was interrupted)\n');
+
+            // Keep last 30 entries to balance context vs token usage
+            const recentHistory = conversationHistory.slice(-30);
+            for (const entry of recentHistory) {
+                contextLines.push(entry);
             }
         }
 
         // Add the original prompt reminder
-        contextLines.push(`\nOriginal task was: "${task.prompt}"`);
+        contextLines.push(`\n## Original Mission: "${task.prompt}"`);
+
+        // Add current status
+        if (task.status === 'failed') {
+            contextLines.push(`\n## Status: FAILED - The mission encountered an error. Please analyze the history above and continue from where it stopped.`);
+        } else if (task.status === 'completed') {
+            contextLines.push(`\n## Status: COMPLETED - But user is asking for follow-up work.`);
+        }
 
         return contextLines.join('\n');
     }

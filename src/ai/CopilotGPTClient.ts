@@ -2,128 +2,54 @@ import * as vscode from 'vscode';
 import { ISession } from './GeminiClient';
 
 /**
- * Claude client using VS Code's Language Model API (vscode.lm)
- * This leverages the user's GitHub Copilot subscription for Claude access
+ * GPT client using VS Code's Language Model API (vscode.lm)
+ * This leverages the user's GitHub Copilot subscription for GPT-5-mini access
  */
-export class CopilotClaudeClient {
+export class CopilotGPTClient {
     private model: vscode.LanguageModelChat | undefined;
 
     constructor() {
         // Model will be selected when session starts
     }
 
-    /**
-     * Static method to discover and log all available vscode.lm models
-     * Call this to see what models are available in your environment
-     */
-    public static async discoverModels(): Promise<vscode.LanguageModelChat[]> {
-        try {
-            const allModels = await vscode.lm.selectChatModels({});
-
-            console.log('╔══════════════════════════════════════════════════════════════════╗');
-            console.log('║           VS CODE LANGUAGE MODEL API - AVAILABLE MODELS          ║');
-            console.log('╠══════════════════════════════════════════════════════════════════╣');
-
-            allModels.forEach((m, i) => {
-                console.log(`║ [${i + 1}] ID: ${m.id}`);
-                console.log(`║     Name: ${m.name}`);
-                console.log(`║     Vendor: ${m.vendor}`);
-                console.log(`║     Family: ${m.family}`);
-                console.log(`║     Max Input Tokens: ${m.maxInputTokens || 'N/A'}`);
-                console.log('╟──────────────────────────────────────────────────────────────────╢');
-            });
-
-            console.log(`║ TOTAL MODELS AVAILABLE: ${allModels.length}`);
-            console.log('╚══════════════════════════════════════════════════════════════════╝');
-
-            return allModels;
-        } catch (error: any) {
-            console.error('[CopilotClaudeClient] Error discovering models:', error.message);
-            return [];
-        }
-    }
-
-    /**
-     * Get a Gemini model for vision analysis via vscode.lm
-     */
-    public static async getGeminiVisionModel(): Promise<vscode.LanguageModelChat | undefined> {
-        try {
-            const allModels = await vscode.lm.selectChatModels({});
-
-            // Look for Gemini Flash 3 first (best for vision)
-            let geminiModel = allModels.find(m =>
-                m.id.toLowerCase().includes('gemini-3-flash') ||
-                m.id.toLowerCase().includes('gemini-flash-3')
-            );
-
-            // Fallback to any Gemini model
-            if (!geminiModel) {
-                geminiModel = allModels.find(m =>
-                    m.id.toLowerCase().includes('gemini') ||
-                    m.family.toLowerCase().includes('gemini')
-                );
-            }
-
-            if (geminiModel) {
-                console.log(`[CopilotClaudeClient] Found Gemini vision model: ${geminiModel.id}`);
-            }
-
-            return geminiModel;
-        } catch (error: any) {
-            console.error('[CopilotClaudeClient] Error finding Gemini model:', error.message);
-            return undefined;
-        }
-    }
-
     public async initialize(): Promise<boolean> {
         try {
             // Log all available models for discovery
-            const allModels = await CopilotClaudeClient.discoverModels();
+            const allModels = await vscode.lm.selectChatModels({});
 
-            // Try to find Claude model - prefer opus, then sonnet
-            let claudeModel = allModels.find(m =>
-                m.id.toLowerCase().includes('claude-opus-4') ||
-                m.id.toLowerCase().includes('claude-4-opus')
+            // Try to find GPT-5-mini model
+            let gptModel = allModels.find(m =>
+                m.id.toLowerCase().includes('gpt-5-mini') ||
+                m.family.toLowerCase().includes('gpt-5-mini')
             );
 
-            // Try Claude Sonnet 4.5
-            if (!claudeModel) {
-                claudeModel = allModels.find(m =>
-                    m.id.toLowerCase().includes('claude-sonnet-4') ||
-                    m.id.toLowerCase().includes('claude-4-sonnet')
+            // Fallback to any GPT-5 model
+            if (!gptModel) {
+                gptModel = allModels.find(m =>
+                    m.id.toLowerCase().includes('gpt-5') ||
+                    m.family.toLowerCase().includes('gpt-5')
                 );
             }
 
-            // Fallback to any Claude model
-            if (!claudeModel) {
-                claudeModel = allModels.find(m =>
-                    m.id.toLowerCase().includes('claude') ||
-                    m.name.toLowerCase().includes('claude') ||
-                    m.family.toLowerCase().includes('claude')
+            // Fallback to any GPT model
+            if (!gptModel) {
+                gptModel = allModels.find(m =>
+                    m.id.toLowerCase().includes('gpt') ||
+                    m.name.toLowerCase().includes('gpt') ||
+                    m.family.toLowerCase().includes('gpt')
                 );
             }
 
-            if (claudeModel) {
-                this.model = claudeModel;
-                console.log(`[CopilotClaudeClient] ✓ Selected Claude model: ${this.model.id} (${this.model.name})`);
+            if (gptModel) {
+                this.model = gptModel;
+                console.log(`[CopilotGPTClient] ✓ Selected GPT model: ${this.model.id} (${this.model.name})`);
                 return true;
             }
 
-            // Fallback: try specific family filters that might work
-            const familyAttempts = ['claude', 'anthropic', 'claude-3', 'claude-opus', 'claude-sonnet'];
-            for (const family of familyAttempts) {
-                const models = await vscode.lm.selectChatModels({ family });
-                if (models.length > 0) {
-                    this.model = models[0];
-                    console.log(`[CopilotClaudeClient] ✓ Found Claude model via family '${family}': ${this.model.id}`);
-                    return true;
-                }
-            }
-
-            console.error('[CopilotClaudeClient] ✗ No Claude models found. Available:', allModels.map(m => m.id).join(', '));
+            console.error('[CopilotGPTClient] ✗ No GPT models found. Available:', allModels.map(m => m.id).join(', '));
             return false;
         } catch (error: any) {
-            console.error('[CopilotClaudeClient] Error initializing:', error.message);
+            console.error('[CopilotGPTClient] Error initializing:', error.message);
             return false;
         }
     }
@@ -204,7 +130,7 @@ You MUST use this exact format. Do NOT just describe what you want to do - outpu
                 if (!model) {
                     return {
                         response: {
-                            text: () => 'Error: Copilot Claude model not initialized. Ensure GitHub Copilot is installed and you have an active subscription.',
+                            text: () => 'Error: Copilot GPT model not initialized. Ensure GitHub Copilot is installed and you have an active subscription.',
                             functionCalls: () => undefined
                         }
                     };
@@ -254,7 +180,6 @@ You MUST use this exact format. Do NOT just describe what you want to do - outpu
                     const functionCalls = this.parseToolCalls(responseText);
 
                     // Strip tool call blocks from text to avoid showing JSON in UI
-                    // This makes the output match Gemini's behavior where text and tool calls are separate
                     const cleanedText = this.stripToolCallsFromText(responseText);
 
                     return {
@@ -264,7 +189,7 @@ You MUST use this exact format. Do NOT just describe what you want to do - outpu
                         }
                     };
                 } catch (error: any) {
-                    console.error('[CopilotClaudeClient] API Error:', error.message);
+                    console.error('[CopilotGPTClient] API Error:', error.message);
 
                     // Check for consent error
                     if (error.message?.includes('consent') || error.message?.includes('permission')) {
@@ -273,17 +198,7 @@ You MUST use this exact format. Do NOT just describe what you want to do - outpu
                                 text: () => `Error: Copilot access denied. Please grant permission when prompted, or use API mode instead.\n\nDetails: ${error.message}`,
                                 functionCalls: () => undefined
                             }
-                        }
-
-                        // Check for content filtering (Enterprise/Org policies)
-                        if (error.message?.includes('filtered') || error.message?.includes('content policy')) {
-                            return {
-                                response: {
-                                    text: () => `**⚠️ Copilot Response Filtered**\n\nThe response was blocked by your organization's Copilot content filters (Responsible AI).\n\n**Why this happens:**\n- Code might resemble a security violation\n- System prompt complexity triggering safety guards\n- Enterprise policy restrictions\n\n**Workaround:**\nTry using the **Claude API Mode** (via API Key) instead, which bypasses these enterprise filters.`,
-                                    functionCalls: () => undefined
-                                }
-                            };
-                        }
+                        };
                     }
 
                     return {
@@ -317,10 +232,10 @@ You MUST use this exact format. Do NOT just describe what you want to do - outpu
                         name: parsed.name,
                         args: parsed.args || parsed.arguments || {}
                     });
-                    console.log(`[CopilotClaudeClient] Parsed fenced tool call: ${parsed.name}`);
+                    console.log(`[CopilotGPTClient] Parsed fenced tool call: ${parsed.name}`);
                 }
             } catch (e) {
-                console.warn('[CopilotClaudeClient] Failed to parse fenced tool call:', match[1]);
+                console.warn('[CopilotGPTClient] Failed to parse fenced tool call:', match[1]);
             }
         }
 
@@ -333,14 +248,14 @@ You MUST use this exact format. Do NOT just describe what you want to do - outpu
                     const name = match[1];
                     const args = JSON.parse(match[2]);
                     calls.push({ name, args });
-                    console.log(`[CopilotClaudeClient] Parsed inline tool call: ${name}`);
+                    console.log(`[CopilotGPTClient] Parsed inline tool call: ${name}`);
                 } catch (e) {
-                    console.warn('[CopilotClaudeClient] Failed to parse inline tool call');
+                    console.warn('[CopilotGPTClient] Failed to parse inline tool call');
                 }
             }
         }
 
-        // Method 3: Look for tool calls with nested objects in args (like command with nested object)
+        // Method 3: Look for tool calls with nested objects in args
         if (calls.length === 0) {
             const nestedRegex = /\{"name"\s*:\s*"([^"]+)"\s*,\s*"args"\s*:\s*(\{[\s\S]*?\})\s*\}(?:\]|\)|$|[,\s])/g;
             while ((match = nestedRegex.exec(text)) !== null) {
@@ -348,27 +263,25 @@ You MUST use this exact format. Do NOT just describe what you want to do - outpu
                     const name = match[1];
                     const args = JSON.parse(match[2]);
                     calls.push({ name, args });
-                    console.log(`[CopilotClaudeClient] Parsed nested tool call: ${name}`);
+                    console.log(`[CopilotGPTClient] Parsed nested tool call: ${name}`);
                 } catch (e) {
                     // Skip malformed
                 }
             }
         }
 
-        console.log(`[CopilotClaudeClient] Total tool calls found: ${calls.length}`);
+        console.log(`[CopilotGPTClient] Total tool calls found: ${calls.length}`);
         return calls;
     }
 
     /**
      * Strip tool call blocks from text to avoid showing raw JSON in the UI
-     * This makes the output match Gemini's behavior where text and tool calls are separate
      */
     private stripToolCallsFromText(text: string): string {
         // Remove fenced tool_call blocks: ```tool_call\n{...}\n```
         let cleaned = text.replace(/```tool_call\s*\n?[\s\S]*?\n?```/g, '');
 
         // Remove inline JSON tool calls that might be at the end of lines
-        // Pattern: {"name": "...", "args": {...}}
         cleaned = cleaned.replace(/\{"name"\s*:\s*"[^"]+"\s*,\s*"args"\s*:\s*\{[^}]*\}\s*\}/g, '');
 
         // Clean up any extra whitespace left behind
@@ -378,12 +291,11 @@ You MUST use this exact format. Do NOT just describe what you want to do - outpu
     }
 
     /**
-     * Research/search the web using Copilot Claude
-     * Note: vscode.lm API doesn't have native web search, so we simulate with a research prompt
+     * Research/search the web using Copilot GPT
      */
     public async research(query: string): Promise<string> {
         if (!this.model) {
-            return 'Error: Copilot Claude model not initialized.';
+            return 'Error: Copilot GPT model not initialized.';
         }
 
         try {
@@ -413,8 +325,8 @@ Provide a detailed, helpful response based on your training data. If you're unce
     }
 
     /**
-     * Analyze a screenshot using Copilot Claude Vision
-     * Uses the new vscode.lm API with image content support
+     * Analyze a screenshot using Copilot GPT Vision
+     * Uses the vscode.lm API with image content support
      */
     public async analyzeScreenshot(
         imageBase64: Uint8Array,
@@ -432,29 +344,13 @@ Provide a detailed, helpful response based on your training data. If you're unce
             return {
                 matches: false,
                 confidence: 0,
-                issues: ['Copilot Claude model not initialized'],
+                issues: ['Copilot GPT model not initialized'],
                 suggestions: ['Ensure VS Code Copilot is available'],
                 analysis: 'Vision analysis failed: Model not initialized'
             };
         }
 
         try {
-            // Save base64 image to a temp file and get URI
-            const fs = await import('fs');
-            const path = await import('path');
-            const os = await import('os');
-
-            const tempDir = os.tmpdir();
-            const ext = mimeType.includes('png') ? 'png' : 'jpg';
-            const tempPath = path.join(tempDir, `vibe_screenshot_${Date.now()}.${ext}`);
-
-            // Write base64 to file
-            //const imageBuffer = Buffer.from(imageBase64, 'base64');
-            //fs.writeFileSync(tempPath, imageBuffer);
-
-            //const imageUri = vscode.Uri.file(tempPath);
-            //console.log(`[CopilotClaudeClient] Vision analysis: saved temp image to ${tempPath}`);
-
             const prompt = `You are a UI testing expert. Analyze this screenshot and determine if it matches the expected design.
 
 MISSION OBJECTIVE: ${missionObjective}
@@ -481,7 +377,8 @@ Respond ONLY with the JSON, no other text.`;
             // Create multimodal message with text and image
             const messages = [
                 vscode.LanguageModelChatMessage.User([new vscode.LanguageModelDataPart(imageBase64, mimeType)]),
-                vscode.LanguageModelChatMessage.User(prompt),];
+                vscode.LanguageModelChatMessage.User(prompt),
+            ];
 
             const response = await this.model.sendRequest(
                 messages,
@@ -494,12 +391,7 @@ Respond ONLY with the JSON, no other text.`;
                 responseText += fragment;
             }
 
-            // Clean up temp file
-            try {
-                fs.unlinkSync(tempPath);
-            } catch { /* ignore cleanup errors */ }
-
-            console.log(`[CopilotClaudeClient] Vision response: ${responseText.substring(0, 100)}...`);
+            console.log(`[CopilotGPTClient] Vision response: ${responseText.substring(0, 100)}...`);
 
             // Parse the JSON response
             try {
@@ -532,17 +424,16 @@ Respond ONLY with the JSON, no other text.`;
                 };
             }
         } catch (error: any) {
-            console.error('[CopilotClaudeClient] Vision analysis failed:', error.message);
+            console.error('[CopilotGPTClient] Vision analysis failed:', error.message);
 
             // Check if it's a "not supported" error - fall back gracefully
             if (error.message?.includes('image') || error.message?.includes('multimodal') || error.message?.includes('content')) {
                 return {
                     matches: false,
                     confidence: 0,
-                    issues: ['This Claude model may not support vision through Copilot'],
+                    issues: ['This GPT model may not support vision through Copilot'],
                     suggestions: [
                         'Use Gemini for vision analysis (set Gemini API key)',
-                        'Use Claude API mode for full vision support',
                         `Expected: ${expectedDescription.substring(0, 100)}...`
                     ],
                     analysis: `Vision analysis not available for this model. Mission objective: ${missionObjective}`

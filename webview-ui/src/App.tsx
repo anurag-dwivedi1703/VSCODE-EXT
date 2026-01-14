@@ -946,6 +946,7 @@ function App() {
                                             <option value="gemini-3-flash-preview">Gemini 3 Flash</option>
                                             <option value="claude-opus-4-5-20251101">Claude Opus 4.5</option>
                                             <option value="claude-sonnet-4-5-20251101">Claude Sonnet 4.5</option>
+                                            <option value="gpt-5-mini">GPT-5-mini (Copilot)</option>
                                         </select>
                                         <span className="submit-arrow">→</span>
                                     </div>
@@ -1002,6 +1003,7 @@ function App() {
                                             <option value="gemini-3-flash-preview">Gemini 3 Flash (Speed)</option>
                                             <option value="claude-opus-4-5-20251101">Claude Opus 4.5 (Thinking)</option>
                                             <option value="claude-sonnet-4-5-20251101">Claude Sonnet 4.5 (Fast)</option>
+                                            <option value="gpt-5-mini">GPT-5-mini (Vision)</option>
                                         </select>
                                     </div>
                                 </div>
