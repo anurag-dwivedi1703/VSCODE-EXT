@@ -869,9 +869,17 @@ ${contextData}
                     const changedFiles = (completedTask.fileEdits || []).map(edit => edit.path);
 
                     if (changedFiles.length > 0) {
-                        // Create AI client for review
-                        let reviewAI: GeminiClient | ClaudeClient;
-                        if (isClaudeModel && claudeApiKey) {
+                        // Create AI client for review - prioritize Copilot Claude if that's what we're using
+                        let reviewAI: GeminiClient | ClaudeClient | CopilotClaudeClient;
+                        if (isClaudeModel && useCopilotForClaude) {
+                            // Use Copilot Claude for review (same as main task)
+                            const copilotClient = new CopilotClaudeClient();
+                            const initialized = await copilotClient.initialize();
+                            if (!initialized) {
+                                throw new Error('Failed to initialize Copilot Claude for constitution review');
+                            }
+                            reviewAI = copilotClient;
+                        } else if (isClaudeModel && claudeApiKey) {
                             reviewAI = new ClaudeClient(claudeApiKey, modelId);
                         } else if (geminiApiKey) {
                             reviewAI = new GeminiClient(geminiApiKey, modelId);
@@ -883,6 +891,7 @@ ${contextData}
                         const reviewSession = reviewAI.startSession(reviewPrompt, 'low');
                         const reviewResult = await reviewSession.sendMessage('Analyze if constitution needs updates');
                         const reviewResponse = (await reviewResult.response).text();
+
 
                         const updateCheck = taskContext.specManager.parseUpdateCheckResponse(reviewResponse);
 
