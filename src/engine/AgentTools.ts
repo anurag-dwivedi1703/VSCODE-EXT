@@ -9,7 +9,8 @@ import { FileLockManager } from '../services/FileLockManager';
 import { BrowserAutomationService, ScreenshotResult, RecordingResult } from '../services/BrowserAutomationService';
 import { VisualComparisonService, ComparisonResult } from '../services/VisualComparisonService';
 import { detectSecrets, detectPII, DetectedSecret, DetectedPII } from '../ai/SecurityInstructions';
-import { parseSearchReplaceBlocks, applySearchReplace, containsSearchReplaceBlocks, ApplyResult } from '../utils/SearchReplaceParser';
+import { parseSearchReplaceBlocks, applySearchReplace, containsSearchReplaceBlocks, ApplyResult, DiffLogContext } from '../utils/SearchReplaceParser';
+import { DiffLogger, findBestMatch } from '../utils/DiffLogger';
 
 export class AgentTools {
     private browserService: BrowserAutomationService | null = null;
@@ -176,8 +177,18 @@ export class AgentTools {
      * =======
      * replacement code
      * >>>>>>> REPLACE
+     * 
+     * @param source - Optional source identifier for logging (e.g., 'CopilotClaude')
      */
-    async applyDiff(relativePath: string, diffContent: string): Promise<string> {
+    async applyDiff(relativePath: string, diffContent: string, source?: string): Promise<string> {
+        // Initialize diff logger
+        let logger: DiffLogger | null = null;
+        try {
+            logger = DiffLogger.getInstance(this.worktreeRoot);
+        } catch {
+            // Logger may fail to initialize, continue without it
+        }
+
         try {
             const fileUri = this.getUri(relativePath);
             const absolutePath = fileUri.fsPath;
@@ -191,9 +202,22 @@ export class AgentTools {
                 return `Error: Cannot apply diff - file does not exist: ${relativePath}. Use write_file to create new files.`;
             }
 
-            // Parse SEARCH/REPLACE blocks from diff content
-            const blocks = parseSearchReplaceBlocks(diffContent);
+            // Create logging context
+            const logContext: DiffLogContext = {
+                taskId: this.taskId,
+                filePath: relativePath,
+                source: source || 'unknown'
+            };
+
+            // Parse SEARCH/REPLACE blocks from diff content (now with logging)
+            const blocks = parseSearchReplaceBlocks(diffContent, logContext);
             if (blocks.length === 0) {
+                // Log the failure
+                if (logger) {
+                    logger.logResult(this.taskId, relativePath, false, 0, 0, [
+                        'No valid SEARCH/REPLACE blocks found in diff content'
+                    ]);
+                }
                 return `Error: No valid SEARCH/REPLACE blocks found in diff content. Expected format:
 <<<<<<< SEARCH
 exact code to find
@@ -205,11 +229,37 @@ replacement code
             // Apply the diff
             const result: ApplyResult = applySearchReplace(existingContent, blocks);
 
+            // Log match failures with similarity analysis
+            if (logger && result.failedBlocks.length > 0) {
+                result.failedBlocks.forEach((block, index) => {
+                    const bestMatch = findBestMatch(block.searchContent, existingContent);
+                    logger!.logMatchFailure(
+                        this.taskId,
+                        relativePath,
+                        index,
+                        block.searchContent,
+                        existingContent,
+                        bestMatch
+                    );
+                });
+            }
+
             if (!result.success && result.appliedBlocks === 0) {
-                // Complete failure
+                // Complete failure - log result
+                if (logger) {
+                    logger.logResult(
+                        this.taskId,
+                        relativePath,
+                        false,
+                        result.appliedBlocks,
+                        blocks.length,
+                        result.errors
+                    );
+                }
                 return `Error applying diff to ${relativePath}:\n` +
                     result.errors.join('\n') +
-                    `\n\nTip: The SEARCH block must match the file content EXACTLY, including whitespace.`;
+                    `\n\nTip: The SEARCH block must match the file content EXACTLY, including whitespace.` +
+                    `\n\n📋 Diagnostic logs written to: ${logger?.getLogDirectory() || '.antigravity/logs/'}`;
             }
 
             // Enforce locking
@@ -224,6 +274,18 @@ replacement code
                 const uint8Array = new TextEncoder().encode(result.newContent);
                 await vscode.workspace.fs.writeFile(fileUri, uint8Array);
 
+                // Log success
+                if (logger) {
+                    logger.logResult(
+                        this.taskId,
+                        relativePath,
+                        result.success,
+                        result.appliedBlocks,
+                        blocks.length,
+                        result.errors
+                    );
+                }
+
                 // Build response
                 let response = `✅ Successfully applied diff to ${relativePath}\n`;
                 response += `   • Blocks applied: ${result.appliedBlocks}/${blocks.length}\n`;
@@ -233,6 +295,7 @@ replacement code
                     result.errors.forEach((err, i) => {
                         response += `      ${i + 1}. ${err}\n`;
                     });
+                    response += `   📋 See diagnostic logs: ${logger?.getLogDirectory() || '.antigravity/logs/'}\n`;
                 }
 
                 // Auto-reload for frontend files

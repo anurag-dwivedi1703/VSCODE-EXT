@@ -1260,8 +1260,10 @@ ${contextData}
                                         // File doesn't exist
                                     }
 
-                                    // Apply the diff
-                                    toolResult = await tools.applyDiff(diffPath, diffContent);
+                                    // Apply the diff (with source for logging)
+                                    const modelSource = (task.model || '').startsWith('claude') ? 'CopilotClaude' :
+                                        (task.model || '').startsWith('gpt') ? 'CopilotGPT' : 'Gemini';
+                                    toolResult = await tools.applyDiff(diffPath, diffContent, modelSource);
 
                                     // Track file edit if successful (for diff viewing in UI)
                                     if (toolResult.includes('Successfully applied diff')) {

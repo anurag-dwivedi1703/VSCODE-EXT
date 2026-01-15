@@ -12,6 +12,8 @@
  * >>>>>>> REPLACE
  */
 
+import { DiffLogger, validateDiffBlock, findBestMatch, ValidationIssue } from './DiffLogger';
+
 export interface SearchReplaceBlock {
     searchContent: string;
     replaceContent: string;
@@ -28,15 +30,48 @@ export interface ApplyResult {
 }
 
 /**
+ * Context for logging during diff operations
+ */
+export interface DiffLogContext {
+    taskId?: string;
+    filePath: string;
+    source?: string; // 'CopilotClaude' | 'CopilotGPT' | etc.
+}
+
+/**
  * Parse SEARCH/REPLACE blocks from LLM output text
  * Supports multiple blocks in a single response
+ * @param text - Raw diff content from LLM
+ * @param logContext - Optional context for diagnostic logging
  */
-export function parseSearchReplaceBlocks(text: string): SearchReplaceBlock[] {
+export function parseSearchReplaceBlocks(
+    text: string,
+    logContext?: DiffLogContext
+): SearchReplaceBlock[] {
+    const startTime = Date.now();
     const blocks: SearchReplaceBlock[] = [];
+    let logger: DiffLogger | null = null;
+
+    // Try to get logger instance (may not be initialized)
+    try {
+        logger = DiffLogger.getInstance();
+    } catch {
+        // Logger not initialized, continue without logging
+    }
+
+    // Log raw diff received
+    if (logger && logContext) {
+        logger.logDiffReceived(
+            logContext.taskId,
+            logContext.filePath,
+            text,
+            logContext.source || 'unknown'
+        );
+    }
 
     // Pattern to match SEARCH/REPLACE blocks
     // Supports variations in whitespace and line endings
-    const blockPattern = /<<<<<<<?[ ]*SEARCH[ ]*\r?\n([\s\S]*?)\r?\n?=======\r?\n([\s\S]*?)\r?\n?>>>>>>?[ ]*REPLACE/g;
+    const blockPattern = /<<<<<<?[ ]*SEARCH[ ]*\r?\n([\s\S]*?)\r?\n?=======\r?\n([\s\S]*?)\r?\n?>>>>>>?[ ]*REPLACE/g;
 
     let match;
     while ((match = blockPattern.exec(text)) !== null) {
@@ -56,7 +91,7 @@ export function parseSearchReplaceBlocks(text: string): SearchReplaceBlock[] {
 
     // Also try alternative format (some models use slightly different markers)
     if (blocks.length === 0) {
-        const altPattern = /```(?:diff|patch)?\s*\n<<<<<<<?[ ]*SEARCH[ ]*\r?\n([\s\S]*?)\r?\n?=======\r?\n([\s\S]*?)\r?\n?>>>>>>?[ ]*REPLACE\s*\n```/g;
+        const altPattern = /```(?:diff|patch)?\s*\n<<<<<<?[ ]*SEARCH[ ]*\r?\n([\s\S]*?)\r?\n?=======\r?\n([\s\S]*?)\r?\n?>>>>>>?[ ]*REPLACE\s*\n```/g;
 
         while ((match = altPattern.exec(text)) !== null) {
             blocks.push({
@@ -64,6 +99,23 @@ export function parseSearchReplaceBlocks(text: string): SearchReplaceBlock[] {
                 replaceContent: match[2],
                 lineNumber: (text.slice(0, match.index).match(/\n/g) || []).length + 1
             });
+        }
+    }
+
+    // Log parsed blocks and run validation
+    if (logger && logContext) {
+        const parseTimeMs = Date.now() - startTime;
+        logger.logDiffParsed(logContext.taskId, logContext.filePath, blocks, parseTimeMs);
+
+        // Validate each block and log issues
+        const allIssues: ValidationIssue[] = [];
+        blocks.forEach((block, index) => {
+            const issues = validateDiffBlock(block.searchContent, block.replaceContent, index);
+            allIssues.push(...issues);
+        });
+
+        if (allIssues.length > 0) {
+            logger.logValidation(logContext.taskId, logContext.filePath, allIssues);
         }
     }
 
