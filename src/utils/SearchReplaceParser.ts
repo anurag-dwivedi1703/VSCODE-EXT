@@ -136,52 +136,106 @@ export function parseSearchReplaceBlocks(
 }
 
 /**
- * Validate that a search block exists in the file content
- * Returns the index where the match was found, or -1 if not found
+ * Find search content in file, handling CRLF/LF differences
+ * Returns the start index in the ORIGINAL content, or -1 if not found
  */
-export function findSearchBlock(fileContent: string, searchContent: string): number {
-    // Try exact match first
+export function findSearchBlock(fileContent: string, searchContent: string): { index: number; matchLength: number } | null {
+    // Strategy 1: Try exact match first (fastest)
     let index = fileContent.indexOf(searchContent);
     if (index !== -1) {
-        return index;
+        return { index, matchLength: searchContent.length };
     }
 
-    // Try with normalized line endings (CRLF vs LF)
-    const normalizedContent = fileContent.replace(/\r\n/g, '\n');
+    // Strategy 2: Normalize BOTH to LF and find match
+    const normalizedFile = fileContent.replace(/\r\n/g, '\n');
     const normalizedSearch = searchContent.replace(/\r\n/g, '\n');
-    index = normalizedContent.indexOf(normalizedSearch);
-    if (index !== -1) {
-        // For normalized match, the index in normalized content works for replacement
-        // since we're returning the position where the match starts
-        return index;
+
+    const normalizedIndex = normalizedFile.indexOf(normalizedSearch);
+    if (normalizedIndex !== -1) {
+        // Found in normalized content - now find corresponding position in original
+        // Count how many \r characters are before this position in original
+        const originalIndex = convertNormalizedIndexToOriginal(fileContent, normalizedIndex);
+        const matchLength = findMatchLengthInOriginal(fileContent, originalIndex, normalizedSearch);
+        return { index: originalIndex, matchLength };
     }
 
+    // Strategy 3: Line-by-line comparison with whitespace trimming
+    const fileLines = fileContent.split(/\r?\n/);
+    const searchLines = normalizedSearch.split('\n');
 
-    // Try with trimmed whitespace on each line (handles trailing space differences)
-    const contentLines = fileContent.split('\n');
-    const searchLines = searchContent.replace(/\r\n/g, '\n').split('\n');
-
-    for (let i = 0; i <= contentLines.length - searchLines.length; i++) {
+    for (let i = 0; i <= fileLines.length - searchLines.length; i++) {
         let matches = true;
         for (let j = 0; j < searchLines.length; j++) {
-            const contentLine = contentLines[i + j].replace(/\r$/, '').trimEnd();
-            const searchLine = searchLines[j].trimEnd();
-            if (contentLine !== searchLine) {
+            // Compare trimmed lines (handles trailing whitespace)
+            if (fileLines[i + j].trimEnd() !== searchLines[j].trimEnd()) {
                 matches = false;
                 break;
             }
         }
         if (matches) {
-            // Calculate the character index
+            // Calculate character index in original content
             let charIndex = 0;
             for (let k = 0; k < i; k++) {
-                charIndex += contentLines[k].length + 1; // +1 for newline
+                charIndex += fileLines[k].length + (fileContent.includes('\r\n') ? 2 : 1);
             }
-            return charIndex;
+            // Calculate match length including line endings
+            let matchLen = 0;
+            for (let k = 0; k < searchLines.length; k++) {
+                matchLen += fileLines[i + k].length;
+                if (k < searchLines.length - 1) {
+                    matchLen += fileContent.includes('\r\n') ? 2 : 1;
+                }
+            }
+            return { index: charIndex, matchLength: matchLen };
         }
     }
 
-    return -1;
+    return null;
+}
+
+/**
+ * Convert an index in normalized (LF-only) content to index in original (possibly CRLF) content
+ */
+function convertNormalizedIndexToOriginal(original: string, normalizedIndex: number): number {
+    let originalIndex = 0;
+    let normalizedPos = 0;
+
+    while (normalizedPos < normalizedIndex && originalIndex < original.length) {
+        if (original[originalIndex] === '\r' && original[originalIndex + 1] === '\n') {
+            // CRLF counts as 1 in normalized but 2 in original
+            originalIndex += 2;
+            normalizedPos += 1;
+        } else {
+            originalIndex += 1;
+            normalizedPos += 1;
+        }
+    }
+
+    return originalIndex;
+}
+
+/**
+ * Find the length of the match in original content given normalized search length
+ */
+function findMatchLengthInOriginal(original: string, startIndex: number, normalizedSearch: string): number {
+    let originalLen = 0;
+    let normalizedPos = 0;
+    let i = startIndex;
+
+    while (normalizedPos < normalizedSearch.length && i < original.length) {
+        if (original[i] === '\r' && original[i + 1] === '\n' && normalizedSearch[normalizedPos] === '\n') {
+            // CRLF in original matches LF in search
+            originalLen += 2;
+            normalizedPos += 1;
+            i += 2;
+        } else {
+            originalLen += 1;
+            normalizedPos += 1;
+            i += 1;
+        }
+    }
+
+    return originalLen;
 }
 
 /**
@@ -191,11 +245,14 @@ export function applySingleBlock(
     fileContent: string,
     block: SearchReplaceBlock
 ): { success: boolean; newContent: string; error?: string } {
-    const searchIndex = findSearchBlock(fileContent, block.searchContent);
+    // Clean up search and replace content (remove any leaked > from regex)
+    const cleanSearch = block.searchContent.replace(/\n?>$/g, '');
+    const cleanReplace = block.replaceContent.replace(/\n?>$/g, '');
 
-    if (searchIndex === -1) {
-        // Try to provide helpful error message
-        const searchPreview = block.searchContent.slice(0, 50).replace(/\n/g, '\\n');
+    const match = findSearchBlock(fileContent, cleanSearch);
+
+    if (!match) {
+        const searchPreview = cleanSearch.slice(0, 50).replace(/\n/g, '\\n');
         return {
             success: false,
             newContent: fileContent,
@@ -203,53 +260,21 @@ export function applySingleBlock(
         };
     }
 
-    // Find the exact match length (accounting for normalized search)
-    const normalizedContent = fileContent.replace(/\r\n/g, '\n');
-    const normalizedSearch = block.searchContent.replace(/\r\n/g, '\n');
+    // Perform the replacement
+    const before = fileContent.slice(0, match.index);
+    const after = fileContent.slice(match.index + match.matchLength);
 
-    // Simple replacement at the found index
-    const before = fileContent.slice(0, searchIndex);
-    const after = fileContent.slice(searchIndex + block.searchContent.length);
-
-    // Handle case where we matched normalized version
-    if (fileContent.indexOf(block.searchContent) === -1) {
-        // Need to find actual length in original content
-        const searchLen = findActualMatchLength(fileContent, searchIndex, block.searchContent);
-        const actualBefore = fileContent.slice(0, searchIndex);
-        const actualAfter = fileContent.slice(searchIndex + searchLen);
-        return {
-            success: true,
-            newContent: actualBefore + block.replaceContent + actualAfter
-        };
+    // Preserve original line ending style in replacement
+    let finalReplace = cleanReplace;
+    if (fileContent.includes('\r\n') && !cleanReplace.includes('\r\n')) {
+        // Original uses CRLF, replacement uses LF - convert replacement to CRLF
+        finalReplace = cleanReplace.replace(/\n/g, '\r\n');
     }
 
     return {
         success: true,
-        newContent: before + block.replaceContent + after
+        newContent: before + finalReplace + after
     };
-}
-
-/**
- * Find the actual length of a match in the original content
- * (handles line ending differences)
- */
-function findActualMatchLength(content: string, startIndex: number, searchContent: string): number {
-    const searchLines = searchContent.replace(/\r\n/g, '\n').split('\n');
-    const contentFromStart = content.slice(startIndex);
-    const contentLines = contentFromStart.split('\n');
-
-    let actualLength = 0;
-    for (let i = 0; i < searchLines.length; i++) {
-        if (i < contentLines.length) {
-            actualLength += contentLines[i].length;
-            if (i < searchLines.length - 1) {
-                // Add 1 for newline, or 2 if CRLF
-                actualLength += content[startIndex + actualLength] === '\r' ? 2 : 1;
-            }
-        }
-    }
-
-    return actualLength;
 }
 
 /**

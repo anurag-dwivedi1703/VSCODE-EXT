@@ -274,6 +274,38 @@ replacement code
                 const uint8Array = new TextEncoder().encode(result.newContent);
                 await vscode.workspace.fs.writeFile(fileUri, uint8Array);
 
+                // POST-APPLY VALIDATION: Check for corruption and auto-repair
+                const corruption = this.detectFileCorruption(result.newContent, relativePath);
+                let finalContent = result.newContent;
+                let wasRepaired = false;
+
+                if (corruption.hasIssues) {
+                    const repaired = this.repairFileContent(result.newContent, corruption);
+                    if (repaired !== result.newContent) {
+                        // Write repaired content
+                        const repairedBytes = new TextEncoder().encode(repaired);
+                        await vscode.workspace.fs.writeFile(fileUri, repairedBytes);
+                        finalContent = repaired;
+                        wasRepaired = true;
+
+                        // Log the repair
+                        if (logger) {
+                            logger.log({
+                                timestamp: new Date().toISOString(),
+                                type: 'DIFF_RESULT',
+                                taskId: this.taskId,
+                                filePath: relativePath,
+                                data: {
+                                    repaired: true,
+                                    issues: corruption.issues,
+                                    originalLength: result.newContent.length,
+                                    repairedLength: repaired.length
+                                }
+                            });
+                        }
+                    }
+                }
+
                 // Log success
                 if (logger) {
                     logger.logResult(
@@ -837,5 +869,87 @@ replacement code
      */
     public isBrowserRecording(): boolean {
         return this.browserService?.isRecordingVideo() ?? false;
+    }
+
+    // =========================================================================
+    // POST-APPLY VALIDATION & SELF-HEALING
+    // =========================================================================
+
+    /**
+     * Detect common corruption patterns in file content after diff application
+     */
+    private detectFileCorruption(content: string, filePath: string): { hasIssues: boolean; issues: string[] } {
+        const issues: string[] = [];
+        const ext = filePath.split('.').pop()?.toLowerCase() || '';
+
+        // Check for trailing > (from regex marker leak)
+        if (content.match(/\n>$/)) {
+            issues.push('Trailing > at end of file (regex marker leak)');
+        }
+        if (content.match(/\n>\r?\n/g)) {
+            issues.push('Stray > on its own line');
+        }
+
+        // Check for duplicate closing brackets/braces (common corruption pattern)
+        if (content.includes('});});')) {
+            issues.push('Duplicate });');
+        }
+        if (content.includes('}}}}')) {
+            issues.push('Excessive closing braces');
+        }
+        if (content.includes('>>>>')) {
+            issues.push('Potential REPLACE marker in content');
+        }
+
+        // For TypeScript/JavaScript files, do basic brace balance check
+        if (['ts', 'tsx', 'js', 'jsx'].includes(ext)) {
+            let braceCount = 0;
+            let bracketCount = 0;
+            let parenCount = 0;
+
+            for (const char of content) {
+                if (char === '{') braceCount++;
+                if (char === '}') braceCount--;
+                if (char === '[') bracketCount++;
+                if (char === ']') bracketCount--;
+                if (char === '(') parenCount++;
+                if (char === ')') parenCount--;
+            }
+
+            if (braceCount !== 0) {
+                issues.push(`Unbalanced braces: ${braceCount > 0 ? 'missing ' + braceCount + ' closing' : 'extra ' + Math.abs(braceCount) + ' closing'}`);
+            }
+            if (bracketCount !== 0) {
+                issues.push(`Unbalanced brackets: ${bracketCount > 0 ? 'missing closing' : 'extra closing'}`);
+            }
+            if (parenCount !== 0) {
+                issues.push(`Unbalanced parentheses: ${parenCount > 0 ? 'missing closing' : 'extra closing'}`);
+            }
+        }
+
+        return { hasIssues: issues.length > 0, issues };
+    }
+
+    /**
+     * Attempt to auto-repair common corruption patterns
+     */
+    private repairFileContent(content: string, corruption: { issues: string[] }): string {
+        let repaired = content;
+
+        // Fix trailing > at end of file
+        repaired = repaired.replace(/\n>$/, '');
+
+        // Fix stray > on its own line (common marker leak)
+        repaired = repaired.replace(/\n>\r?\n/g, '\n');
+
+        // Fix duplicate });
+        repaired = repaired.replace(/\}\);\s*\}\);/g, '});');
+
+        // Fix REPLACE markers that leaked into content
+        repaired = repaired.replace(/\n?>>>>>>> REPLACE\s*$/g, '');
+        repaired = repaired.replace(/<<<<<<< SEARCH\s*\n?/g, '');
+        repaired = repaired.replace(/\n=======\n/g, '');
+
+        return repaired;
     }
 }
