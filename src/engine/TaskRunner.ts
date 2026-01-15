@@ -562,8 +562,15 @@ export class TaskRunner {
 
                     // We need an AI client to generate the constitution
                     // IMPORTANT: Always use top-tier models for constitution - it's the "brain" document
-                    let constitutionAI: GeminiClient | ClaudeClient | CopilotClaudeClient;
-                    if (isClaudeModel && useCopilotForClaude) {
+                    let constitutionAI: GeminiClient | ClaudeClient | CopilotClaudeClient | CopilotGPTClient;
+                    if (modelId.startsWith('gpt')) {
+                        // User selected GPT-5-mini via Copilot
+                        console.log(`[TaskRunner] Constitution: Using Copilot GPT for generation`);
+                        const gptClient = new CopilotGPTClient();
+                        const initialized = await gptClient.initialize();
+                        if (!initialized) throw new Error('Failed to initialize Copilot GPT for constitution');
+                        constitutionAI = gptClient;
+                    } else if (isClaudeModel && useCopilotForClaude) {
                         // User selected Claude via Copilot
                         console.log(`[TaskRunner] Constitution: Using Copilot Claude for generation`);
                         const copilotClient = new CopilotClaudeClient();
@@ -581,7 +588,7 @@ export class TaskRunner {
                         console.log(`[TaskRunner] Constitution: Using ${GEMINI_CONSTITUTION_MODEL} for generation`);
                         constitutionAI = new GeminiClient(geminiApiKey, GEMINI_CONSTITUTION_MODEL);
                     } else {
-                        throw new Error('No API key available for constitution generation. Configure Claude API key, enable Copilot Claude, or add Gemini API key.');
+                        throw new Error('No API key available for constitution generation. Configure Claude API key, enable Copilot Claude/GPT, or add Gemini API key.');
                     }
 
                     // Generate constitution using AI with proper error handling
@@ -649,8 +656,14 @@ ${contextData}
                     const currentContext = await harvester.scanWorkspace(workspaceRoot);
 
                     // Create a temporary AI client for drift detection
-                    let driftAI: GeminiClient | ClaudeClient | CopilotClaudeClient;
-                    if (isClaudeModel && useCopilotForClaude) {
+                    let driftAI: GeminiClient | ClaudeClient | CopilotClaudeClient | CopilotGPTClient;
+                    if (modelId.startsWith('gpt')) {
+                        // GPT-5-mini via Copilot
+                        const gptClient = new CopilotGPTClient();
+                        const initialized = await gptClient.initialize();
+                        if (!initialized) throw new Error('Failed to initialize Copilot GPT for drift detection');
+                        driftAI = gptClient;
+                    } else if (isClaudeModel && useCopilotForClaude) {
                         const copilotClient = new CopilotClaudeClient();
                         const initialized = await copilotClient.initialize();
                         if (!initialized) throw new Error('Failed to initialize Copilot Claude for drift detection');
