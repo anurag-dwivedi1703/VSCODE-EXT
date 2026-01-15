@@ -70,13 +70,18 @@ export function parseSearchReplaceBlocks(
     }
 
     // Pattern to match SEARCH/REPLACE blocks
-    // Supports variations in whitespace and line endings
-    const blockPattern = /<<<<<<?[ ]*SEARCH[ ]*\r?\n([\s\S]*?)\r?\n?=======\r?\n([\s\S]*?)\r?\n?>>>>>>?[ ]*REPLACE/g;
+    // CRITICAL: Use strict pattern to avoid capturing > from REPLACE marker
+    // Require exactly 7 chevrons and mandatory newline before markers
+    const blockPattern = /<<<<<<<[ ]*SEARCH[ ]*\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>>[ ]*REPLACE/g;
 
     let match;
     while ((match = blockPattern.exec(text)) !== null) {
-        const searchContent = match[1];
-        const replaceContent = match[2];
+        let searchContent = match[1];
+        let replaceContent = match[2];
+
+        // CLEANUP: Strip any trailing > that may have leaked from marker parsing
+        replaceContent = replaceContent.replace(/\n?>$/g, '');
+        searchContent = searchContent.replace(/\n?>$/g, '');
 
         // Calculate approximate line number for error reporting
         const precedingText = text.slice(0, match.index);
@@ -91,12 +96,20 @@ export function parseSearchReplaceBlocks(
 
     // Also try alternative format (some models use slightly different markers)
     if (blocks.length === 0) {
-        const altPattern = /```(?:diff|patch)?\s*\n<<<<<<?[ ]*SEARCH[ ]*\r?\n([\s\S]*?)\r?\n?=======\r?\n([\s\S]*?)\r?\n?>>>>>>?[ ]*REPLACE\s*\n```/g;
+        // Alternative pattern wrapped in code fences
+        const altPattern = /```(?:diff|patch)?\s*\n<<<<<<<[ ]*SEARCH[ ]*\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>>[ ]*REPLACE\s*\n```/g;
 
         while ((match = altPattern.exec(text)) !== null) {
+            let searchContent = match[1];
+            let replaceContent = match[2];
+
+            // CLEANUP: Strip any trailing > that may have leaked
+            replaceContent = replaceContent.replace(/\n?>$/g, '');
+            searchContent = searchContent.replace(/\n?>$/g, '');
+
             blocks.push({
-                searchContent: match[1],
-                replaceContent: match[2],
+                searchContent,
+                replaceContent,
                 lineNumber: (text.slice(0, match.index).match(/\n/g) || []).length + 1
             });
         }
