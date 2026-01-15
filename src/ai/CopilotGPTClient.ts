@@ -236,6 +236,7 @@ You MUST use this exact format. Do NOT just describe what you want to do - outpu
     /**
      * Parse tool calls from text response
      * Model is instructed to output tool calls in a specific format
+     * Enhanced to handle multi-line content in apply_diff args
      */
     private parseToolCalls(text: string): { name: string; args: any }[] {
         const calls: { name: string; args: any }[] = [];
@@ -247,16 +248,18 @@ You MUST use this exact format. Do NOT just describe what you want to do - outpu
 
         while ((match = fencedRegex.exec(text)) !== null) {
             try {
-                const parsed = JSON.parse(match[1].trim());
-                if (parsed.name) {
+                // Pre-process to fix common JSON issues with multi-line strings
+                let jsonStr = match[1].trim();
+                const parsed = this.parseToolCallJson(jsonStr);
+                if (parsed && parsed.name) {
                     calls.push({
                         name: parsed.name,
                         args: parsed.args || parsed.arguments || {}
                     });
                     console.log(`[CopilotGPTClient] Parsed fenced tool call: ${parsed.name}`);
                 }
-            } catch (e) {
-                console.warn('[CopilotGPTClient] Failed to parse fenced tool call:', match[1]);
+            } catch (e: any) {
+                console.warn('[CopilotGPTClient] Failed to parse fenced tool call:', e.message);
             }
         }
 
@@ -293,6 +296,77 @@ You MUST use this exact format. Do NOT just describe what you want to do - outpu
 
         console.log(`[CopilotGPTClient] Total tool calls found: ${calls.length}`);
         return calls;
+    }
+
+    /**
+     * Parse tool call JSON with special handling for multi-line string content
+     * LLMs often output literal newlines in JSON strings instead of \n escapes
+     */
+    private parseToolCallJson(jsonStr: string): { name: string; args?: any; arguments?: any } | null {
+        // First, try direct parse (works if model escaped correctly)
+        try {
+            return JSON.parse(jsonStr);
+        } catch (e) {
+            // Continue to more robust parsing
+        }
+
+        // The model likely output literal newlines inside string values
+        // Need to find and fix them
+        console.log('[CopilotGPTClient] Attempting robust JSON parse for multi-line content...');
+
+        try {
+            // Strategy: Extract the diff content separately, parse the structure, then recombine
+            // Look for "diff": " followed by the diff content
+            const diffMatch = jsonStr.match(/"diff"\s*:\s*"([\s\S]*?)"\s*\}/);
+            if (diffMatch) {
+                const diffContent = diffMatch[1];
+
+                // Escape unescaped newlines and other special chars in the diff content
+                const escapedDiff = diffContent
+                    .replace(/\\/g, '\\\\')  // Escape backslashes first
+                    .replace(/\n/g, '\\n')   // Then escape newlines
+                    .replace(/\r/g, '\\r')   // Carriage returns
+                    .replace(/\t/g, '\\t');  // Tabs
+
+                // Rebuild the JSON with properly escaped diff
+                const fixedJson = jsonStr.replace(
+                    /"diff"\s*:\s*"[\s\S]*?"\s*\}/,
+                    `"diff": "${escapedDiff}"}`
+                );
+
+                return JSON.parse(fixedJson);
+            }
+
+            // Try extracting path and diff separately for apply_diff
+            const pathMatch = jsonStr.match(/"path"\s*:\s*"([^"]+)"/);
+            if (pathMatch) {
+                // Find where diff content starts
+                const diffStart = jsonStr.indexOf('"diff"');
+                if (diffStart !== -1) {
+                    // Find the opening quote of the diff value
+                    const valueStart = jsonStr.indexOf('"', diffStart + 6) + 1;
+                    // Find the closing quote before the final }
+                    const lastBrace = jsonStr.lastIndexOf('}');
+                    const lastQuote = jsonStr.lastIndexOf('"', lastBrace);
+
+                    if (valueStart > 0 && lastQuote > valueStart) {
+                        const rawDiff = jsonStr.slice(valueStart, lastQuote);
+
+                        return {
+                            name: 'apply_diff',
+                            args: {
+                                path: pathMatch[1],
+                                diff: rawDiff  // Use raw diff content directly
+                            }
+                        };
+                    }
+                }
+            }
+        } catch (e: any) {
+            console.warn('[CopilotGPTClient] Robust parse also failed:', e.message);
+        }
+
+        return null;
     }
 
     /**
