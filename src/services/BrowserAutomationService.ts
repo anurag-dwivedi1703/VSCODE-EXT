@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as cp from 'child_process';
+import { AuthSessionManager } from './AuthSessionManager';
 
 // Dynamic imports for optional dependencies - loaded on demand
 let playwrightModule: any = null;
@@ -237,11 +238,14 @@ export class BrowserAutomationService {
     private isRecording: boolean = false;
     private recordingStartTime: number = 0;
     private currentRecordingPath: string = '';
+    private authManager: AuthSessionManager;
 
     constructor(
         private readonly taskId: string,
         private readonly workspacePath: string
-    ) { }
+    ) {
+        this.authManager = AuthSessionManager.getInstance();
+    }
 
     /**
      * Get the recordings directory path based on user settings or default
@@ -271,7 +275,7 @@ export class BrowserAutomationService {
     }
 
     /**
-     * Launch a new browser instance
+     * Launch a new browser instance with persistent session support
      */
     async launchBrowser(recordVideo: boolean = false): Promise<string> {
         try {
@@ -310,12 +314,23 @@ export class BrowserAutomationService {
                 this.recordingStartTime = Date.now();
             }
 
+            // Try to load persistent session state if available
+            if (this.authManager.hasSavedSession()) {
+                try {
+                    const storageStatePath = path.join(this.authManager.getProfilePath(), 'storage-state.json');
+                    contextOptions.storageState = storageStatePath;
+                    console.log('[BrowserAutomationService] Loading saved session state');
+                } catch (error) {
+                    console.log('[BrowserAutomationService] Could not load saved session, starting fresh');
+                }
+            }
+
             this.context = await this.browser.newContext(contextOptions);
             this.page = await this.context.newPage();
 
             return recordVideo
                 ? `Browser launched with video recording. Recording to: ${this.currentRecordingPath}`
-                : 'Browser launched successfully.';
+                : 'Browser launched successfully with session persistence.';
         } catch (error: any) {
             return `Error launching browser: ${error.message}`;
         }
@@ -358,7 +373,7 @@ export class BrowserAutomationService {
     }
 
     /**
-     * Navigate to a URL
+     * Navigate to a URL with SSO/Okta authentication handling
      */
     async navigateTo(url: string): Promise<string> {
         if (!this.page) {
@@ -367,6 +382,33 @@ export class BrowserAutomationService {
 
         try {
             await this.page.goto(url, { waitUntil: 'networkidle' });
+
+            // Check if we landed on a login page (Okta, SSO, etc.)
+            const currentUrl = this.page.url();
+            if (this.authManager.isLoginPage(currentUrl)) {
+                console.log(`[BrowserAutomationService] Login page detected: ${currentUrl}`);
+
+                // Show VS Code popup to notify user
+                const authResult = await this.authManager.promptUserForAuth(currentUrl);
+
+                if (authResult === 'completed') {
+                    // Wait a moment for any redirects to complete
+                    await this.page.waitForTimeout(2000);
+
+                    // Save the session for future use
+                    if (this.context) {
+                        await this.authManager.saveContextState(this.context);
+                    }
+
+                    const newUrl = this.page.url();
+                    return `Authentication completed. Now at: ${newUrl}`;
+                } else if (authResult === 'cancelled') {
+                    return `Authentication cancelled by user. Still on login page: ${currentUrl}`;
+                } else {
+                    return `Authentication timed out. Still on login page: ${currentUrl}`;
+                }
+            }
+
             return `Navigated to: ${url}`;
         } catch (error: any) {
             return `Error navigating to ${url}: ${error.message}`;
@@ -551,7 +593,14 @@ export class BrowserAutomationService {
                 }
             }
 
+            // Save session state before closing (for authenticated sessions)
             if (this.context) {
+                try {
+                    await this.authManager.saveContextState(this.context);
+                    console.log('[BrowserAutomationService] Session state saved before closing');
+                } catch (error) {
+                    // Non-critical - continue closing
+                }
                 await this.context.close();
             }
             if (this.browser) {
