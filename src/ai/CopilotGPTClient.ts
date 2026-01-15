@@ -161,10 +161,11 @@ You MUST use this exact format. Do NOT just describe what you want to do - outpu
                     }
 
                     // Send request to model
+                    const cancellationToken = new vscode.CancellationTokenSource().token;
                     const response = await model.sendRequest(
                         messages,
                         {},
-                        new vscode.CancellationTokenSource().token
+                        cancellationToken
                     );
 
                     // Collect response text
@@ -173,7 +174,27 @@ You MUST use this exact format. Do NOT just describe what you want to do - outpu
                         responseText += fragment;
                     }
 
-                    // Add assistant response to history
+                    // ==================== TRUNCATION RECOVERY ====================
+                    // Check if response was truncated (incomplete code block, SEARCH/REPLACE, etc.)
+                    if (this.detectTruncation(responseText)) {
+                        console.log('[CopilotGPTClient] Truncation detected! Initiating recovery...');
+
+                        // Add truncated response to history so model has context
+                        messages.push(vscode.LanguageModelChatMessage.Assistant(responseText));
+                        messages.push(vscode.LanguageModelChatMessage.User(
+                            "Your previous response was truncated. Continue EXACTLY where you left off. " +
+                            "Do not repeat any content. Complete the tool call or code block."
+                        ));
+
+                        // Get continuation(s)
+                        const continuation = await this.continueGeneration(model, messages, cancellationToken, 0);
+                        responseText = this.stitchResponses(responseText, continuation);
+
+                        console.log(`[CopilotGPTClient] Recovery complete. Total response: ${responseText.length} chars`);
+                    }
+                    // ==================== END TRUNCATION RECOVERY ====================
+
+                    // Add final (possibly recovered) response to history
                     messages.push(vscode.LanguageModelChatMessage.Assistant(responseText));
 
                     // Parse for tool calls (text-based parsing since vscode.lm doesn't support native tool_use)
@@ -288,6 +309,115 @@ You MUST use this exact format. Do NOT just describe what you want to do - outpu
         cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
 
         return cleaned;
+    }
+
+    // ==================== TRUNCATION RECOVERY (Strategy 2) ====================
+
+    /**
+     * Detect if response was truncated mid-output
+     * This catches incomplete code blocks, SEARCH/REPLACE diffs, and tool calls
+     */
+    private detectTruncation(text: string): boolean {
+        const trimmed = text.trim();
+
+        // Check for incomplete tool_call JSON (most critical for apply_diff)
+        if (trimmed.includes('```tool_call') && !trimmed.endsWith('```')) {
+            console.log('[CopilotGPTClient] Truncation: Incomplete tool_call block');
+            return true;
+        }
+
+        // Check for incomplete code blocks (odd number of ```)
+        const codeBlockStarts = (trimmed.match(/```/g) || []).length;
+        if (codeBlockStarts % 2 !== 0) {
+            console.log('[CopilotGPTClient] Truncation: Odd number of code fences');
+            return true;
+        }
+
+        // Check for incomplete SEARCH/REPLACE (critical for apply_diff)
+        if (trimmed.includes('<<<<<<< SEARCH') && !trimmed.includes('>>>>>>> REPLACE')) {
+            console.log('[CopilotGPTClient] Truncation: Incomplete SEARCH/REPLACE block');
+            return true;
+        }
+
+        // Check for incomplete JSON diff argument
+        if (trimmed.includes('"diff":') && !trimmed.includes('>>>>>>> REPLACE')) {
+            const lastDiff = trimmed.lastIndexOf('"diff":');
+            const afterDiff = trimmed.slice(lastDiff);
+            if (afterDiff.includes('<<<<<<< SEARCH') && !afterDiff.includes('>>>>>>> REPLACE')) {
+                console.log('[CopilotGPTClient] Truncation: Incomplete diff in tool call');
+                return true;
+            }
+        }
+
+        // Check for mid-word/mid-sentence truncation at end
+        if (/[a-zA-Z]$/.test(trimmed) && !trimmed.endsWith('.')) {
+            const lastNewline = trimmed.lastIndexOf('\n');
+            const lastLine = trimmed.slice(lastNewline + 1);
+            // If last line is short and doesn't end with proper terminator, likely truncated
+            if (lastLine.length < 10 && !/[.!?:}\])"'`]$/.test(lastLine)) {
+                console.log('[CopilotGPTClient] Truncation: Suspicious line ending');
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Stitch continuation onto original response, cleaning up filler text
+     */
+    private stitchResponses(first: string, continuation: string): string {
+        // Remove common "continuation filler" from the start of the continuation
+        const fillerPatterns = [
+            /^(Here is the rest|Continuing|I'll continue|I will continue|Resuming|Let me continue|Here's the rest|...continuing)[\s.:]*\n*/i,
+            /^```\w*\n/, // Remove duplicate code fence if present
+        ];
+
+        let cleaned = continuation;
+        for (const pattern of fillerPatterns) {
+            cleaned = cleaned.replace(pattern, '');
+        }
+
+        console.log('[CopilotGPTClient] Stitched continuation:', cleaned.substring(0, 100) + '...');
+        return first + cleaned;
+    }
+
+    /**
+     * Recursively continue generation until response is complete (max 5 attempts)
+     */
+    private async continueGeneration(
+        model: vscode.LanguageModelChat,
+        messages: vscode.LanguageModelChatMessage[],
+        token: vscode.CancellationToken,
+        depth: number
+    ): Promise<string> {
+        if (depth >= 5) {
+            console.warn('[CopilotGPTClient] Max continuation depth (5) reached, stopping');
+            return '';
+        }
+
+        try {
+            const response = await model.sendRequest(messages, {}, token);
+            let text = '';
+            for await (const fragment of response.text) {
+                text += fragment;
+            }
+
+            console.log(`[CopilotGPTClient] Continuation ${depth + 1} received: ${text.length} chars`);
+
+            // Check if this continuation also got truncated
+            if (this.detectTruncation(text)) {
+                messages.push(vscode.LanguageModelChatMessage.Assistant(text));
+                messages.push(vscode.LanguageModelChatMessage.User("Continue exactly where you left off. Do not repeat content."));
+                const more = await this.continueGeneration(model, messages, token, depth + 1);
+                return this.stitchResponses(text, more);
+            }
+
+            return text;
+        } catch (error: any) {
+            console.error(`[CopilotGPTClient] Continuation error at depth ${depth}:`, error.message);
+            return '';
+        }
     }
 
     /**
