@@ -149,25 +149,50 @@ Since you're running through VS Code's Language Model API, you MUST output tool 
 When modifying existing files, you MUST use apply_diff. Using write_file on existing
 files causes catastrophic errors (1000+ TypeScript errors from broken code).
 
-✅ CORRECT - Use apply_diff for edits:
-\`\`\`tool_call
-{"name": "apply_diff", "args": {"path": "src/file.ts", "diff": "<<<<<<< SEARCH\\nold code to find\\n=======\\nnew replacement code\\n>>>>>>> REPLACE"}}
-\`\`\`
+✅ CORRECT - Use apply_diff with TEXT FORMAT (NOT JSON!):
 
-❌ WRONG - Never use write_file to modify existing files:
-\`\`\`tool_call
-{"name": "write_file", "args": {"path": "src/file.ts", "content": "..."}}  // DON'T DO THIS!
-\`\`\`
+[APPLY_DIFF: src/file.ts]
+<<<<<<< SEARCH
+old code to find (must match file content EXACTLY)
+=======
+new replacement code
+>>>>>>> REPLACE
+[END_DIFF]
+
+⚠️ IMPORTANT: apply_diff uses a SPECIAL TEXT FORMAT, not JSON tool_call!
+   The [APPLY_DIFF: path]...[END_DIFF] format is intentionally NOT JSON to avoid escaping issues.
+   Do NOT wrap apply_diff in \`\`\`tool_call blocks!
+
+For MULTIPLE changes in one file, use multiple SEARCH/REPLACE blocks:
+
+[APPLY_DIFF: src/file.ts]
+<<<<<<< SEARCH
+first code to find
+=======
+first replacement
+>>>>>>> REPLACE
+
+<<<<<<< SEARCH
+second code to find
+=======
+second replacement
+>>>>>>> REPLACE
+[END_DIFF]
 
 apply_diff Rules:
 1. SEARCH block must match file content EXACTLY (including whitespace and indentation)
 2. Include enough unique context (2-3 lines) to identify the exact location
-3. For multiple changes in one file, use multiple SEARCH/REPLACE blocks
-4. Before editing, ALWAYS read_file first to see exact current content
+3. Before editing, ALWAYS read_file first to see exact current content
+
+❌ WRONG - Never use write_file to modify existing files:
+\`\`\`tool_call
+{"name": "write_file", "args": {"path": "src/file.ts", "content": "..."}}
+\`\`\`
+^ This will BREAK the codebase! Use apply_diff instead.
 
 ═══════════════════════════════════════════════════════════════════════════════
 
-Other Available Tools:
+Other Available Tools (these USE \`\`\`tool_call format):
 - \`\`\`tool_call
 {"name": "list_files", "args": {"path": "."}}
 \`\`\`
@@ -192,7 +217,7 @@ Other Available Tools:
 {"name": "search_web", "args": {"query": "search query"}}
 \`\`\`
 
-You MUST use this exact format. Do NOT just describe what you want to do - output the tool_call block!
+REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JSON format
 `;
 
 
@@ -271,12 +296,21 @@ You MUST use this exact format. Do NOT just describe what you want to do - outpu
                     // Add final (possibly recovered) response to history
                     messages.push(vscode.LanguageModelChatMessage.Assistant(responseText));
 
-                    // Parse for tool calls (text-based parsing since vscode.lm doesn't support native tool_use)
-                    const functionCalls = this.parseToolCalls(responseText);
+                    // ==================== PARSE TOOL CALLS ====================
+                    // FIRST: Check for text-based [APPLY_DIFF:] blocks (preferred format, no JSON escaping issues)
+                    const textDiffs = this.parseTextDiffs(responseText);
 
-                    // Strip tool call blocks from text to avoid showing JSON in UI
-                    // This makes the output match Gemini's behavior where text and tool calls are separate
-                    const cleanedText = this.stripToolCallsFromText(responseText);
+                    // SECOND: Parse JSON tool_call blocks (for other tools + backward compatibility)
+                    const jsonToolCalls = this.parseToolCalls(responseText);
+
+                    // Combine: text diffs take priority (they're more reliable)
+                    const functionCalls = [...textDiffs, ...jsonToolCalls];
+
+                    console.log(`[CopilotClaudeClient] Parsed ${textDiffs.length} text diffs, ${jsonToolCalls.length} JSON tool calls`);
+
+                    // Strip tool call blocks AND text diff blocks from text to avoid showing in UI
+                    let cleanedText = this.stripToolCallsFromText(responseText);
+                    cleanedText = this.stripTextDiffsFromText(cleanedText);
 
                     return {
                         response: {
@@ -479,6 +513,56 @@ You MUST use this exact format. Do NOT just describe what you want to do - outpu
         return cleaned;
     }
 
+    // ==================== TEXT-BASED DIFF PARSING ====================
+
+    /**
+     * Parse text-based [APPLY_DIFF: path]...[END_DIFF] blocks
+     * This format avoids JSON escaping issues with multi-line content
+     * Returns function calls in the same format as parseToolCalls for consistency
+     */
+    private parseTextDiffs(text: string): { name: string; args: any }[] {
+        const calls: { name: string; args: any }[] = [];
+
+        // Pattern: [APPLY_DIFF: path]...content...[END_DIFF]
+        const diffBlockPattern = /\[APPLY_DIFF:\s*([^\]]+)\]([\s\S]*?)\[END_DIFF\]/g;
+        let match;
+
+        while ((match = diffBlockPattern.exec(text)) !== null) {
+            const filePath = match[1].trim();
+            const diffContent = match[2].trim();
+
+            if (filePath && diffContent) {
+                calls.push({
+                    name: 'apply_diff',
+                    args: {
+                        path: filePath,
+                        diff: diffContent
+                    }
+                });
+                console.log(`[CopilotClaudeClient] Parsed text-based apply_diff for: ${filePath}`);
+            }
+        }
+
+        if (calls.length > 0) {
+            console.log(`[CopilotClaudeClient] Found ${calls.length} text-based diff blocks`);
+        }
+
+        return calls;
+    }
+
+    /**
+     * Strip text-based diff blocks from response to avoid showing in UI
+     */
+    private stripTextDiffsFromText(text: string): string {
+        // Remove [APPLY_DIFF: ...]...[END_DIFF] blocks
+        let cleaned = text.replace(/\[APPLY_DIFF:\s*[^\]]+\][\s\S]*?\[END_DIFF\]/g, '');
+
+        // Clean up any extra whitespace left behind
+        cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
+
+        return cleaned;
+    }
+
     // ==================== TRUNCATION RECOVERY (Strategy 2) ====================
 
     /**
@@ -504,6 +588,12 @@ You MUST use this exact format. Do NOT just describe what you want to do - outpu
         // Check for incomplete SEARCH/REPLACE (critical for apply_diff)
         if (trimmed.includes('<<<<<<< SEARCH') && !trimmed.includes('>>>>>>> REPLACE')) {
             console.log('[CopilotClaudeClient] Truncation: Incomplete SEARCH/REPLACE block');
+            return true;
+        }
+
+        // Check for incomplete text-based [APPLY_DIFF:]...[END_DIFF] block
+        if (trimmed.includes('[APPLY_DIFF:') && !trimmed.includes('[END_DIFF]')) {
+            console.log('[CopilotClaudeClient] Truncation: Incomplete [APPLY_DIFF:] block');
             return true;
         }
 
