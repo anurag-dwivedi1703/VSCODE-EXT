@@ -155,8 +155,9 @@ function parseLogs(logs: string[], checkpoints: { id: string, message: string }[
             // Extract file path for write_file calls
             let filePath: string | undefined;
             let timestamp: number | undefined;
-            if (fnName === 'write_file') {
+            if (fnName === 'write_file' || fnName === 'apply_diff') {
                 // Parse path from call like: write_file({"path":"src/app.ts","content":"..."})
+                // or apply_diff({"path":"src/file.ts","diff":"..."})
                 const pathMatch = cleanLog.match(/["']path["']\s*:\s*["']([^"']+)["']/);
                 if (pathMatch) {
                     filePath = pathMatch[1];
@@ -710,7 +711,7 @@ function App() {
 
                                                             {/* Files Modified - PROMINENT SECTION */}
                                                             {(() => {
-                                                                const fileEdits = group.tools?.filter(t => t.name === 'write_file') || [];
+                                                                const fileEdits = group.tools?.filter(t => t.name === 'write_file' || t.name === 'apply_diff') || [];
                                                                 if (fileEdits.length === 0) return null;
                                                                 return (
                                                                     <div className="files-modified">
@@ -807,7 +808,7 @@ function App() {
                                                                                 <div className="tool-row">
                                                                                     <span className="tool-name">⚡ {tool.name}</span>
                                                                                     <div className="tool-actions">
-                                                                                        {tool.name === 'write_file' && (
+                                                                                        {(tool.name === 'write_file' || tool.name === 'apply_diff') && (
                                                                                             <button
                                                                                                 className="open-diff-btn"
                                                                                                 title="Open Diff"
