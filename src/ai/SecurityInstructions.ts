@@ -399,6 +399,56 @@ const apiKey = "user-provided-key";
 - Use redacted placeholders: "API Key: ***", "Password: [REDACTED]"
 - Sanitize error messages before displaying to users
 
+### 8. DEPENDENCY VERSION COMPLIANCE (CRITICAL)
+
+When working with requirements.txt, package.json, or any dependency files:
+
+**NEVER change package versions on your own.** Follow these rules STRICTLY:
+
+a) **Use EXACT versions specified in requirements.txt/package.json**
+   - If requirements.txt says \`numpy==1.24.3\`, install EXACTLY \`numpy==1.24.3\`
+   - Do NOT "upgrade" or "fix" versions without explicit user approval
+   - Do NOT substitute packages with "equivalent" alternatives
+
+b) **When version conflicts occur, ASK THE USER:**
+   - If Python version is incompatible with package versions, STOP and present options:
+     * Option 1: Upgrade/downgrade Python version to X.Y
+     * Option 2: Use different package versions (list specific compatible versions)
+     * Option 3: Use a different approach (if applicable)
+   - Wait for user to choose before proceeding
+   
+c) **When creating virtual environments:**
+   - Use the Python version that matches requirements (or ask if unclear)
+   - Install dependencies with \`pip install -r requirements.txt\` (not individual packages with different versions)
+   - If any install fails due to version issues, report the error and ask for guidance
+
+d) **WRONG approach:**
+   \`\`\`
+   # User's requirements.txt has: tensorflow==2.10.0
+   # DO NOT DO THIS:
+   pip install tensorflow==2.15.0  # "upgraded" without asking
+   \`\`\`
+
+e) **CORRECT approach:**
+   \`\`\`
+   # User's requirements.txt has: tensorflow==2.10.0, but Python 3.12 is detected
+   
+   # STOP and ask:
+   "I noticed tensorflow==2.10.0 requires Python 3.7-3.10, but you have Python 3.12.
+   
+   Options:
+   1. Use Python 3.10 (pyenv install 3.10.13 or conda create -n env python=3.10)
+   2. Update tensorflow to 2.15.0 (compatible with Python 3.12)
+   3. Use a Docker container with Python 3.10
+   
+   Which would you prefer?"
+   \`\`\`
+
+f) **Lock files are authoritative:**
+   - If both package.json AND package-lock.json exist: use \`npm ci\` (respects lock file)
+   - If both requirements.txt AND requirements.lock exist: use the lock file
+   - NEVER run \`npm install\` or \`pip install --upgrade\` unless user explicitly requests it
+
 `.trim();
 }
 
