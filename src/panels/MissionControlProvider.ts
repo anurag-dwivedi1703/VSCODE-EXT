@@ -407,6 +407,13 @@ export class MissionControlProvider {
                     case 'rejectConstitution':
                         this._taskRunner.rejectReview(message.taskId);
                         return;
+                    // Stop and Mode handlers
+                    case 'stopTask':
+                        this._taskRunner.stopTask(message.taskId);
+                        return;
+                    case 'changeMode':
+                        this._taskRunner.changeTaskMode(message.taskId, message.mode);
+                        return;
                 }
             },
             undefined,

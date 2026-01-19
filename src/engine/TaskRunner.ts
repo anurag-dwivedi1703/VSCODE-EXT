@@ -462,6 +462,53 @@ export class TaskRunner {
         this.saveTask(task);
     }
 
+    /**
+     * Stop a running task (cancel execution)
+     */
+    public stopTask(taskId: string) {
+        const task = this.tasks.get(taskId);
+        if (!task) {
+            console.log(`[TaskRunner] stopTask: task ${taskId} not found`);
+            return;
+        }
+
+        // Only stop if task is actively running
+        if (task.status === 'executing' || task.status === 'planning') {
+            task.status = 'failed';
+            task.logs.push(`**System**: Task stopped by user.`);
+
+            // Clear the session to prevent further AI calls
+            this.sessions.delete(taskId);
+
+            this._onTaskUpdate.fire({ taskId, task });
+            this.saveTask(task);
+            console.log(`[TaskRunner] Task ${taskId} stopped by user`);
+        } else {
+            console.log(`[TaskRunner] Task ${taskId} is not running (status: ${task.status})`);
+        }
+    }
+
+    /**
+     * Change task mode between 'planning' and 'fast'
+     */
+    public changeTaskMode(taskId: string, newMode: 'planning' | 'fast') {
+        const task = this.tasks.get(taskId);
+        if (!task) {
+            console.log(`[TaskRunner] changeTaskMode: task ${taskId} not found`);
+            return;
+        }
+
+        const oldMode = task.mode || 'planning';
+        if (oldMode === newMode) return;
+
+        task.mode = newMode;
+        task.logs.push(`**System**: Mode changed from ${oldMode} to ${newMode}`);
+
+        this._onTaskUpdate.fire({ taskId, task });
+        this.saveTask(task);
+        console.log(`[TaskRunner] Task ${taskId} mode changed to ${newMode}`);
+    }
+
     private async processTask(taskId: string) {
         const task = this.tasks.get(taskId);
         if (!task) return;

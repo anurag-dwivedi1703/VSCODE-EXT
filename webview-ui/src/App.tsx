@@ -915,6 +915,7 @@ function App() {
                                             className="reply-input"
                                             type="text"
                                             placeholder="Reply to agent..."
+                                            id={`reply-input-${activeAgent.id}`}
                                             onKeyDown={(e) => {
                                                 if (e.key === 'Enter') {
                                                     const input = e.target as HTMLInputElement;
@@ -933,7 +934,21 @@ function App() {
                                         />
                                     </div>
                                     <div className="model-selector-bar">
-                                        <span className="mode-pill">← {activeAgent.mode === 'planning' ? 'Planning' : 'Fast'}</span>
+                                        {/* Mode Toggle - Clickable */}
+                                        <button
+                                            className={`mode-pill-btn ${activeAgent.mode || 'planning'}`}
+                                            onClick={() => {
+                                                const newMode = activeAgent.mode === 'fast' ? 'planning' : 'fast';
+                                                vscode.postMessage({
+                                                    command: 'changeMode',
+                                                    taskId: activeAgent.id,
+                                                    mode: newMode
+                                                });
+                                            }}
+                                            title={`Click to switch to ${activeAgent.mode === 'fast' ? 'Planning' : 'Fast'} mode`}
+                                        >
+                                            {activeAgent.mode === 'fast' ? '⚡ Fast' : '📋 Planning'}
+                                        </button>
                                         <select
                                             className="model-dropdown"
                                             value={activeAgent.model || 'gemini-3-pro-preview'}
@@ -949,7 +964,39 @@ function App() {
                                             <option value="claude-sonnet-4-5-20251101">Claude Sonnet 4.5</option>
                                             <option value="gpt-5-mini">GPT-5-mini (Copilot)</option>
                                         </select>
-                                        <span className="submit-arrow">→</span>
+                                        {/* Submit or Stop Button */}
+                                        {activeAgent.status === 'executing' || activeAgent.status === 'planning' ? (
+                                            <button
+                                                className="stop-btn"
+                                                onClick={() => vscode.postMessage({
+                                                    command: 'stopTask',
+                                                    taskId: activeAgent.id
+                                                })}
+                                                title="Stop the current task"
+                                            >
+                                                ⏹ Stop
+                                            </button>
+                                        ) : (
+                                            <button
+                                                className="submit-btn"
+                                                onClick={() => {
+                                                    const input = document.getElementById(`reply-input-${activeAgent.id}`) as HTMLInputElement;
+                                                    if (input && input.value.trim()) {
+                                                        vscode.postMessage({
+                                                            command: 'replyToAgent',
+                                                            text: input.value,
+                                                            taskId: activeAgent.id,
+                                                            attachments: contextFiles
+                                                        });
+                                                        input.value = '';
+                                                        setContextFiles([]);
+                                                    }
+                                                }}
+                                                title="Send message"
+                                            >
+                                                →
+                                            </button>
+                                        )}
                                     </div>
                                 </footer>
                             </>
