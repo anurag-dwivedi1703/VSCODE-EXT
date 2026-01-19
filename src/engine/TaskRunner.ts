@@ -1297,6 +1297,8 @@ ${contextData}
 
                                 case 'run_command':
                                     const cmd = (args.command as string || '').trim();
+                                    // Extract timeout from args, default to 15s, cap at 10min
+                                    const waitTimeoutMs = Math.min((args.waitTimeoutMs as number) || 15000, 600000);
 
                                     // AGENT DECIDES MODE: Check for high-risk commands
                                     if (this._globalAgentMode === 'agent-decides') {
@@ -1316,7 +1318,7 @@ ${contextData}
                                         this._onReloadBrowser.fire();
                                         toolResult = "Browser reload triggered (via auto-correction).";
                                     } else {
-                                        toolResult = await tools.runCommand(cmd);
+                                        toolResult = await tools.runCommand(cmd, waitTimeoutMs);
                                     }
                                     break;
                                 case 'reload_browser':

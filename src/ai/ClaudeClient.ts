@@ -56,11 +56,12 @@ export class ClaudeClient {
             },
             {
                 name: "run_command",
-                description: "Run a shell command",
+                description: "Run a shell command. Default timeout: 15s. For slow operations (pip install, npm install, venv creation), set waitTimeoutMs to 120000 (2min) or higher. Use '&' suffix for background execution.",
                 input_schema: {
                     type: "object" as const,
                     properties: {
-                        command: { type: "string", description: "Command to execute" }
+                        command: { type: "string", description: "Command to execute" },
+                        waitTimeoutMs: { type: "number", description: "Timeout in ms (default: 15000, max: 600000). Use 120000+ for pip/npm install." }
                     },
                     required: ["command"]
                 }
@@ -110,7 +111,7 @@ export class ClaudeClient {
             },
             {
                 name: "browser_navigate",
-                description: "Navigate the automated browser to a URL and wait for page load",
+                description: "Navigate the automated browser to a URL and wait for page load. If SSO/Okta login is detected, the system automatically pauses for user authentication (5min timeout). No extra action needed.",
                 input_schema: {
                     type: "object" as const,
                     properties: {

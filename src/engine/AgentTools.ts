@@ -484,7 +484,13 @@ replacement code
         return `Browser navigation to ${url} triggered (Simulated).`;
     }
 
-    async runCommand(command: string): Promise<string> {
+    /**
+     * Run a shell command with configurable timeout.
+     * @param command - The command to execute
+     * @param waitTimeoutMs - Timeout in milliseconds (default: 15000, max: 600000).
+     *                        Use 120000+ for slow operations like pip/npm install.
+     */
+    async runCommand(command: string, waitTimeoutMs: number = 15000): Promise<string> {
         return new Promise((resolve) => {
             // Basic safety check
             if (command.includes('rm -rf /') || command.includes('format c:')) {
@@ -492,10 +498,16 @@ replacement code
                 return;
             }
 
+            // Cap timeout at 10 minutes to prevent indefinite hangs
+            const effectiveTimeout = Math.min(Math.max(waitTimeoutMs, 1000), 600000);
+
             // Show Terminal
             if (this.terminalManager) {
                 this.terminalManager.show();
                 this.terminalManager.print(`\x1b[36m> ${command}\x1b[0m\n`); // Cyan prompt
+                if (effectiveTimeout > 15000) {
+                    this.terminalManager.print(`\x1b[33m[Using extended timeout: ${Math.round(effectiveTimeout / 1000)}s]\x1b[0m\n`);
+                }
             }
 
             // Detect background execution request
@@ -508,15 +520,18 @@ replacement code
             });
 
             // 1. TIMEOUT LOGIC
-            // If not background, force resolve after 15 seconds to prevent hanging (e.g., interactive 'date' command)
+            // If not background, force resolve after timeout to prevent hanging
             if (!isBackground) {
                 setTimeout(() => {
                     if (!resolved) {
                         child.kill(); // Kill the stuck process
-                        combinedOutput += "\n[System]: Command timed out after 15s. It may have been waiting for input.";
+                        const timeoutSec = Math.round(effectiveTimeout / 1000);
+                        combinedOutput += `\n[System]: Command timed out after ${timeoutSec}s.`;
+                        combinedOutput += ` For slow operations (pip install, npm install, venv creation), use waitTimeoutMs: 120000 or higher.`;
+                        combinedOutput += ` For background processes, append '&' to the command.`;
                         safeResolve(combinedOutput);
                     }
-                }, 15000);
+                }, effectiveTimeout);
             }
 
             // 2. PREVENT INTERACTIVE HANGS
