@@ -1135,12 +1135,8 @@ ${contextData}
                         console.log(`[TaskRunner] Potential summary detected in response: ${text.substring(0, 50)}...`);
                     }
 
-                    if (text.includes("MISSION COMPLETE")) {
-                        // We do NOT return immediately, we break the loop to handle completion logic
-                        // But if there are still user messages, we might want to continue?
-                        // Simple logic: if mission complete, we stop unless the user says otherwise LATER.
-                        break;
-                    }
+                    // NOTE: Do NOT break here on "MISSION COMPLETE" - tool calls must be processed first!
+                    // The proper completion check happens after tool processing at the end of this iteration.
                 }
 
                 // Handle Tool Calls
