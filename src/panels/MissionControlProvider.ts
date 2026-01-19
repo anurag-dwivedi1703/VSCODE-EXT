@@ -17,6 +17,7 @@ export class MissionControlProvider {
     private _taskRunner: TaskRunner;
     private _workspaces: WorkspaceInfo[] = [];
     private _context: vscode.ExtensionContext;
+    private _isDisposed: boolean = false;
 
     private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, taskRunner: TaskRunner, context: vscode.ExtensionContext) {
         this._panel = panel;
@@ -69,29 +70,32 @@ export class MissionControlProvider {
         this.sendWorkspaces();
 
         // Listen for updates from TaskRunner and forward to Webview
-        this._taskRunner.onTaskUpdate((event) => {
-            this._panel.webview.postMessage({
+        const taskUpdateSub = this._taskRunner.onTaskUpdate((event) => {
+            this.safePostMessage({
                 command: 'taskUpdate',
                 taskId: event.taskId,
                 task: event.task
             });
         });
+        this._disposables.push(taskUpdateSub);
 
-        this._taskRunner.onReloadBrowser(() => {
-            this._panel.webview.postMessage({
+        const reloadBrowserSub = this._taskRunner.onReloadBrowser(() => {
+            this.safePostMessage({
                 command: 'reloadBrowser'
             });
         });
+        this._disposables.push(reloadBrowserSub);
 
-        this._taskRunner.onNavigateBrowser((url: string) => {
-            this._panel.webview.postMessage({
+        const navigateBrowserSub = this._taskRunner.onNavigateBrowser((url: string) => {
+            this.safePostMessage({
                 command: 'navigateBrowser',
                 url: url
             });
         });
+        this._disposables.push(navigateBrowserSub);
 
         // Listen for approval requests (Agent Decides mode and constitution review)
-        this._taskRunner.onAwaitingApproval((event) => {
+        const awaitingApprovalSub = this._taskRunner.onAwaitingApproval((event) => {
             // Map approval types to webview commands
             let command: string;
             switch (event.type) {
@@ -110,7 +114,7 @@ export class MissionControlProvider {
                     command = 'awaitingApproval';
             }
 
-            this._panel.webview.postMessage({
+            this.safePostMessage({
                 command: command,
                 taskId: event.taskId,
                 content: event.content,
@@ -118,18 +122,20 @@ export class MissionControlProvider {
                 approvalType: event.type  // Pass the original type for UI context
             });
         });
+        this._disposables.push(awaitingApprovalSub);
 
-        this._taskRunner.onApprovalComplete((event) => {
-            this._panel.webview.postMessage({
+        const approvalCompleteSub = this._taskRunner.onApprovalComplete((event) => {
+            this.safePostMessage({
                 command: 'approvalComplete',
                 taskId: event.taskId
             });
         });
+        this._disposables.push(approvalCompleteSub);
 
         // Send existing tasks (loaded from disk)
         const existingTasks = this._taskRunner.getTasks();
         existingTasks.forEach(task => {
-            this._panel.webview.postMessage({
+            this.safePostMessage({
                 command: 'taskUpdate',
                 taskId: task.id,
                 task: task
@@ -166,6 +172,7 @@ export class MissionControlProvider {
     }
 
     public dispose() {
+        this._isDisposed = true;
         MissionControlProvider.currentPanel = undefined;
 
         this._panel.dispose();
@@ -175,6 +182,21 @@ export class MissionControlProvider {
             if (x) {
                 x.dispose();
             }
+        }
+    }
+
+    /**
+     * Safely post a message to the webview, ignoring if disposed
+     */
+    private safePostMessage(message: any) {
+        if (this._isDisposed) {
+            console.log('[MissionControl] Ignoring postMessage - panel disposed');
+            return;
+        }
+        try {
+            this._panel.webview.postMessage(message);
+        } catch (error: any) {
+            console.warn('[MissionControl] Error posting message:', error.message);
         }
     }
 
@@ -222,7 +244,7 @@ export class MissionControlProvider {
     }
 
     private sendWorkspaces() {
-        this._panel.webview.postMessage({
+        this.safePostMessage({
             command: 'updateWorkspaces',
             workspaces: this._workspaces
         });
@@ -275,7 +297,7 @@ export class MissionControlProvider {
                     case 'getTasks':
                         const tasks = this._taskRunner.getTasks();
                         tasks.forEach(t => {
-                            this._panel.webview.postMessage({
+                            this.safePostMessage({
                                 command: 'taskUpdate',
                                 output: '',
                                 taskId: t.id,
@@ -291,7 +313,7 @@ export class MissionControlProvider {
                             openLabel: 'Attach Context'
                         }).then(uris => {
                             if (uris && uris.length > 0) {
-                                this._panel.webview.postMessage({
+                                this.safePostMessage({
                                     command: 'contextSelected',
                                     paths: uris.map(u => u.fsPath)
                                 });
@@ -350,7 +372,7 @@ export class MissionControlProvider {
                             try {
                                 if (fs.existsSync(fsPath)) {
                                     const content = fs.readFileSync(fsPath, 'utf-8');
-                                    this._panel.webview.postMessage({
+                                    this.safePostMessage({
                                         command: 'fileContent',
                                         path: fsPath,
                                         content: content
@@ -373,7 +395,7 @@ export class MissionControlProvider {
 
                         const fileEdit = this._taskRunner.getFileEdit(taskId, filePath);
                         if (fileEdit) {
-                            this._panel.webview.postMessage({
+                            this.safePostMessage({
                                 command: 'diffContent',
                                 path: fileEdit.path,
                                 before: fileEdit.beforeContent,
