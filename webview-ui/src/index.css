@@ -1,3 +1,16 @@
+/* Brand Color Palette */
+:root {
+    --brand-primary: #367c2b;
+    --brand-primary-hover: #2d6924;
+    --brand-primary-light: rgba(54, 124, 43, 0.15);
+    --brand-accent: #ffde00;
+    --brand-accent-muted: #d4b800;
+    --brand-accent-light: rgba(255, 222, 0, 0.15);
+    --brand-bg-dark: #27251f;
+    --brand-surface: #2f2d28;
+    --brand-border: #3d3a33;
+}
+
 /* Reset */
 body {
     margin: 0;
@@ -18,9 +31,9 @@ body {
 
 .revert-btn {
     background: transparent;
-    border: 1px solid #dba642;
-    /* Warning color */
-    color: #dba642;
+    border: 1px solid #ffde00;
+    /* Brand accent color */
+    color: #ffde00;
     padding: 2px 6px;
     font-size: 10px;
     border-radius: 4px;
@@ -31,7 +44,7 @@ body {
 }
 
 .revert-btn:hover {
-    background: rgba(219, 166, 66, 0.1);
+    background: rgba(255, 222, 0, 0.15);
     opacity: 1;
 }
 
@@ -144,8 +157,8 @@ body {
 
 .revert-btn-small {
     background: transparent;
-    border: 1px solid #dba642;
-    color: #dba642;
+    border: 1px solid #ffde00;
+    color: #ffde00;
     padding: 2px 6px;
     font-size: 10px;
     border-radius: 4px;
@@ -154,7 +167,7 @@ body {
 }
 
 .revert-btn-small:hover {
-    background: rgba(219, 166, 66, 0.1);
+    background: rgba(255, 222, 0, 0.15);
     opacity: 1;
 }
 
@@ -176,24 +189,24 @@ body {
 /* Completion Card */
 .msg-completion-card {
     background-color: var(--vscode-editor-background);
-    border: 1px solid #4caf50;
-    /* Green border */
+    border: 1px solid #367c2b;
+    /* Brand green border */
     border-radius: 8px;
     margin-top: 24px;
     margin-bottom: 24px;
     overflow: hidden;
-    box-shadow: 0 0 15px rgba(76, 175, 80, 0.2);
-    /* Green glow */
+    box-shadow: 0 0 15px rgba(54, 124, 43, 0.25);
+    /* Brand green glow */
 }
 
 .completion-header {
-    background-color: rgba(76, 175, 80, 0.1);
+    background-color: rgba(54, 124, 43, 0.15);
     padding: 12px 16px;
     display: flex;
     align-items: center;
     gap: 10px;
-    border-bottom: 1px solid rgba(76, 175, 80, 0.3);
-    color: #4caf50;
+    border-bottom: 1px solid rgba(54, 124, 43, 0.3);
+    color: #367c2b;
     font-weight: bold;
     font-size: 14px;
 }
@@ -216,8 +229,8 @@ body {
 }
 
 .mode-pill {
-    background-color: rgba(0, 255, 136, 0.15);
-    color: #00ff88;
+    background-color: rgba(54, 124, 43, 0.15);
+    color: #367c2b;
     padding: 4px 10px;
     border-radius: 12px;
     cursor: pointer;
@@ -225,7 +238,7 @@ body {
 }
 
 .mode-pill:hover {
-    background-color: rgba(0, 255, 136, 0.25);
+    background-color: rgba(54, 124, 43, 0.25);
 }
 
 .model-dropdown {

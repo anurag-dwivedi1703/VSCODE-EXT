@@ -1,3 +1,16 @@
+/* Brand Color Palette - Must be at top for variable resolution */
+:root {
+    --brand-primary: #367c2b;
+    --brand-primary-hover: #2d6924;
+    --brand-primary-light: rgba(54, 124, 43, 0.15);
+    --brand-accent: #ffde00;
+    --brand-accent-muted: #d4b800;
+    --brand-accent-light: rgba(255, 222, 0, 0.15);
+    --brand-bg-dark: #27251f;
+    --brand-surface: #2f2d28;
+    --brand-border: #3d3a33;
+}
+
 /* Basic Layout */
 .app-container {
     height: 100vh;
@@ -111,8 +124,8 @@
     display: flex;
     align-items: center;
     padding: 0 15px;
-    background-color: var(--vscode-titleBar-activeBackground);
-    color: var(--vscode-titleBar-activeForeground);
+    background-color: #367c2b;
+    color: white;
     font-weight: 600;
     text-transform: uppercase;
     font-size: 11px;
@@ -302,8 +315,8 @@
     width: 32px;
     height: 32px;
     border-radius: 6px;
-    background-color: var(--vscode-badge-background);
-    color: var(--vscode-badge-foreground);
+    background-color: #367c2b;
+    color: white;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -321,10 +334,11 @@
 }
 
 .msg-user {
-    background-color: var(--vscode-button-background);
-    color: var(--vscode-button-foreground);
+    background: linear-gradient(135deg, #367c2b 0%, #2d6924 100%);
+    color: white;
     border-bottom-right-radius: 2px;
     /* Chat bubble effect */
+    box-shadow: 0 2px 8px rgba(54, 124, 43, 0.2);
 }
 
 .msg-agent {
@@ -362,9 +376,9 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background-color: rgba(63, 185, 80, 0.1);
-    /* Subtle Green */
-    color: #3fb950;
+    background-color: rgba(54, 124, 43, 0.15);
+    /* Brand Green */
+    color: #367c2b;
     border-radius: 6px;
 }
 
@@ -551,13 +565,13 @@
 }
 
 .agent-status-badge.COMPLETED {
-    background-color: #3fb950;
+    background-color: #367c2b;
     color: white;
 }
 
 .agent-status-badge.EXECUTING {
-    background-color: #d2a8ff;
-    color: #333;
+    background-color: #ffde00;
+    color: #27251f;
 }
 
 /* Modal */
@@ -705,8 +719,8 @@
 
 .tab-btn.active {
     opacity: 1;
-    border-bottom-color: var(--vscode-panelTitle-activeBorder);
-    color: var(--vscode-panelTitle-activeForeground);
+    border-bottom-color: #367c2b;
+    color: #367c2b;
 }
 
 /* Browser Preview Styles */
@@ -820,9 +834,9 @@
 }
 
 .mode-option.selected {
-    background: rgba(47, 129, 247, 0.25) !important;
-    border: 3px solid #2f81f7 !important;
-    box-shadow: 0 0 20px rgba(47, 129, 247, 0.5) !important;
+    background: rgba(54, 124, 43, 0.25) !important;
+    border: 3px solid #367c2b !important;
+    box-shadow: 0 0 20px rgba(54, 124, 43, 0.5) !important;
     transform: scale(1.03);
     z-index: 10;
 }
@@ -910,16 +924,16 @@
 
 /* Primary Button */
 .primary-btn {
-    background: #2f81f7;
-    /* Fallback */
-    background: linear-gradient(135deg, #2f81f7 0%, #0969da 100%);
+    background: #367c2b;
+    /* Brand green */
+    background: linear-gradient(135deg, #367c2b 0%, #2d6924 100%);
     color: white;
     padding: 10px 28px;
     border-radius: 8px;
     font-weight: 600;
     font-size: 13px;
     letter-spacing: 0.5px;
-    box-shadow: 0 4px 12px rgba(47, 129, 247, 0.3);
+    box-shadow: 0 4px 12px rgba(54, 124, 43, 0.3);
     border: none;
     cursor: pointer;
     transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
@@ -927,13 +941,13 @@
 
 .primary-btn:hover {
     transform: translateY(-1px);
-    box-shadow: 0 6px 18px rgba(47, 129, 247, 0.4);
+    box-shadow: 0 6px 18px rgba(54, 124, 43, 0.4);
     filter: brightness(1.1);
 }
 
 .primary-btn:active {
     transform: translateY(0);
-    box-shadow: 0 2px 8px rgba(47, 129, 247, 0.3);
+    box-shadow: 0 2px 8px rgba(54, 124, 43, 0.3);
 }
 
 @keyframes fadeIn {
@@ -1115,7 +1129,7 @@
 }
 
 .stat-add {
-    color: #3fb950;
+    color: #367c2b;
 }
 
 .stat-del {
@@ -1131,8 +1145,8 @@
 }
 
 .diff-new-file-badge {
-    background: rgba(46, 160, 67, 0.15);
-    color: #3fb950;
+    background: rgba(54, 124, 43, 0.15);
+    color: #367c2b;
     padding: 4px 12px;
     text-align: center;
     font-size: 11px;
@@ -1150,8 +1164,8 @@
 }
 
 .diff-line.addition {
-    background-color: rgba(46, 160, 67, 0.15);
-    border-left-color: #3fb950;
+    background-color: rgba(54, 124, 43, 0.15);
+    border-left-color: #367c2b;
 }
 
 .diff-line.deletion {
@@ -1189,7 +1203,7 @@
 }
 
 .diff-line.addition .line-prefix {
-    color: #3fb950;
+    color: #367c2b;
 }
 
 .diff-line.deletion .line-prefix {
@@ -1418,7 +1432,7 @@
 
 .approve-btn {
     padding: 10px 20px;
-    background: #3fb950;
+    background: #367c2b;
     color: white;
     border: none;
     border-radius: 6px;
@@ -1432,7 +1446,7 @@
 }
 
 .approve-btn:hover {
-    background: #2ea043;
+    background: #2d6924;
     transform: translateY(-1px);
 }
 
