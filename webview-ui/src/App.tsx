@@ -728,7 +728,8 @@ function App() {
                                                                                     if (match) filePath = match[1];
                                                                                 }
                                                                                 const fileName = filePath ? filePath.split(/[\\/]/).pop() : 'Unknown file';
-                                                                                const isSystemFile = fileName?.toLowerCase().match(/^(task\.md|implementation_plan\.md|mission_summary\.md)$/);
+                                                                                const isSystemFile = fileName?.toLowerCase().match(/^(task\.md|implementation_plan\.md|mission_summary\.md|constitution\.md)$/) ||
+                                                                                    filePath?.includes('.vibearchitect/');
 
                                                                                 return (
                                                                                     <div key={fi} className="file-modified-card">

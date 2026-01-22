@@ -544,7 +544,8 @@ export class TaskRunner {
             task.worktreePath = workspaceRoot; // Ensure it is set
 
             // Clean up stale artifacts from previous missions to prevent session bleeding
-            const staleSummaryPath = path.join(workspaceRoot, 'mission_summary.md');
+            const vibearchitectDir = path.join(workspaceRoot, '.vibearchitect');
+            const staleSummaryPath = path.join(vibearchitectDir, 'mission_summary.md');
             if (fs.existsSync(staleSummaryPath)) {
                 try {
                     fs.unlinkSync(staleSummaryPath);
@@ -908,10 +909,10 @@ ${contextData}
             CORE WORKFLOW(PLANNING MODE):
             1. EXPLORE: Use list_files / read_file to understand the codebase.
             2. PLAN(Mandatory):
-            - Create a file named 'task.md'.This must be a Markdown checklist of steps(e.g., "- [ ] Step 1").
-                - Create a file named 'implementation_plan.md'.This must detail your technical approach.
+            - Create a file named '.vibearchitect/task.md'. This must be a Markdown checklist of steps (e.g., "- [ ] Step 1").
+                - Create a file named '.vibearchitect/implementation_plan.md'. This must detail your technical approach.
             3. ACT: Use write_file / run_command to implement the plan.
-            4. UPDATE: After completing a step, OVERWRITE 'task.md' to mark the item as done (e.g., "- [x] Step 1").
+            4. UPDATE: After completing a step, OVERWRITE '.vibearchitect/task.md' to mark the item as done (e.g., "- [x] Step 1").
             5. VERIFY (ATTEMPT):
             - Run tests or verification scripts if possible.
                 - ** Web Apps **: You MUST start the server (e.g. 'npm run dev') and call 'reload_browser()' to refresh the internal preview.
@@ -920,7 +921,7 @@ ${contextData}
                 - If verification fails, note the failure but CONTINUE to the FINISH step.
                 - IMPORTANT: Verification failure should NOT block mission completion.
             6. FINISH (ALWAYS REQUIRED):
-            - You MUST create a file named "mission_summary.md" in the root, REGARDLESS of verification outcome.
+            - You MUST create a file named ".vibearchitect/mission_summary.md", REGARDLESS of verification outcome.
             - Include:
                 - Summary of changes made
                 - Verification status (passed, failed, or skipped with reason)
@@ -933,7 +934,7 @@ ${contextData}
                 systemPrompt += `
             CORE WORKFLOW(FAST MODE):
             1. ACT: Execute the request immediately.
-            2. NO PLANNING DOCS: Do NOT create 'task.md' or 'implementation_plan.md' unless explicitly asked.
+            2. NO PLANNING DOCS: Do NOT create '.vibearchitect/task.md' or '.vibearchitect/implementation_plan.md' unless explicitly asked.
             3. EXPLORE(optional): Only if needed to locate files.
             4. VERIFY(MANDATORY):
             - Run the code or start the server.
@@ -1492,7 +1493,7 @@ ${contextData}
                 let summaryText = '';
 
                 if (task.worktreePath) {
-                    const summaryPath = path.join(task.worktreePath, 'mission_summary.md');
+                    const summaryPath = path.join(task.worktreePath, '.vibearchitect', 'mission_summary.md');
                     if (fs.existsSync(summaryPath)) {
                         try {
                             summaryText = fs.readFileSync(summaryPath, 'utf-8');
@@ -1605,7 +1606,10 @@ ${contextData}
                         task.logs.push(`> [Constitution]: Review error - ${reviewError.message}`);
                         console.error('[TaskRunner] Post-mission constitution review failed:', reviewError);
                     }
+                    // Reset status to 'completed' after post-mission review (whether approved, declined, or errored)
+                    task.status = 'completed';
                     this._onTaskUpdate.fire({ taskId, task });
+                    this.saveTask(task);
                 }
                 // ========================================
                 // END POST-MISSION CONSTITUTION REVIEW
@@ -2097,7 +2101,7 @@ ${contextData}
             return `
 WORKFLOW (TRIVIAL REQUEST):
 - This is a simple question/search/calculation. Answer directly without creating files.
-- Do NOT create 'task.md' or 'implementation_plan.md' for this request.
+- Do NOT create '.vibearchitect/task.md' or '.vibearchitect/implementation_plan.md' for this request.
 - Use tools only if needed (e.g., search_web for research questions).
             `.trim();
         }
@@ -2106,7 +2110,7 @@ WORKFLOW (TRIVIAL REQUEST):
             return `
 CORE WORKFLOW (FAST MODE):
 1. ACT: Execute the request immediately.
-2. NO PLANNING DOCS: Do NOT create 'task.md' or 'implementation_plan.md' unless explicitly asked.
+2. NO PLANNING DOCS: Do NOT create '.vibearchitect/task.md' or '.vibearchitect/implementation_plan.md' unless explicitly asked.
 3. EXPLORE (optional): Only if needed to locate files.
 4. VERIFY (MANDATORY):
    - Run the code or start the server.
@@ -2125,10 +2129,10 @@ CORE WORKFLOW (FAST MODE):
 CORE WORKFLOW (PLANNING MODE):
 1. EXPLORE: Use list_files / read_file to understand the codebase.
 2. PLAN (Mandatory):
-   - Create a file named 'task.md'. This must be a Markdown checklist of steps (e.g., "- [ ] Step 1").
-   - Create a file named 'implementation_plan.md'. This must detail your technical approach.
+   - Create a file named '.vibearchitect/task.md'. This must be a Markdown checklist of steps (e.g., "- [ ] Step 1").
+   - Create a file named '.vibearchitect/implementation_plan.md'. This must detail your technical approach.
 3. ACT: Use write_file / run_command to implement the plan.
-4. UPDATE: After completing a step, OVERWRITE 'task.md' to mark the item as done (e.g., "- [x] Step 1").
+4. UPDATE: After completing a step, OVERWRITE '.vibearchitect/task.md' to mark the item as done (e.g., "- [x] Step 1").
 5. VERIFY (MANDATORY - AI-POWERED):
    - Run tests or verification scripts.
    - **Web Apps**: You MUST:
@@ -2139,7 +2143,7 @@ CORE WORKFLOW (PLANNING MODE):
    - **Check Ports**: Ensure you are viewing the correct port.
    - CRITICAL: browser_verify_ui() provides actual AI verification. Never say "verified" unless you got PASS.
 6. FINISH:
-   - You MUST create a file named "mission_summary.md" in the root.
+   - You MUST create a file named ".vibearchitect/mission_summary.md".
    - Write a detailed summary of changes and verification results.
    - Answer with "MISSION COMPLETE" only after creating this file.
         `.trim();

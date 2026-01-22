@@ -50,8 +50,8 @@ export class SpecManager {
     async initialize(workspaceRoot: string): Promise<void> {
         this._workspaceRoot = workspaceRoot;
 
-        // Constitution lives in .specify/memory/constitution.md
-        const specifyDir = path.join(workspaceRoot, '.specify', 'memory');
+        // Constitution lives in .vibearchitect/constitution.md
+        const specifyDir = path.join(workspaceRoot, '.vibearchitect');
         this._constitutionPath = path.join(specifyDir, 'constitution.md');
 
         if (fs.existsSync(this._constitutionPath)) {
