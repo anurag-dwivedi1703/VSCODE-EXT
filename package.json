@@ -49,6 +49,25 @@
                     "minimum": 1,
                     "maximum": 10,
                     "description": "Number of retry attempts for self-healing UI tests"
+                },
+                "vibearchitect.missionFolderRetentionDays": {
+                    "type": "number",
+                    "default": 7,
+                    "minimum": 1,
+                    "maximum": 90,
+                    "description": "Number of days to keep old mission folders before automatic cleanup"
+                },
+                "vibearchitect.maxMissionFolders": {
+                    "type": "number",
+                    "default": 50,
+                    "minimum": 5,
+                    "maximum": 200,
+                    "description": "Maximum number of mission folders to keep (oldest deleted first when exceeded)"
+                },
+                "vibearchitect.enableMissionFolderSymlink": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Create a 'current' symlink pointing to the active mission folder for easy access"
                 }
             }
         }

@@ -1,0 +1,295 @@
+/* PhaseApprovalModal Component Styles */
+
+.phase-approval-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    padding: 20px;
+}
+
+.phase-approval-modal {
+    background: var(--vscode-editor-background, #1e1e1e);
+    border: 1px solid var(--vscode-panel-border, #454545);
+    border-radius: 8px;
+    max-width: 500px;
+    width: 100%;
+    max-height: 80vh;
+    overflow-y: auto;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+/* Header */
+.approval-header {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--vscode-panel-border, #454545);
+    background: var(--vscode-sideBar-background, #252526);
+    border-radius: 8px 8px 0 0;
+}
+
+.approval-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--vscode-foreground, #cccccc);
+}
+
+.approval-icon {
+    font-size: 20px;
+}
+
+.approval-subtitle {
+    margin-top: 4px;
+    font-size: 13px;
+    color: var(--vscode-descriptionForeground, #8c8c8c);
+}
+
+/* Progress Indicator */
+.approval-progress {
+    padding: 12px 20px;
+    background: var(--vscode-input-background, #3c3c3c);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.progress-dots {
+    display: flex;
+    gap: 6px;
+}
+
+.progress-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    transition: all 0.2s ease;
+}
+
+.progress-dot.dot-complete {
+    background: var(--vscode-testing-iconPassed, #388a34);
+}
+
+.progress-dot.dot-current {
+    background: var(--vscode-progressBar-background, #0e639c);
+    box-shadow: 0 0 0 3px rgba(14, 99, 156, 0.3);
+}
+
+.progress-dot.dot-pending {
+    background: var(--vscode-input-border, #454545);
+}
+
+.progress-label {
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground, #8c8c8c);
+}
+
+/* Sections */
+.approval-section {
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--vscode-panel-border, #454545);
+}
+
+.approval-section:last-of-type {
+    border-bottom: none;
+}
+
+.section-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--vscode-foreground, #cccccc);
+    margin-bottom: 8px;
+}
+
+.section-content {
+    font-size: 12px;
+    color: var(--vscode-descriptionForeground, #8c8c8c);
+}
+
+/* Summary */
+.summary-content {
+    line-height: 1.5;
+    white-space: pre-wrap;
+}
+
+/* Files */
+.files-content {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.files-group {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+.files-label {
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground, #8c8c8c);
+    min-width: 60px;
+}
+
+.file-badge {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.file-badge.file-created {
+    background: rgba(56, 138, 52, 0.2);
+    color: var(--vscode-testing-iconPassed, #388a34);
+}
+
+.file-badge.file-modified {
+    background: rgba(14, 99, 156, 0.2);
+    color: var(--vscode-textLink-foreground, #3794ff);
+}
+
+/* Verification */
+.verification-content {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.verification-item {
+    font-size: 11px;
+    padding: 4px 8px;
+    border-radius: 4px;
+}
+
+.verification-item.verification-pass {
+    background: rgba(56, 138, 52, 0.1);
+    color: var(--vscode-testing-iconPassed, #388a34);
+}
+
+.verification-item.verification-fail {
+    background: rgba(241, 76, 76, 0.1);
+    color: var(--vscode-testing-iconFailed, #f14c4c);
+}
+
+/* Token Stats */
+.token-section {
+    background: var(--vscode-input-background, #3c3c3c);
+}
+
+.token-stats {
+    display: flex;
+    justify-content: space-around;
+    text-align: center;
+}
+
+.token-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.token-value {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--vscode-foreground, #cccccc);
+}
+
+.token-label {
+    font-size: 10px;
+    color: var(--vscode-descriptionForeground, #8c8c8c);
+    text-transform: uppercase;
+}
+
+/* Feedback Input */
+.feedback-input {
+    width: 100%;
+    padding: 10px;
+    font-size: 12px;
+    font-family: inherit;
+    background: var(--vscode-input-background, #3c3c3c);
+    color: var(--vscode-input-foreground, #cccccc);
+    border: 1px solid var(--vscode-input-border, #454545);
+    border-radius: 4px;
+    resize: vertical;
+}
+
+.feedback-input:focus {
+    outline: none;
+    border-color: var(--vscode-focusBorder, #007fd4);
+}
+
+.feedback-input::placeholder {
+    color: var(--vscode-input-placeholderForeground, #8c8c8c);
+}
+
+/* Actions */
+.approval-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 16px 20px;
+    background: var(--vscode-sideBar-background, #252526);
+    border-radius: 0 0 8px 8px;
+    justify-content: flex-end;
+}
+
+.action-btn {
+    padding: 8px 16px;
+    font-size: 12px;
+    font-weight: 500;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.action-btn.btn-feedback {
+    background: transparent;
+    color: var(--vscode-descriptionForeground, #8c8c8c);
+    border: 1px solid var(--vscode-input-border, #454545);
+}
+
+.action-btn.btn-feedback:hover {
+    background: var(--vscode-input-background, #3c3c3c);
+    color: var(--vscode-foreground, #cccccc);
+}
+
+.action-btn.btn-skip {
+    background: transparent;
+    color: var(--vscode-editorWarning-foreground, #cca700);
+    border: 1px solid var(--vscode-editorWarning-foreground, #cca700);
+}
+
+.action-btn.btn-skip:hover {
+    background: rgba(204, 167, 0, 0.1);
+}
+
+.action-btn.btn-reject {
+    background: transparent;
+    color: var(--vscode-testing-iconFailed, #f14c4c);
+    border: 1px solid var(--vscode-testing-iconFailed, #f14c4c);
+}
+
+.action-btn.btn-reject:hover {
+    background: rgba(241, 76, 76, 0.1);
+}
+
+.action-btn.btn-approve {
+    background: var(--vscode-button-background, #0e639c);
+    color: var(--vscode-button-foreground, #ffffff);
+}
+
+.action-btn.btn-approve:hover {
+    background: var(--vscode-button-hoverBackground, #1177bb);
+}

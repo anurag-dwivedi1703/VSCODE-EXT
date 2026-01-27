@@ -27,8 +27,8 @@ export const ResizableLayout: React.FC<ResizableLayoutProps> = ({ left, center, 
                 // Calculate new left width percentage
                 let newLeftWidth = (mouseX / containerWidth) * 100;
 
-                // Constraints
-                if (newLeftWidth < 10) newLeftWidth = 10; // Min 10%
+                // Constraints - allow very small minimums (2%)
+                if (newLeftWidth < 2) newLeftWidth = 2; // Min 2%
                 if (newLeftWidth > 40) newLeftWidth = 40; // Max 40% (prevent crushing center)
 
                 setLeftWidth(newLeftWidth);
@@ -40,9 +40,9 @@ export const ResizableLayout: React.FC<ResizableLayoutProps> = ({ left, center, 
                 const widthFromRightPx = containerWidth - mouseX;
                 let newRightWidth = (widthFromRightPx / containerWidth) * 100;
 
-                // Constraints
-                if (newRightWidth < 15) newRightWidth = 15; // Min 15%
-                if (newRightWidth > 40) newRightWidth = 40; // Max 40%
+                // Constraints - allow very small minimums (2%)
+                if (newRightWidth < 2) newRightWidth = 2; // Min 2%
+                if (newRightWidth > 90) newRightWidth = 90; // Max 90% (increased for better diff review)
 
                 setRightWidth(newRightWidth);
             }

@@ -39,6 +39,7 @@ interface FileEdit {
 interface AgentTask {
     id: string;
     prompt: string;
+    displayPrompt?: string;    // Original user prompt for UI display (if different from execution prompt)
     status: 'pending' | 'planning' | 'executing' | 'completed' | 'failed' | 'awaiting-approval';
     progress: number;
     logs: string[];
@@ -56,6 +57,8 @@ interface AgentTask {
         content: string;
         riskReason?: string;
     };
+    // Chat-specific mission folder support
+    chatId?: string;           // Unique chat/session identifier
 }
 
 export class TaskRunner {
@@ -385,11 +388,12 @@ export class TaskRunner {
         }
     }
 
-    public async startTask(prompt: string, worktreePath?: string, mode: 'planning' | 'fast' = 'planning', model: string = 'gemini-3-pro-preview'): Promise<string> {
+    public async startTask(prompt: string, worktreePath?: string, mode: 'planning' | 'fast' = 'planning', model: string = 'gemini-3-pro-preview', chatId?: string, displayPrompt?: string): Promise<string> {
         const taskId = `agent-${Date.now()}`;
         const task: AgentTask = {
             id: taskId,
             prompt,
+            displayPrompt: displayPrompt || prompt,  // Use displayPrompt for UI, fallback to prompt
             status: 'pending',
             progress: 0,
             logs: [],
@@ -397,7 +401,8 @@ export class TaskRunner {
             artifacts: [],
             worktreePath: worktreePath, // Store it initially if provided
             mode,
-            model
+            model,
+            chatId
         };
         this.tasks.set(taskId, task);
         this.saveTask(task); // Persist initial state
@@ -832,15 +837,13 @@ ${contextData}
             When MODIFYING existing files, ALWAYS use apply_diff instead of write_file.
             
             apply_diff Format:
-            <<<<<<< SEARCH
             exact code to find (must match perfectly)
             =======
             replacement code
             >>>>>>> REPLACE
             
             Example - to change a function name:
-            apply_diff("src/utils.ts", "<<<<<<< SEARCH
-            function oldName() {
+            apply_diff("src/utils.ts", "function oldName() {
             =======
             function newName() {
             >>>>>>> REPLACE")
@@ -1733,8 +1736,7 @@ ${contextData}
                     
                     TOKEN EFFICIENCY (IMPORTANT):
                     When MODIFYING existing files, use apply_diff instead of write_file:
-                    apply_diff("file.ts", "<<<<<<< SEARCH
-                    old code
+                    apply_diff("file.ts", "old code
                     =======
                     new code
                     >>>>>>> REPLACE")

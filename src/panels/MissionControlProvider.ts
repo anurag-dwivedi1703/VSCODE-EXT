@@ -2,6 +2,12 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { TaskRunner } from '../engine/TaskRunner';
+import { 
+    TaskRunnerPhaseIntegration, 
+    createTaskRunnerPhaseIntegration,
+    PhaseExecutionInfo 
+} from '../services/TaskRunnerPhaseIntegration';
+import { PhaseApprovalRequest } from '../services/PhaseExecutor';
 
 interface WorkspaceInfo {
     id: string;
@@ -18,12 +24,24 @@ export class MissionControlProvider {
     private _workspaces: WorkspaceInfo[] = [];
     private _context: vscode.ExtensionContext;
     private _isDisposed: boolean = false;
+    
+    // Phase execution integration
+    private _phaseIntegration: TaskRunnerPhaseIntegration;
+    private _phasedExecutionEnabled: boolean = true;
 
     private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, taskRunner: TaskRunner, context: vscode.ExtensionContext) {
         this._panel = panel;
         this._extensionUri = extensionUri;
         this._taskRunner = taskRunner;
         this._context = context;
+
+        // Initialize phase integration
+        this._phaseIntegration = createTaskRunnerPhaseIntegration({
+            enabled: this._phasedExecutionEnabled,
+            tokenBudgetPerPhase: 30000,
+            phasedExecutionThreshold: 40,
+            requireApprovalBetweenPhases: true
+        });
 
         this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
 
@@ -132,6 +150,9 @@ export class MissionControlProvider {
         });
         this._disposables.push(approvalCompleteSub);
 
+        // Phase execution event subscriptions
+        this._setupPhaseIntegrationEvents();
+
         // Send existing tasks (loaded from disk)
         const existingTasks = this._taskRunner.getTasks();
         existingTasks.forEach(task => {
@@ -175,6 +196,9 @@ export class MissionControlProvider {
         this._isDisposed = true;
         MissionControlProvider.currentPanel = undefined;
 
+        // Dispose phase integration
+        this._phaseIntegration.dispose();
+
         this._panel.dispose();
 
         while (this._disposables.length) {
@@ -182,6 +206,172 @@ export class MissionControlProvider {
             if (x) {
                 x.dispose();
             }
+        }
+    }
+
+    /**
+     * Setup phase integration event listeners
+     */
+    private _setupPhaseIntegrationEvents() {
+        // Forward phase updates to webview
+        const phaseUpdateSub = this._phaseIntegration.onPhaseUpdate(({ taskId, info }) => {
+            this.safePostMessage({
+                command: 'phaseUpdate',
+                taskId,
+                phaseInfo: info
+            });
+        });
+        this._disposables.push(phaseUpdateSub);
+
+        // Forward phase approval requests to webview
+        const approvalNeededSub = this._phaseIntegration.onApprovalNeeded(({ taskId, request }) => {
+            this.safePostMessage({
+                command: 'phaseApprovalNeeded',
+                taskId,
+                approvalData: {
+                    phaseId: request.phase.id,
+                    phaseName: request.phase.name,
+                    phaseIndex: request.phaseIndex,
+                    totalPhases: request.totalPhases,
+                    summary: request.executionSummary,
+                    filesCreated: request.filesCreated,
+                    filesModified: request.filesModified,
+                    verificationResults: request.verificationResults,
+                    tokenUsage: request.tokenUsage,
+                    estimatedTokens: request.phase.estimatedTokens
+                }
+            });
+        });
+        this._disposables.push(approvalNeededSub);
+
+        // Forward phase completion events
+        const phaseCompleteSub = this._phaseIntegration.onPhaseComplete(({ taskId, phaseId, result }) => {
+            this.safePostMessage({
+                command: 'phaseComplete',
+                taskId,
+                phaseId,
+                result
+            });
+        });
+        this._disposables.push(phaseCompleteSub);
+
+        // Forward all phases complete event
+        const allCompletesSub = this._phaseIntegration.onAllPhasesComplete(({ taskId, totalTokens }) => {
+            this.safePostMessage({
+                command: 'allPhasesComplete',
+                taskId,
+                totalTokens
+            });
+            console.log(`[MissionControl] All phases complete for task ${taskId}, total tokens: ${totalTokens}`);
+        });
+        this._disposables.push(allCompletesSub);
+    }
+
+    /**
+     * Analyze requirement and prepare phased execution if needed
+     */
+    private async _prepareTaskWithPhaseAnalysis(
+        taskId: string,
+        prompt: string,
+        workspacePath: string,
+        chatId: string
+    ): Promise<{ modifiedPrompt: string; isPhased: boolean }> {
+        try {
+            // Get mission folder path
+            const missionFolder = path.join(workspacePath, '.vibearchitect', chatId);
+
+            // Analyze and prepare
+            const analysis = await this._phaseIntegration.analyzeAndPrepare(
+                taskId,
+                prompt,
+                missionFolder
+            );
+
+            console.log(`[MissionControl] Complexity analysis: ${analysis.score.level} (${analysis.score.score}/100)`);
+            console.log(`[MissionControl] Execution mode: ${analysis.mode}`);
+
+            if (analysis.mode === 'phased' && analysis.phases) {
+                console.log(`[MissionControl] Splitting into ${analysis.phases.totalPhases} phases`);
+                
+                // Notify webview of phased execution
+                this.safePostMessage({
+                    command: 'phasedExecutionStarted',
+                    taskId,
+                    totalPhases: analysis.phases.totalPhases,
+                    strategy: analysis.phases.strategyUsed
+                });
+            }
+
+            // Prepend phase context to prompt if available
+            const phaseContext = analysis.promptContext;
+            const modifiedPrompt = phaseContext 
+                ? `${phaseContext}\n\n---\n\n## USER REQUEST\n\n${prompt}`
+                : prompt;
+
+            return {
+                modifiedPrompt,
+                isPhased: analysis.mode === 'phased'
+            };
+        } catch (error) {
+            console.error('[MissionControl] Phase analysis failed, proceeding without phases:', error);
+            return {
+                modifiedPrompt: prompt,
+                isPhased: false
+            };
+        }
+    }
+
+    /**
+     * Get current phase info for a task
+     */
+    public getPhaseInfo(taskId: string): PhaseExecutionInfo | null {
+        return this._phaseIntegration.getPhaseInfo(taskId);
+    }
+
+    /**
+     * Toggle phased execution on/off
+     */
+    public setPhasedExecutionEnabled(enabled: boolean) {
+        this._phasedExecutionEnabled = enabled;
+        this._phaseIntegration.updateConfig({ enabled });
+        console.log(`[MissionControl] Phased execution ${enabled ? 'enabled' : 'disabled'}`);
+    }
+
+    /**
+     * Start a task with phase analysis
+     * Analyzes the requirement complexity and sets up phased execution if needed
+     */
+    private async _startTaskWithPhaseAnalysis(
+        text: string,
+        workspacePath: string,
+        mode: 'planning' | 'fast',
+        model: string,
+        chatId: string
+    ): Promise<void> {
+        try {
+            // Generate a temporary task ID for phase analysis
+            const tempTaskId = `task-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            
+            // Prepare with phase analysis
+            const { modifiedPrompt, isPhased } = await this._prepareTaskWithPhaseAnalysis(
+                tempTaskId,
+                text,
+                workspacePath,
+                chatId
+            );
+
+            if (isPhased) {
+                console.log(`[MissionControl] Starting phased execution for task`);
+            }
+
+            // Start the task with potentially modified prompt
+            // Pass original 'text' as displayPrompt so UI shows user's original request
+            // while 'modifiedPrompt' (with phase context) is used for AI execution
+            this._taskRunner.startTask(modifiedPrompt, workspacePath, mode, model, chatId, text);
+        } catch (error) {
+            console.error('[MissionControl] Failed to start task with phase analysis:', error);
+            // Fallback to regular start
+            this._taskRunner.startTask(text, workspacePath, mode, model, chatId, text);
         }
     }
 
@@ -258,12 +448,19 @@ export class MissionControlProvider {
 
                 switch (command) {
                     case 'startTask':
-                        // Pass workspaceId (path), mode, and model to task runner
+                        // Pass workspaceId (path), mode, model, and chatId to task runner
                         const workspacePath = message.workspaceId;
                         const mode = message.mode;
                         const model = message.model;
-                        console.log(`[MissionControl] Starting task in workspace: ${workspacePath} [${mode}] [${model}]`);
-                        this._taskRunner.startTask(text, workspacePath, mode, model);
+                        const chatId = message.chatId;  // Chat-specific ID for mission folder isolation
+                        console.log(`[MissionControl] Starting task in workspace: ${workspacePath} [${mode}] [${model}] [chatId: ${chatId || 'auto'}]`);
+                        
+                        // Use phase-aware task start if enabled
+                        if (this._phasedExecutionEnabled) {
+                            this._startTaskWithPhaseAnalysis(text, workspacePath, mode, model, chatId);
+                        } else {
+                            this._taskRunner.startTask(text, workspacePath, mode, model, chatId);
+                        }
                         return;
                     case 'hello':
                         vscode.window.showInformationMessage(text);
@@ -435,6 +632,35 @@ export class MissionControlProvider {
                         return;
                     case 'changeMode':
                         this._taskRunner.changeTaskMode(message.taskId, message.mode);
+                        return;
+                    
+                    // Phase Execution Handlers
+                    case 'phaseApprove':
+                        // User approved the current phase
+                        this._phaseIntegration.provideApproval(message.taskId, true, message.feedback);
+                        return;
+                    case 'phaseReject':
+                        // User rejected/aborted the mission
+                        this._phaseIntegration.provideApproval(message.taskId, false, message.reason);
+                        return;
+                    case 'phaseSkip':
+                        // User wants to skip current phase
+                        this._phaseIntegration.skipPhase(message.taskId, message.reason || 'User requested skip');
+                        return;
+                    case 'togglePhasedExecution':
+                        // Toggle phased execution on/off
+                        this.setPhasedExecutionEnabled(message.enabled);
+                        return;
+                    case 'getPhaseInfo':
+                        // Request current phase info
+                        const phaseInfo = this._phaseIntegration.getPhaseInfo(message.taskId);
+                        if (phaseInfo) {
+                            this.safePostMessage({
+                                command: 'phaseUpdate',
+                                taskId: message.taskId,
+                                phaseInfo
+                            });
+                        }
                         return;
                 }
             },

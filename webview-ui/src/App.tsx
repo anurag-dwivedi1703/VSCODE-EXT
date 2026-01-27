@@ -7,6 +7,9 @@ import { BrowserPreview } from './components/BrowserPreview';
 import { ResizableLayout } from './components/ResizableLayout';
 import { DiffViewer } from './components/DiffViewer';
 import { ConstitutionReviewModal } from './components/ConstitutionReviewModal';
+import { PhaseProgress, PhaseInfo } from './components/PhaseProgress';
+import { ContextBudgetIndicator, BudgetStatus } from './components/ContextBudgetIndicator';
+import { PhaseApprovalModal, PhaseApprovalData } from './components/PhaseApprovalModal';
 
 // Mock Data
 const DEFAULT_WORKSPACES = [
@@ -260,6 +263,14 @@ function App() {
     // Agent Mode State (Global - applies to all missions)
     const [agentMode, setAgentMode] = useState<'auto' | 'agent-decides'>('auto');
 
+    // Chat ID for mission folder isolation (generated once per webview session)
+    const [chatId] = useState<string>(() => {
+        // Generate a unique 8-character hex ID for this chat session
+        const array = new Uint8Array(4);
+        crypto.getRandomValues(array);
+        return Array.from(array, byte => byte.toString(16).padStart(2, '0')).join('');
+    });
+
     // Pending Approval State (for Agent Decides mode)
     const [pendingApproval, setPendingApproval] = useState<{
         type: 'plan' | 'command';
@@ -278,8 +289,41 @@ function App() {
         type: 'constitution' | 'constitution-update' | 'constitution-drift';
     } | null>(null);
 
-    // Auto-scroll logic
+    // Phase Execution State
+    const [phaseInfo, setPhaseInfo] = useState<{
+        taskId: string;
+        enabled: boolean;
+        mode: 'single' | 'phased';
+        currentPhaseIndex: number;
+        totalPhases: number;
+        phases: PhaseInfo[];
+        budget: {
+            used: number;
+            total: number;
+            percentUsed: number;
+            status: BudgetStatus;
+        };
+        totalTokensUsed: number;
+        totalTokensEstimated: number;
+    } | null>(null);
+
+    // Phase Approval Modal State
+    const [phaseApprovalData, setPhaseApprovalData] = useState<(PhaseApprovalData & { taskId: string }) | null>(null);
+
+    // Auto-scroll logic - Smart scroll that respects user's scroll position
     const logsEndRef = useRef<HTMLDivElement>(null);
+    const scrollContainerRef = useRef<HTMLDivElement>(null);
+    const [isUserNearBottom, setIsUserNearBottom] = useState(true);
+
+    // Handle scroll events to track if user is near bottom
+    const handleScroll = () => {
+        const container = scrollContainerRef.current;
+        if (!container) return;
+        
+        const threshold = 150; // pixels from bottom to consider "near bottom"
+        const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
+        setIsUserNearBottom(isNearBottom);
+    };
 
     useEffect(() => {
         const messageHandler = (event: MessageEvent) => {
@@ -352,6 +396,31 @@ function App() {
                     type: message.approvalType || 'constitution'
                 });
             }
+            
+            // Phase execution message handlers
+            if (message.command === 'phaseUpdate') {
+                setPhaseInfo({
+                    taskId: message.taskId,
+                    ...message.phaseInfo
+                });
+            }
+            if (message.command === 'phaseApprovalNeeded') {
+                setPhaseApprovalData({
+                    taskId: message.taskId,
+                    ...message.approvalData
+                });
+            }
+            if (message.command === 'phasedExecutionStarted') {
+                console.log(`[App] Phased execution started: ${message.totalPhases} phases using ${message.strategy} strategy`);
+            }
+            if (message.command === 'phaseComplete') {
+                console.log(`[App] Phase ${message.phaseId} completed:`, message.result);
+                // Phase info will be updated via phaseUpdate message
+            }
+            if (message.command === 'allPhasesComplete') {
+                console.log(`[App] All phases complete! Total tokens: ${message.totalTokens}`);
+                setPhaseApprovalData(null);
+            }
         };
         window.addEventListener('message', messageHandler);
         vscode.postMessage({ command: 'getWorkspaces' });
@@ -359,10 +428,12 @@ function App() {
         return () => window.removeEventListener('message', messageHandler);
     }, [expandedAgentId]);
 
-    // Auto-scroll to bottom of logs
+    // Auto-scroll to bottom of logs - only if user is near bottom
     useEffect(() => {
-        logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [dynamicAgents]);
+        if (isUserNearBottom) {
+            logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }
+    }, [dynamicAgents, isUserNearBottom]);
 
     const activeAgents = dynamicAgents;
     // State for New Agent Composer
@@ -377,7 +448,8 @@ function App() {
             workspaceId: selectedWorkspace,
             mode: composerMode,
             model: composerModel,
-            agentMode: agentMode  // Include global agent mode
+            agentMode: agentMode,  // Include global agent mode
+            chatId: chatId         // Include chat ID for mission folder isolation
         });
         // Optional: Reset composer or switch view
     };
@@ -534,6 +606,38 @@ function App() {
                 />
             )}
 
+            {/* Phase Approval Modal */}
+            {phaseApprovalData && (
+                <PhaseApprovalModal
+                    data={phaseApprovalData}
+                    isOpen={true}
+                    onApprove={(feedback) => {
+                        vscode.postMessage({
+                            command: 'phaseApprove',
+                            taskId: phaseApprovalData.taskId,
+                            feedback
+                        });
+                        setPhaseApprovalData(null);
+                    }}
+                    onReject={(reason) => {
+                        vscode.postMessage({
+                            command: 'phaseReject',
+                            taskId: phaseApprovalData.taskId,
+                            reason
+                        });
+                        setPhaseApprovalData(null);
+                    }}
+                    onSkip={() => {
+                        vscode.postMessage({
+                            command: 'phaseSkip',
+                            taskId: phaseApprovalData.taskId,
+                            reason: 'User skipped phase'
+                        });
+                        setPhaseApprovalData(null);
+                    }}
+                />
+            )}
+
             <ResizableLayout
                 left={
                     /* LEFT PANE: WORKSPACE & MISSIONS */
@@ -591,7 +695,7 @@ function App() {
                                                                 setExpandedAgentId(agent.id);
                                                                 if (agent.worktreePath) setSelectedWorkspace(agent.worktreePath);
                                                             }}>
-                                                            <div className="mission-title">{agent.prompt.substring(0, 30)}...</div>
+                                                            <div className="mission-title">{(agent.displayPrompt || agent.prompt).substring(0, 30)}...</div>
                                                             <div className="mission-status">{agent.status}</div>
                                                         </div>
                                                     ))
@@ -625,7 +729,7 @@ function App() {
                                                                 setExpandedAgentId(agent.id);
                                                                 // Don't switch workspace blindly if it's unknown
                                                             }}>
-                                                            <div className="mission-title">{agent.prompt.substring(0, 30)}...</div>
+                                                            <div className="mission-title">{(agent.displayPrompt || agent.prompt).substring(0, 30)}...</div>
                                                             <div className="mission-status">{agent.status}</div>
                                                         </div>
                                                     ))}
@@ -648,13 +752,32 @@ function App() {
                                     <span className={`agent-status-badge ${activeAgent.status.toUpperCase()}`}>{activeAgent.status}</span>
                                     <button className="icon-btn" style={{ marginLeft: 'auto' }} onClick={handleNewChat} title="New Chat">➕ New</button>
                                 </div>
-                                <div className="agent-view">
+                                <div className="agent-view" ref={scrollContainerRef} onScroll={handleScroll}>
                                     <div className="agent-header-large">
-                                        <h1 className="agent-title">{activeAgent.prompt}</h1>
+                                        <h1 className="agent-title">{activeAgent.displayPrompt || activeAgent.prompt}</h1>
                                         {activeAgent.branchName && (
                                             <div className="agent-meta">Branch: <code>{activeAgent.branchName}</code></div>
                                         )}
                                     </div>
+
+                                    {/* Phase Execution Progress */}
+                                    {phaseInfo && phaseInfo.taskId === activeAgent.id && phaseInfo.mode === 'phased' && (
+                                        <div className="phase-execution-container">
+                                            <PhaseProgress
+                                                phases={phaseInfo.phases}
+                                                currentPhaseIndex={phaseInfo.currentPhaseIndex}
+                                                totalTokensUsed={phaseInfo.totalTokensUsed}
+                                                totalTokensEstimated={phaseInfo.totalTokensEstimated}
+                                            />
+                                            <ContextBudgetIndicator
+                                                used={phaseInfo.budget.used}
+                                                total={phaseInfo.budget.total}
+                                                status={phaseInfo.budget.status}
+                                                phaseName={phaseInfo.phases[phaseInfo.currentPhaseIndex]?.name}
+                                                compact={false}
+                                            />
+                                        </div>
+                                    )}
 
                                     <div className="agent-logs-container">
                                         {logGroups.map((group, i) => {

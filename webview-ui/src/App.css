@@ -45,6 +45,7 @@
     overflow: hidden;
     display: flex;
     flex-direction: column;
+    min-width: 0; /* Allow shrinking below content size */
 }
 
 .pane-center {
@@ -52,7 +53,7 @@
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    min-width: 200px;
+    min-width: 0; /* Allow shrinking below content size */
 }
 
 .resizer-handle {
@@ -88,6 +89,7 @@
     flex: 1;
     width: 100%;
     min-height: 0;
+    min-width: 0; /* Allow shrinking below content size */
     background-color: var(--vscode-sideBar-background);
     display: flex;
     flex-direction: column;
@@ -99,6 +101,7 @@
     flex: 1;
     width: 100%;
     min-height: 0;
+    min-width: 0; /* Allow shrinking below content size */
     display: flex;
     flex-direction: column;
     background-color: var(--vscode-editor-background);
@@ -111,6 +114,7 @@
     flex: 1;
     width: 100%;
     min-height: 0;
+    min-width: 0; /* Allow shrinking below content size */
     background-color: var(--vscode-sideBar-background);
     display: flex;
     flex-direction: column;
@@ -130,12 +134,26 @@
     text-transform: uppercase;
     font-size: 11px;
     letter-spacing: 0.8px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    min-width: 0; /* Allow header to shrink */
+    flex-shrink: 0; /* But keep height fixed */
+}
+
+.pane-header > * {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
 }
 
 .custom-pane-header {
     background-color: var(--vscode-editor-background);
     border-bottom: 1px solid var(--vscode-panel-border);
     color: var(--vscode-foreground);
+    overflow: hidden;
+    min-width: 0;
 }
 
 .sub-header {
@@ -147,6 +165,16 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
+    overflow: hidden;
+    min-width: 0;
+}
+
+.sub-header > span,
+.sub-header > div {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
 }
 
 /* Lists */
@@ -267,7 +295,7 @@
 /* Main Content Area */
 .agent-view {
     padding: 20px 40px;
-    padding-bottom: 90px;
+    padding-bottom: 20px;
     overflow-y: auto;
     flex: 1;
     min-height: 0;
@@ -519,11 +547,9 @@
 
 /* Reply Footer */
 .reply-footer {
-    position: absolute;
-    bottom: 0;
-    left: 0;
-    right: 0;
     height: 80px;
+    min-height: 80px;
+    flex-shrink: 0;
     background-color: var(--vscode-editor-background);
     border-top: 1px solid var(--vscode-panel-border);
     display: flex;

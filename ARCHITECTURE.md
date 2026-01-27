@@ -10,8 +10,10 @@ A comprehensive technical guide to the VibeArchitect VS Code extension - an AI-p
 3. [Frontend (Webview UI)](#frontend-webview-ui)
 4. [AI Clients](#ai-clients)
 5. [Services](#services)
-6. [Data Flow](#data-flow)
-7. [Key Workflows](#key-workflows)
+6. [Security Features](#security-features)
+7. [Data Flow](#data-flow)
+8. [Key Workflows](#key-workflows)
+9. [Configuration](#configuration)
 
 ---
 
@@ -32,12 +34,16 @@ graph TB
         AI --> GC[GeminiClient]
         AI --> CC[ClaudeClient]
         AI --> CCC[CopilotClaudeClient]
+        AI --> CGC[CopilotGPTClient]
         
         SVC --> BAS[BrowserAutomationService]
         SVC --> VCS[VisualComparisonService]
         SVC --> SR[ShadowRepository]
         SVC --> RM[RevertManager]
         SVC --> FLM[FileLockManager]
+        SVC --> CH[ContextHarvester]
+        
+        TR --> SM[SpecManager]
         
         AT --> TM[TerminalManager]
         AT --> WM[WorktreeManager]
@@ -54,6 +60,7 @@ graph TB
         GC <-->|API| GEMINI[Google Gemini API]
         CC <-->|API| CLAUDE[Anthropic Claude API]
         CCC <-->|Copilot| VSLM[VS Code Language Model]
+        CGC <-->|Copilot| VSLM
         BAS <-->|Playwright| BROWSER[Chrome Browser]
     end
 ```
@@ -122,6 +129,11 @@ stateDiagram-v2
 | `processTask(taskId)` | Main processing - creates AI session, runs loop |
 | `runExecutionLoop(taskId, chat, tools)` | Tool execution loop - sends messages, executes tools |
 | `changeModel(taskId, newModel)` | Hot-swap AI model mid-task |
+| `approveReview(taskId, feedback?)` | Approve pending plan in Agent Decides mode |
+| `rejectReview(taskId)` | Reject pending plan |
+| `approveCommand(taskId)` | Approve high-risk command execution |
+| `declineCommand(taskId)` | Decline high-risk command |
+| `setAgentMode(mode)` | Set global agent mode ('auto' or 'agent-decides') |
 | `replyToTask(taskId, message)` | Process user follow-up message |
 | `revertTask(taskId, checkpointId)` | Revert to checkpoint using ShadowRepository |
 | `loadTasks()` / `saveTask()` | Task persistence |
@@ -143,6 +155,11 @@ interface AgentTask {
     model?: string;
     checkpoints?: { id: string, message: string, timestamp: number }[];
     fileEdits?: FileEdit[];
+    awaitingApproval?: {
+        type: 'plan' | 'command' | 'constitution' | 'constitution-update';
+        content: string;
+        riskReason?: string;
+    };
 }
 ```
 
@@ -405,17 +422,69 @@ flowchart LR
 
 ---
 
+## Security Features
+
+### Secret Detection
+
+**Path:** `src/ai/SecurityInstructions.ts`
+
+AgentTools automatically scans file content for sensitive data before writing:
+
+| Detection Type | Examples | Action |
+|----------------|----------|--------|
+| **API Keys** | `sk-...`, `AKIA...`, `ghp_...` | Warning logged, continues |
+| **Passwords** | `password=`, `secret=` | Warning logged, continues |
+| **Private Keys** | `-----BEGIN RSA PRIVATE KEY-----` | Warning logged, continues |
+
+### PII Detection
+
+Scans text files for personally identifiable information:
+
+| PII Type | Pattern | Severity |
+|----------|---------|----------|
+| **SSN** | `XXX-XX-XXXX` | High |
+| **Credit Card** | `XXXX-XXXX-XXXX-XXXX` | High |
+| **Email** | `user@domain.com` | Medium |
+| **Phone** | `(XXX) XXX-XXXX` | Medium |
+
+### .env File Handling
+
+When writing `.env` files:
+1. Auto-creates `.env.example` with placeholder values
+2. Auto-updates `.gitignore` to exclude `.env`
+3. Warns about hardcoded secrets
+
+### File Locking
+
+**FileLockManager** prevents concurrent file modifications:
+- Acquires lock before write operations
+- Releases lock after completion
+- Prevents race conditions between parallel agents
+
+### Path Traversal Protection
+
+AgentTools validates all file paths:
+```typescript
+if (!fullPath.startsWith(path.resolve(this.worktreeRoot))) {
+    throw new Error(`Access Denied: Path traverses outside workspace root.`);
+}
+```
+
+---
+
 ## File Structure
 
 ```
-Antigravity-Manager-Ext/
+VSCODE-EXT/
 ├── src/
 │   ├── extension.ts                 # Entry point
 │   ├── ai/
 │   │   ├── GeminiClient.ts          # Gemini API + Vision
 │   │   ├── ClaudeClient.ts          # Anthropic API
-│   │   ├── CopilotClaudeClient.ts   # VS Code LM API
-│   │   └── PromptEngine.ts          # Prompt templates
+│   │   ├── CopilotClaudeClient.ts   # VS Code LM API (Claude)
+│   │   ├── CopilotGPTClient.ts      # VS Code LM API (GPT)
+│   │   ├── PromptEngine.ts          # Prompt templates
+│   │   └── SecurityInstructions.ts  # Secret/PII detection
 │   ├── engine/
 │   │   ├── TaskRunner.ts            # Execution engine
 │   │   ├── AgentTools.ts            # Tool implementations
@@ -423,12 +492,17 @@ Antigravity-Manager-Ext/
 │   │   └── WorktreeManager.ts       # Git worktrees
 │   ├── panels/
 │   │   └── MissionControlProvider.ts # Webview host
-│   └── services/
-│       ├── BrowserAutomationService.ts  # Playwright
-│       ├── VisualComparisonService.ts   # pixelmatch
-│       ├── ShadowRepository.ts          # Git checkpoints
-│       ├── RevertManager.ts             # Checkpoint revert
-│       └── FileLockManager.ts           # Concurrent access
+│   ├── services/
+│   │   ├── BrowserAutomationService.ts  # Playwright
+│   │   ├── VisualComparisonService.ts   # pixelmatch
+│   │   ├── ShadowRepository.ts          # Git checkpoints
+│   │   ├── RevertManager.ts             # Checkpoint revert
+│   │   ├── FileLockManager.ts           # Concurrent access
+│   │   ├── ContextHarvester.ts          # Workspace context
+│   │   └── AuthSessionManager.ts        # Copilot authentication
+│   └── utils/
+│       ├── SearchReplaceParser.ts       # Diff parsing
+│       └── DiffLogger.ts                # Diff visualization
 ├── webview-ui/
 │   └── src/
 │       ├── App.tsx                  # Main React app

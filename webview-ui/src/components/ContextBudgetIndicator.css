@@ -1,0 +1,220 @@
+/* ContextBudgetIndicator Component Styles */
+
+.budget-indicator-container {
+    background: var(--vscode-editor-background, #1e1e1e);
+    border: 1px solid var(--vscode-panel-border, #454545);
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+}
+
+/* Status-based border colors */
+.budget-indicator-container.budget-status-warning {
+    border-color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+.budget-indicator-container.budget-status-critical {
+    border-color: var(--vscode-editorError-foreground, #f14c4c);
+    animation: pulse-border 1.5s infinite;
+}
+
+.budget-indicator-container.budget-status-exhausted {
+    border-color: var(--vscode-testing-iconFailed, #f14c4c);
+    background: rgba(241, 76, 76, 0.1);
+}
+
+/* Header */
+.budget-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.budget-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--vscode-foreground, #cccccc);
+}
+
+.budget-icon {
+    font-size: 14px;
+}
+
+.budget-phase {
+    font-weight: 400;
+    color: var(--vscode-descriptionForeground, #8c8c8c);
+    font-size: 11px;
+}
+
+/* Status Badge */
+.budget-status-badge {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.budget-status-badge.status-healthy {
+    background: rgba(56, 138, 52, 0.2);
+    color: var(--vscode-testing-iconPassed, #388a34);
+}
+
+.budget-status-badge.status-warning {
+    background: rgba(204, 167, 0, 0.2);
+    color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+.budget-status-badge.status-critical {
+    background: rgba(241, 76, 76, 0.2);
+    color: var(--vscode-editorError-foreground, #f14c4c);
+}
+
+.budget-status-badge.status-exhausted {
+    background: rgba(241, 76, 76, 0.3);
+    color: var(--vscode-testing-iconFailed, #f14c4c);
+}
+
+/* Progress Bar */
+.budget-bar-container {
+    height: 8px;
+    background: var(--vscode-input-background, #3c3c3c);
+    border-radius: 4px;
+    margin-bottom: 8px;
+    position: relative;
+    overflow: visible;
+}
+
+.budget-bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.3s ease, background-color 0.3s ease;
+    position: relative;
+}
+
+/* Threshold Markers */
+.budget-threshold {
+    position: absolute;
+    top: -2px;
+    width: 2px;
+    height: 12px;
+    border-radius: 1px;
+}
+
+.budget-threshold.warning-threshold {
+    background: var(--vscode-editorWarning-foreground, #cca700);
+    opacity: 0.5;
+}
+
+.budget-threshold.critical-threshold {
+    background: var(--vscode-editorError-foreground, #f14c4c);
+    opacity: 0.5;
+}
+
+/* Stats */
+.budget-stats {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+}
+
+.budget-stat {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.stat-label {
+    font-size: 9px;
+    color: var(--vscode-descriptionForeground, #8c8c8c);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.stat-value {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--vscode-foreground, #cccccc);
+}
+
+.budget-percent {
+    flex-shrink: 0;
+}
+
+.stat-value-large {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--vscode-foreground, #cccccc);
+}
+
+/* Recommendation */
+.budget-recommendation {
+    margin-top: 8px;
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+    text-align: center;
+}
+
+.budget-recommendation.recommendation-warning {
+    background: rgba(204, 167, 0, 0.15);
+    color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+.budget-recommendation.recommendation-critical {
+    background: rgba(241, 76, 76, 0.15);
+    color: var(--vscode-editorError-foreground, #f14c4c);
+    font-weight: 600;
+}
+
+.budget-recommendation.recommendation-exhausted {
+    background: rgba(241, 76, 76, 0.2);
+    color: var(--vscode-testing-iconFailed, #f14c4c);
+    font-weight: 600;
+}
+
+/* Compact Version */
+.budget-indicator-compact {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+}
+
+.budget-bar-compact {
+    flex: 1;
+    height: 4px;
+    background: var(--vscode-input-background, #3c3c3c);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.budget-bar-fill-compact {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.3s ease;
+}
+
+.budget-percent-compact {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--vscode-descriptionForeground, #8c8c8c);
+    min-width: 32px;
+    text-align: right;
+}
+
+/* Animations */
+@keyframes pulse-border {
+    0%, 100% {
+        border-color: var(--vscode-editorError-foreground, #f14c4c);
+    }
+    50% {
+        border-color: rgba(241, 76, 76, 0.4);
+    }
+}

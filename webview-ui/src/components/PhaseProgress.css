@@ -1,0 +1,181 @@
+/* PhaseProgress Component Styles */
+
+.phase-progress-container {
+    background: var(--vscode-editor-background, #1e1e1e);
+    border: 1px solid var(--vscode-panel-border, #454545);
+    border-radius: 6px;
+    padding: 12px;
+    margin-bottom: 12px;
+}
+
+.phase-progress-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.phase-progress-title {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--vscode-foreground, #cccccc);
+}
+
+.phase-progress-summary {
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground, #8c8c8c);
+}
+
+/* Progress Bar */
+.phase-progress-bar-container {
+    height: 4px;
+    background: var(--vscode-progressBar-background, #0e639c);
+    opacity: 0.3;
+    border-radius: 2px;
+    margin-bottom: 12px;
+    overflow: hidden;
+}
+
+.phase-progress-bar-fill {
+    height: 100%;
+    background: var(--vscode-progressBar-background, #0e639c);
+    opacity: 1;
+    border-radius: 2px;
+    transition: width 0.3s ease;
+}
+
+/* Phase Timeline */
+.phase-timeline {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.phase-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.2s ease;
+    position: relative;
+}
+
+.phase-item:hover {
+    background: var(--vscode-list-hoverBackground, #2a2d2e);
+}
+
+/* Phase Circle */
+.phase-circle {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    flex-shrink: 0;
+    border: 2px solid transparent;
+}
+
+.phase-circle.phase-pending {
+    background: var(--vscode-input-background, #3c3c3c);
+    border-color: var(--vscode-input-border, #454545);
+}
+
+.phase-circle.phase-current {
+    background: var(--vscode-inputOption-activeBackground, #0e639c);
+    border-color: var(--vscode-focusBorder, #007fd4);
+    animation: pulse 2s infinite;
+}
+
+.phase-circle.phase-in-progress {
+    background: var(--vscode-inputOption-activeBackground, #0e639c);
+    border-color: var(--vscode-focusBorder, #007fd4);
+}
+
+.phase-circle.phase-completed {
+    background: var(--vscode-testing-iconPassed, #388a34);
+    border-color: var(--vscode-testing-iconPassed, #388a34);
+}
+
+.phase-circle.phase-failed {
+    background: var(--vscode-testing-iconFailed, #f14c4c);
+    border-color: var(--vscode-testing-iconFailed, #f14c4c);
+}
+
+.phase-circle.phase-skipped {
+    background: var(--vscode-editorWarning-foreground, #cca700);
+    border-color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+.phase-icon {
+    font-size: 11px;
+}
+
+/* Phase Info */
+.phase-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.phase-name {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--vscode-foreground, #cccccc);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.phase-item.phase-current .phase-name {
+    color: var(--vscode-textLink-foreground, #3794ff);
+}
+
+.phase-item.phase-completed .phase-name {
+    color: var(--vscode-testing-iconPassed, #388a34);
+}
+
+.phase-item.phase-failed .phase-name {
+    color: var(--vscode-testing-iconFailed, #f14c4c);
+}
+
+.phase-tokens {
+    font-size: 10px;
+    color: var(--vscode-descriptionForeground, #8c8c8c);
+}
+
+/* Connector Line */
+.phase-connector {
+    position: absolute;
+    left: 19px;
+    top: -4px;
+    width: 2px;
+    height: 8px;
+    background: var(--vscode-input-border, #454545);
+}
+
+.phase-connector.connector-complete {
+    background: var(--vscode-testing-iconPassed, #388a34);
+}
+
+/* Total Tokens */
+.phase-total-tokens {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--vscode-panel-border, #454545);
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground, #8c8c8c);
+    text-align: right;
+}
+
+/* Pulse Animation */
+@keyframes pulse {
+    0%, 100% {
+        box-shadow: 0 0 0 0 rgba(0, 127, 212, 0.4);
+    }
+    50% {
+        box-shadow: 0 0 0 6px rgba(0, 127, 212, 0);
+    }
+}
