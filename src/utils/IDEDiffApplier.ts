@@ -11,7 +11,7 @@
  */
 
 import * as vscode from 'vscode';
-import { SearchReplaceBlock } from './SearchReplaceParser';
+import { SearchReplaceBlock, findFuzzyMatch, describeFuzzyMatch } from './SearchReplaceParser';
 
 export interface ApplyBlockResult {
     success: boolean;
@@ -24,8 +24,10 @@ export interface ApplyBlockResult {
 
 export interface FindResult {
     range: vscode.Range;
-    /** How the match was found: 'lineHint', 'fullDoc', or 'normalized' */
-    matchMethod: 'lineHint' | 'fullDoc' | 'normalized';
+    /** How the match was found: 'lineHint', 'fullDoc', 'normalized', or 'fuzzy' */
+    matchMethod: 'lineHint' | 'fullDoc' | 'normalized' | 'fuzzy';
+    /** Similarity score for fuzzy matches (0-1) */
+    similarity?: number;
 }
 
 export class IDEDiffApplier {
@@ -163,6 +165,19 @@ export class IDEDiffApplier {
             };
         }
 
+        // Strategy 3: Fuzzy matching with 5% tolerance
+        const fuzzyResult = findFuzzyMatch(fullText, searchContent, 0.05);
+        if (fuzzyResult && fuzzyResult.similarity >= 0.95) {
+            console.log(`[IDEDiffApplier] Fuzzy match found: ${describeFuzzyMatch(fuzzyResult.similarity)} (${(fuzzyResult.similarity * 100).toFixed(1)}%)`);
+            const startPos = document.positionAt(fuzzyResult.index);
+            const endPos = document.positionAt(fuzzyResult.index + fuzzyResult.matchLength);
+            return {
+                range: new vscode.Range(startPos, endPos),
+                matchMethod: 'fuzzy',
+                similarity: fuzzyResult.similarity
+            };
+        }
+
         return null;
     }
 
@@ -242,9 +257,15 @@ export class IDEDiffApplier {
     }
 
     /**
-     * Apply multiple blocks to a file
-     * Each block is applied sequentially, and after each apply
-     * we re-open the document to get the updated content
+     * Apply multiple blocks to a file using BATCHED WorkspaceEdit
+     * 
+     * All blocks are found first, then applied in a single atomic edit.
+     * This provides:
+     * - Single undo step for user (Ctrl+Z undoes all blocks at once)
+     * - Atomic rollback on failure
+     * 
+     * Blocks are sorted by position DESCENDING before applying to prevent
+     * offset drift issues when earlier edits change line positions.
      */
     async applyBlocks(
         absolutePath: string,
@@ -256,30 +277,121 @@ export class IDEDiffApplier {
         errors: string[];
         usedLineHintsCount: number;
     }> {
-        const result = {
-            success: true,
-            appliedBlocks: 0,
-            failedBlocks: [] as SearchReplaceBlock[],
-            errors: [] as string[],
-            usedLineHintsCount: 0
-        };
+        const failedBlocks: SearchReplaceBlock[] = [];
+        const errors: string[] = [];
+        let usedLineHintsCount = 0;
 
-        for (const block of blocks) {
-            const applyResult = await this.applyBlock(absolutePath, block);
+        try {
+            const document = await this.openDocument(absolutePath);
+            const documentText = document.getText();
 
-            if (applyResult.success) {
-                result.appliedBlocks++;
-                if (applyResult.usedLineHints) {
-                    result.usedLineHintsCount++;
+            // Phase 1: Find all ranges BEFORE applying any edits
+            const replacements: Array<{
+                block: SearchReplaceBlock;
+                range: vscode.Range;
+                content: string;
+                usedLineHints: boolean;
+            }> = [];
+
+            for (let i = 0; i < blocks.length; i++) {
+                const block = blocks[i];
+                let findResult: FindResult | null = null;
+
+                // Tier 1: Try line hints first
+                if (block.startLineHint && block.endLineHint) {
+                    findResult = this.findInRange(
+                        document,
+                        block.searchContent,
+                        block.startLineHint,
+                        block.endLineHint,
+                        10
+                    );
                 }
-            } else {
-                result.failedBlocks.push(block);
-                result.errors.push(applyResult.error || 'Unknown error');
-            }
-        }
 
-        result.success = result.failedBlocks.length === 0;
-        return result;
+                // Tier 2: Fall back to full document search
+                if (!findResult) {
+                    findResult = this.findInFullDocument(document, block.searchContent);
+                }
+
+                if (findResult) {
+                    // Preserve line ending style in replacement
+                    let finalReplace = block.replaceContent;
+                    if (documentText.includes('\r\n') && !block.replaceContent.includes('\r\n')) {
+                        finalReplace = block.replaceContent.replace(/\n/g, '\r\n');
+                    }
+
+                    replacements.push({
+                        block,
+                        range: findResult.range,
+                        content: finalReplace,
+                        usedLineHints: findResult.matchMethod === 'lineHint'
+                    });
+
+                    if (findResult.matchMethod === 'lineHint') {
+                        usedLineHintsCount++;
+                    }
+                } else {
+                    const preview = block.searchContent.slice(0, 60).replace(/\n/g, '\\n');
+                    failedBlocks.push(block);
+                    errors.push(`Block ${i + 1}: SEARCH content not found: "${preview}..."`);
+                }
+            }
+
+            // If no valid replacements, return early
+            if (replacements.length === 0) {
+                return {
+                    success: false,
+                    appliedBlocks: 0,
+                    failedBlocks,
+                    errors,
+                    usedLineHintsCount: 0
+                };
+            }
+
+            // Phase 2: Sort by position DESCENDING to avoid offset drift
+            // When applying from bottom to top, earlier line numbers stay valid
+            replacements.sort((a, b) => b.range.start.compareTo(a.range.start));
+
+            // Phase 3: Create single batched WorkspaceEdit
+            const batchEdit = new vscode.WorkspaceEdit();
+            for (const r of replacements) {
+                batchEdit.replace(document.uri, r.range, r.content);
+            }
+
+            // Phase 4: Apply atomically (single undo step!)
+            const success = await vscode.workspace.applyEdit(batchEdit);
+
+            if (!success) {
+                return {
+                    success: false,
+                    appliedBlocks: 0,
+                    failedBlocks: blocks,
+                    errors: ['VS Code failed to apply batched edit (WorkspaceEdit rejected)'],
+                    usedLineHintsCount: 0
+                };
+            }
+
+            // Save the document after successful edit
+            await document.save();
+
+            return {
+                success: failedBlocks.length === 0,
+                appliedBlocks: replacements.length,
+                failedBlocks,
+                errors,
+                usedLineHintsCount
+            };
+
+        } catch (error: unknown) {
+            const errorMsg = error instanceof Error ? error.message : String(error);
+            return {
+                success: false,
+                appliedBlocks: 0,
+                failedBlocks: blocks,
+                errors: [`Exception during batch apply: ${errorMsg}`],
+                usedLineHintsCount: 0
+            };
+        }
     }
 }
 

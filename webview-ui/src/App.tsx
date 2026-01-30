@@ -319,7 +319,7 @@ function App() {
     const handleScroll = () => {
         const container = scrollContainerRef.current;
         if (!container) return;
-        
+
         const threshold = 150; // pixels from bottom to consider "near bottom"
         const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
         setIsUserNearBottom(isNearBottom);
@@ -396,7 +396,7 @@ function App() {
                     type: message.approvalType || 'constitution'
                 });
             }
-            
+
             // Phase execution message handlers
             if (message.command === 'phaseUpdate') {
                 setPhaseInfo({
@@ -750,7 +750,6 @@ function App() {
                                 <div className="pane-header custom-pane-header">
                                     <span className="agent-uid">AGENT-{activeAgent.id.substring(activeAgent.id.length - 6)}</span>
                                     <span className={`agent-status-badge ${activeAgent.status.toUpperCase()}`}>{activeAgent.status}</span>
-                                    <button className="icon-btn" style={{ marginLeft: 'auto' }} onClick={handleNewChat} title="New Chat">➕ New</button>
                                 </div>
                                 <div className="agent-view" ref={scrollContainerRef} onScroll={handleScroll}>
                                     <div className="agent-header-large">
@@ -1035,25 +1034,33 @@ function App() {
                                     )}
                                     <div className="input-row">
                                         <button className="icon-btn-add" title="Add Context" onClick={() => vscode.postMessage({ command: 'selectContext' })}>+</button>
-                                        <input
-                                            className="reply-input"
-                                            type="text"
-                                            placeholder="Reply to agent..."
+                                        <textarea
+                                            className="reply-input reply-textarea"
+                                            placeholder="Reply to agent... (Enter to send, Shift+Enter for new line)"
                                             id={`reply-input-${activeAgent.id}`}
+                                            rows={1}
                                             onKeyDown={(e) => {
-                                                if (e.key === 'Enter') {
-                                                    const input = e.target as HTMLInputElement;
-                                                    if (input.value.trim()) {
+                                                if (e.key === 'Enter' && !e.shiftKey) {
+                                                    e.preventDefault();
+                                                    const textarea = e.target as HTMLTextAreaElement;
+                                                    if (textarea.value.trim()) {
                                                         vscode.postMessage({
                                                             command: 'replyToAgent',
-                                                            text: input.value,
+                                                            text: textarea.value,
                                                             taskId: activeAgent.id,
                                                             attachments: contextFiles
                                                         });
-                                                        input.value = '';
+                                                        textarea.value = '';
+                                                        textarea.style.height = 'auto';
                                                         setContextFiles([]); // Clear context after send
                                                     }
                                                 }
+                                            }}
+                                            onInput={(e) => {
+                                                // Auto-resize textarea
+                                                const textarea = e.target as HTMLTextAreaElement;
+                                                textarea.style.height = 'auto';
+                                                textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px';
                                             }}
                                         />
                                     </div>
@@ -1104,15 +1111,16 @@ function App() {
                                             <button
                                                 className="submit-btn"
                                                 onClick={() => {
-                                                    const input = document.getElementById(`reply-input-${activeAgent.id}`) as HTMLInputElement;
-                                                    if (input && input.value.trim()) {
+                                                    const textarea = document.getElementById(`reply-input-${activeAgent.id}`) as HTMLTextAreaElement;
+                                                    if (textarea && textarea.value.trim()) {
                                                         vscode.postMessage({
                                                             command: 'replyToAgent',
-                                                            text: input.value,
+                                                            text: textarea.value,
                                                             taskId: activeAgent.id,
                                                             attachments: contextFiles
                                                         });
-                                                        input.value = '';
+                                                        textarea.value = '';
+                                                        textarea.style.height = 'auto';
                                                         setContextFiles([]);
                                                     }
                                                 }}

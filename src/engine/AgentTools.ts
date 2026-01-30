@@ -305,12 +305,34 @@ TIP: You can add line hints for faster matching:
 
                         if (!fallbackSuccess) {
                             failedBlocks.push(block);
-                            errors.push(result.error || 'Unknown error');
+
+                            // Enhanced error with similarity feedback
+                            const existingContent = new TextDecoder().decode(await vscode.workspace.fs.readFile(fileUri));
+                            const bestMatch = findBestMatch(block.searchContent, existingContent);
+
+                            if (bestMatch && bestMatch.similarity > 0.5) {
+                                // Found a similar match - provide helpful feedback
+                                const document = await vscode.workspace.openTextDocument(fileUri);
+                                const lineNum = document.positionAt(bestMatch.position).line + 1;
+                                const similarityPct = Math.round(bestMatch.similarity * 100);
+
+                                let errorMsg = result.error || 'SEARCH content not found';
+                                errorMsg += ` (${similarityPct}% similar match at line ${lineNum})`;
+
+                                if (similarityPct >= 80) {
+                                    errorMsg += `. The code may have changed slightly. Here's what I found:\n\`\`\`\n${bestMatch.text.slice(0, 200)}${bestMatch.text.length > 200 ? '...' : ''}\n\`\`\``;
+                                } else if (similarityPct >= 50) {
+                                    errorMsg += `. Found partial match but significant differences exist.`;
+                                }
+
+                                errors.push(errorMsg);
+                            } else {
+                                // No similar content found
+                                errors.push((result.error || 'Unknown error') + '. No similar content found in file - verify the SEARCH block is exact.');
+                            }
 
                             // Log match failure with similarity analysis
-                            if (logger) {
-                                const existingContent = (await vscode.workspace.fs.readFile(fileUri)).toString();
-                                const bestMatch = findBestMatch(block.searchContent, existingContent);
+                            if (logger && bestMatch) {
                                 logger.logMatchFailure(
                                     this.taskId,
                                     relativePath,

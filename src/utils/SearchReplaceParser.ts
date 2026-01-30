@@ -396,3 +396,158 @@ export function extractFilePath(text: string): string | null {
 
     return null;
 }
+
+// ============================================
+// FUZZY MATCHING SUPPORT
+// ============================================
+
+/**
+ * Calculate Levenshtein distance between two strings
+ * Returns the minimum number of single-character edits needed to transform a into b
+ * 
+ * @param a - First string
+ * @param b - Second string
+ * @returns Edit distance (lower = more similar)
+ */
+export function levenshteinDistance(a: string, b: string): number {
+    // Edge cases
+    if (a === b) return 0;
+    if (a.length === 0) return b.length;
+    if (b.length === 0) return a.length;
+
+    // Optimization: only keep two rows of the matrix
+    let prevRow = Array.from({ length: b.length + 1 }, (_, i) => i);
+    let currRow = new Array(b.length + 1);
+
+    for (let i = 1; i <= a.length; i++) {
+        currRow[0] = i;
+        for (let j = 1; j <= b.length; j++) {
+            const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+            currRow[j] = Math.min(
+                prevRow[j] + 1,       // deletion
+                currRow[j - 1] + 1,   // insertion
+                prevRow[j - 1] + cost // substitution
+            );
+        }
+        // Swap rows
+        [prevRow, currRow] = [currRow, prevRow];
+    }
+
+    return prevRow[b.length];
+}
+
+/**
+ * Calculate similarity ratio between two strings (0-1)
+ * Uses Levenshtein distance normalized by max length
+ * 
+ * @returns Similarity between 0 (completely different) and 1 (identical)
+ */
+export function levenshteinSimilarity(a: string, b: string): number {
+    if (a === b) return 1;
+    if (a.length === 0 || b.length === 0) return 0;
+
+    const distance = levenshteinDistance(a, b);
+    const maxLen = Math.max(a.length, b.length);
+    return 1 - (distance / maxLen);
+}
+
+export interface FuzzyMatchResult {
+    /** Character index in the original file content */
+    index: number;
+    /** Length of the matched content in original file */
+    matchLength: number;
+    /** Similarity score between 0 and 1 */
+    similarity: number;
+    /** The actual matched text from the file */
+    matchedText: string;
+}
+
+/**
+ * Find a fuzzy match for search content in file content
+ * Uses a sliding window approach with Levenshtein distance
+ * 
+ * @param fileContent - The full file content to search in
+ * @param searchContent - The content to search for
+ * @param tolerance - Maximum difference ratio allowed (default: 0.05 = 5%)
+ * @returns Match result with position and similarity, or null if no good match found
+ */
+export function findFuzzyMatch(
+    fileContent: string,
+    searchContent: string,
+    tolerance: number = 0.05
+): FuzzyMatchResult | null {
+    // Normalize line endings for comparison
+    const normalizedFile = fileContent.replace(/\r\n/g, '\n');
+    const normalizedSearch = searchContent.replace(/\r\n/g, '\n');
+
+    // Split into lines for sliding window
+    const fileLines = normalizedFile.split('\n');
+    const searchLines = normalizedSearch.split('\n');
+
+    // Calculate minimum similarity threshold
+    const minSimilarity = 1 - tolerance;
+
+    let bestMatch: FuzzyMatchResult | null = null;
+
+    // Slide through file looking for similar content
+    for (let i = 0; i <= fileLines.length - searchLines.length; i++) {
+        // Build candidate string from file lines
+        const candidateLines = fileLines.slice(i, i + searchLines.length);
+        const candidate = candidateLines.join('\n');
+
+        // Quick length check - if lengths differ by more than tolerance, skip
+        const lengthRatio = Math.min(candidate.length, normalizedSearch.length) /
+            Math.max(candidate.length, normalizedSearch.length);
+        if (lengthRatio < minSimilarity * 0.8) {
+            continue;
+        }
+
+        // Calculate similarity
+        const similarity = levenshteinSimilarity(normalizedSearch, candidate);
+
+        if (similarity >= minSimilarity && (!bestMatch || similarity > bestMatch.similarity)) {
+            // Calculate character index in original file
+            let charIndex = 0;
+            for (let j = 0; j < i; j++) {
+                charIndex += fileLines[j].length + 1; // +1 for newline
+            }
+
+            // Adjust for CRLF if original has it
+            if (fileContent.includes('\r\n')) {
+                charIndex += i; // Add back the \r characters
+            }
+
+            // Calculate match length in original content
+            let matchLength = candidateLines.join('\n').length;
+            if (fileContent.includes('\r\n')) {
+                matchLength += searchLines.length - 1; // Add \r for each line break
+            }
+
+            bestMatch = {
+                index: charIndex,
+                matchLength,
+                similarity,
+                matchedText: candidate
+            };
+
+            // Early exit on near-perfect match
+            if (similarity > 0.99) {
+                break;
+            }
+        }
+    }
+
+    return bestMatch;
+}
+
+/**
+ * Get a human-readable description of the match quality
+ */
+export function describeFuzzyMatch(similarity: number): string {
+    if (similarity >= 0.99) return 'near-perfect match';
+    if (similarity >= 0.97) return 'very close match (minor whitespace/typo difference)';
+    if (similarity >= 0.95) return 'close match (small edits detected)';
+    if (similarity >= 0.90) return 'moderate match (some changes detected)';
+    if (similarity >= 0.80) return 'partial match (significant differences)';
+    return 'weak match (substantial differences)';
+}

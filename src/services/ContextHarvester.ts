@@ -1,4 +1,4 @@
-import * as fs from 'fs';
+import * as vscode from 'vscode';
 import * as path from 'path';
 
 /**
@@ -173,23 +173,23 @@ export class ContextHarvester {
             }
 
             const filePath = path.join(workspaceRoot, filename);
+            const fileUri = vscode.Uri.file(filePath);
 
-            if (fs.existsSync(filePath)) {
-                try {
-                    const stat = fs.statSync(filePath);
-                    if (stat.isFile()) {
-                        const content = fs.readFileSync(filePath, 'utf-8');
+            try {
+                const stat = await vscode.workspace.fs.stat(fileUri);
+                if (stat.type === vscode.FileType.File) {
+                    const contentBytes = await vscode.workspace.fs.readFile(fileUri);
+                    const content = new TextDecoder().decode(contentBytes);
 
-                        // Limit file size to prevent token explosion
-                        const truncatedContent = content.length > 5000
-                            ? content.substring(0, 5000) + '\n... [truncated]'
-                            : content;
+                    // Limit file size to prevent token explosion
+                    const truncatedContent = content.length > 5000
+                        ? content.substring(0, 5000) + '\n... [truncated]'
+                        : content;
 
-                        metadata += `### ${filename}\n\n\`\`\`\n${truncatedContent}\n\`\`\`\n\n`;
-                    }
-                } catch (error) {
-                    console.warn(`[ContextHarvester] Could not read ${filename}:`, error);
+                    metadata += `### ${filename}\n\n\`\`\`\n${truncatedContent}\n\`\`\`\n\n`;
                 }
+            } catch {
+                // File doesn't exist or can't be read - skip silently
             }
         }
 
@@ -212,7 +212,14 @@ export class ContextHarvester {
         let tree = '';
 
         try {
-            const entries = fs.readdirSync(dir, { withFileTypes: true });
+            const dirUri = vscode.Uri.file(dir);
+            const rawEntries = await vscode.workspace.fs.readDirectory(dirUri);
+
+            // Convert to objects with isDirectory helper
+            const entries = rawEntries.map(([name, type]) => ({
+                name,
+                isDirectory: () => type === vscode.FileType.Directory
+            }));
 
             // Sort: directories first, then files
             entries.sort((a, b) => {
@@ -333,11 +340,15 @@ export class ContextHarvester {
 
         for (const check of checks) {
             const filePath = path.join(workspaceRoot, check.file);
-            if (fs.existsSync(filePath)) {
-                // Avoid duplicate detections
+            const fileUri = vscode.Uri.file(filePath);
+            try {
+                await vscode.workspace.fs.stat(fileUri);
+                // File exists - avoid duplicate detections
                 if (!detected.includes(check.tech)) {
                     detected.push(check.tech);
                 }
+            } catch {
+                // File doesn't exist - skip
             }
         }
 
@@ -353,24 +364,29 @@ export class ContextHarvester {
 
         // Just get package.json and top-level structure for quick comparison
         const packageJsonPath = path.join(workspaceRoot, 'package.json');
-        if (fs.existsSync(packageJsonPath)) {
-            try {
-                const content = fs.readFileSync(packageJsonPath, 'utf-8');
-                summary += `### package.json\n\`\`\`json\n${content}\n\`\`\`\n\n`;
-            } catch (e) {
-                // ignore
-            }
+        const packageJsonUri = vscode.Uri.file(packageJsonPath);
+        try {
+            const contentBytes = await vscode.workspace.fs.readFile(packageJsonUri);
+            const content = new TextDecoder().decode(contentBytes);
+            summary += `### package.json\n\`\`\`json\n${content}\n\`\`\`\n\n`;
+        } catch {
+            // File doesn't exist or can't be read - skip
         }
 
         // Top-level directory listing
         try {
-            const entries = fs.readdirSync(workspaceRoot, { withFileTypes: true });
-            const dirs = entries
-                .filter(e => e.isDirectory() && !EXCLUDED_DIRS.has(e.name) && !e.name.startsWith('.'))
-                .map(e => e.name);
+            const rootUri = vscode.Uri.file(workspaceRoot);
+            const rawEntries = await vscode.workspace.fs.readDirectory(rootUri);
+            const dirs = rawEntries
+                .filter(([name, type]) =>
+                    type === vscode.FileType.Directory &&
+                    !EXCLUDED_DIRS.has(name) &&
+                    !name.startsWith('.')
+                )
+                .map(([name]) => name);
             summary += `### Top-Level Directories\n${dirs.join(', ')}\n`;
-        } catch (e) {
-            // ignore
+        } catch {
+            // Can't read directory - skip
         }
 
         return summary;

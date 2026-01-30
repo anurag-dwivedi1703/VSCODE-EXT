@@ -45,7 +45,8 @@
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    min-width: 0; /* Allow shrinking below content size */
+    min-width: 0;
+    /* Allow shrinking below content size */
 }
 
 .pane-center {
@@ -53,7 +54,8 @@
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    min-width: 0; /* Allow shrinking below content size */
+    min-width: 0;
+    /* Allow shrinking below content size */
 }
 
 .resizer-handle {
@@ -89,7 +91,8 @@
     flex: 1;
     width: 100%;
     min-height: 0;
-    min-width: 0; /* Allow shrinking below content size */
+    min-width: 0;
+    /* Allow shrinking below content size */
     background-color: var(--vscode-sideBar-background);
     display: flex;
     flex-direction: column;
@@ -101,7 +104,8 @@
     flex: 1;
     width: 100%;
     min-height: 0;
-    min-width: 0; /* Allow shrinking below content size */
+    min-width: 0;
+    /* Allow shrinking below content size */
     display: flex;
     flex-direction: column;
     background-color: var(--vscode-editor-background);
@@ -114,7 +118,8 @@
     flex: 1;
     width: 100%;
     min-height: 0;
-    min-width: 0; /* Allow shrinking below content size */
+    min-width: 0;
+    /* Allow shrinking below content size */
     background-color: var(--vscode-sideBar-background);
     display: flex;
     flex-direction: column;
@@ -137,11 +142,13 @@
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
-    min-width: 0; /* Allow header to shrink */
-    flex-shrink: 0; /* But keep height fixed */
+    min-width: 0;
+    /* Allow header to shrink */
+    flex-shrink: 0;
+    /* But keep height fixed */
 }
 
-.pane-header > * {
+.pane-header>* {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -169,8 +176,8 @@
     min-width: 0;
 }
 
-.sub-header > span,
-.sub-header > div {
+.sub-header>span,
+.sub-header>div {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -547,14 +554,14 @@
 
 /* Reply Footer */
 .reply-footer {
-    height: 80px;
     min-height: 80px;
     flex-shrink: 0;
     background-color: var(--vscode-editor-background);
     border-top: 1px solid var(--vscode-panel-border);
     display: flex;
-    align-items: center;
-    padding: 0 40px;
+    flex-direction: column;
+    justify-content: center;
+    padding: 12px 40px;
     box-shadow: 0 -5px 20px rgba(0, 0, 0, 0.2);
 }
 
@@ -572,6 +579,17 @@
 .reply-input:focus {
     outline: none;
     border-color: var(--vscode-focusBorder);
+}
+
+/* Reply Textarea - Resizable and Scrollable */
+.reply-textarea {
+    resize: none;
+    /* We handle resize via JS */
+    min-height: 40px;
+    max-height: 200px;
+    overflow-y: auto;
+    font-family: var(--vscode-font-family);
+    line-height: 1.5;
 }
 
 /* Utils */
