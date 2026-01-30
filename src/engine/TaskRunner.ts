@@ -364,6 +364,77 @@ export class TaskRunner {
         }
     }
 
+    /**
+     * Clear all files in the missions/current/ folder.
+     * Called at mission start to prevent old artifacts from bleeding.
+     */
+    private clearCurrentArtifacts(): void {
+        const currentDir = path.join(this.storageDir, 'current');
+        if (fs.existsSync(currentDir)) {
+            try {
+                for (const file of fs.readdirSync(currentDir)) {
+                    fs.unlinkSync(path.join(currentDir, file));
+                }
+                console.log('[TaskRunner] Cleared current/ artifacts folder');
+            } catch (err) {
+                console.warn('[TaskRunner] Failed to clear current/ folder:', err);
+            }
+        }
+    }
+
+    /**
+     * Clear workspace .vibearchitect artifacts to prevent bleeding.
+     * Called on mission complete and when starting a new mission via replyToTask.
+     */
+    private clearWorkspaceArtifacts(workspacePath: string): void {
+        const artifactsDir = path.join(workspacePath, '.vibearchitect');
+        const filesToClear = ['task.md', 'implementation_plan.md', 'mission_summary.md'];
+        for (const file of filesToClear) {
+            const filePath = path.join(artifactsDir, file);
+            if (fs.existsSync(filePath)) {
+                try {
+                    fs.unlinkSync(filePath);
+                    console.log(`[TaskRunner] Cleared workspace artifact: ${file}`);
+                } catch (err) {
+                    console.warn(`[TaskRunner] Failed to clear ${file}:`, err);
+                }
+            }
+        }
+    }
+
+    /**
+     * Archive mission artifacts to chats/<taskId>/ folder.
+     * Called on mission complete.
+     */
+    private archiveMissionArtifacts(task: AgentTask): void {
+        if (!task.worktreePath) {
+            console.warn('[TaskRunner] archiveMissionArtifacts: No worktreePath');
+            return;
+        }
+
+        const srcDir = path.join(task.worktreePath, '.vibearchitect');
+        const destDir = path.join(this.storageDir, 'chats', task.id);
+
+        try {
+            fs.mkdirSync(destDir, { recursive: true });
+            const files = ['task.md', 'implementation_plan.md', 'mission_summary.md'];
+            let archivedCount = 0;
+
+            for (const file of files) {
+                const src = path.join(srcDir, file);
+                if (fs.existsSync(src)) {
+                    fs.copyFileSync(src, path.join(destDir, file));
+                    archivedCount++;
+                }
+            }
+
+            console.log(`[TaskRunner] Archived ${archivedCount} artifacts to chats/${task.id}/`);
+            task.logs.push(`> [System]: Archived ${archivedCount} mission artifacts.`);
+        } catch (err) {
+            console.error('[TaskRunner] Failed to archive mission artifacts:', err);
+        }
+    }
+
     private loadTasks() {
         try {
             const dir = this.storageDir;
@@ -549,16 +620,8 @@ export class TaskRunner {
             task.worktreePath = workspaceRoot; // Ensure it is set
 
             // Clean up stale artifacts from previous missions to prevent session bleeding
-            const vibearchitectDir = path.join(workspaceRoot, '.vibearchitect');
-            const staleSummaryPath = path.join(vibearchitectDir, 'mission_summary.md');
-            if (fs.existsSync(staleSummaryPath)) {
-                try {
-                    fs.unlinkSync(staleSummaryPath);
-                    console.log('[TaskRunner] Cleaned up stale mission_summary.md');
-                } catch (err) {
-                    console.warn('[TaskRunner] Could not clean up mission_summary.md:', err);
-                }
-            }
+            this.clearWorkspaceArtifacts(workspaceRoot);
+            this.clearCurrentArtifacts();
 
             this.updateStatus(taskId, 'executing', 10, `Accessing Workspace: ${workspaceRoot}`);
             task.logs.push(`\n**Working Directory**: \`${workspaceRoot}\``);
@@ -1543,6 +1606,15 @@ ${contextData}
                 }
 
                 // ========================================
+                // ARCHIVE MISSION ARTIFACTS
+                // ========================================
+                this.archiveMissionArtifacts(task);
+                if (task.worktreePath) {
+                    this.clearWorkspaceArtifacts(task.worktreePath);
+                }
+                this.clearCurrentArtifacts();
+
+                // ========================================
                 // POST-MISSION CONSTITUTION REVIEW (in runExecutionLoop)
                 // ========================================
                 const taskContext = this.taskContexts.get(taskId);
@@ -1703,6 +1775,13 @@ ${contextData}
                     // NEW MISSION if: user is giving a CREATE/CHANGE command with specific intent AND not just saying "continue"
                     const isNewMission = (hasCreateCommand && specifiesNewFile && !refersToOldWork) ||
                         (message.length > 50 && !refersToOldWork && !msgLower.includes('the code'));
+
+                    // CRITICAL: If this is a new mission, clear old artifacts to prevent bleeding
+                    if (isNewMission) {
+                        task.logs.push(`> [System]: New mission detected - clearing old artifacts to prevent context bleeding.`);
+                        this.clearWorkspaceArtifacts(worktreePath);
+                        this.clearCurrentArtifacts();
+                    }
 
                     // CRITICAL: For substantial work, ALWAYS use planning mode regardless of original task.mode
                     // This ensures code changes get proper task.md / implementation_plan.md / validation

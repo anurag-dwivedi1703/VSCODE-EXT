@@ -11,3 +11,5 @@ webview-ui/build
 # Project files - keep local only
 Project-Overview.md
 temp-demo-app/
+runpod-implementation/
+_local_work/
