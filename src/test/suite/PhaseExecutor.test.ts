@@ -10,11 +10,8 @@ import * as path from 'path';
 import * as os from 'os';
 import {
     PhaseExecutor,
-    createPhaseExecutor,
-    PhaseApprovalRequest,
-    PhaseApprovalResponse
+    createPhaseExecutor
 } from '../../services/PhaseExecutor';
-import { Phase } from '../../services/PhaseGenerator';
 
 suite('PhaseExecutor Test Suite', () => {
     let executor: PhaseExecutor;
@@ -44,11 +41,11 @@ suite('PhaseExecutor Test Suite', () => {
 
         test('should throw if not initialized', () => {
             const uninitializedExecutor = createPhaseExecutor();
-            
+
             assert.throws(() => {
                 uninitializedExecutor.startSingleExecution('task', 'req', 1000);
             }, /not initialized/);
-            
+
             uninitializedExecutor.dispose();
         });
     });
@@ -246,7 +243,7 @@ suite('PhaseExecutor Test Suite', () => {
             approvalExecutor.events.onApprovalNeeded((request) => {
                 approvalRequested = true;
                 assert.strictEqual(request.phaseIndex, 0);
-                
+
                 // Provide approval
                 approvalExecutor.provideApproval({
                     status: 'approved',
@@ -297,7 +294,7 @@ suite('PhaseExecutor Test Suite', () => {
     suite('Mission Control', () => {
         test('should abort mission', () => {
             executor.startSingleExecution('task-1', 'Test', 5000);
-            
+
             executor.abortMission('User cancelled');
 
             const state = executor.getState();

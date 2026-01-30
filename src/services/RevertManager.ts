@@ -1,6 +1,6 @@
-import { window, workspace, commands } from 'vscode';
+import { window, workspace } from 'vscode';
 import { ShadowRepository } from './ShadowRepository';
-import { SimpleGit, CleanOptions } from 'simple-git';
+import { CleanOptions } from 'simple-git';
 
 export class RevertManager {
     constructor(private shadowRepo: ShadowRepository) { }
@@ -32,7 +32,7 @@ export class RevertManager {
                 'Cancel'
             );
 
-            if (!result || result === 'Cancel') return false;
+            if (!result || result === 'Cancel') { return false; }
 
             if (result === 'Save All & Revert') {
                 await workspace.saveAll(false);
@@ -42,7 +42,7 @@ export class RevertManager {
                 // 'workbench.action.files.revert' reverts the active editor to the state ON DISK.
                 // Since we haven't git-reverted yet, this just wipes the user's unsaved typing 
                 // and resets to what IS on disk right now.
-                for (const doc of dirtyDocs) {
+                for (const _doc of dirtyDocs) {
                     // We need to focus or find the editor for this doc to run the command? 
                     // Actually, commands.executeCommand usually works on active editor. 
                     // Better approach: use vscode.commands.executeCommand('workbench.action.files.revert', uri) if supported?

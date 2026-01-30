@@ -1,4 +1,4 @@
-import * as vscode from 'vscode';
+// FileLockManager - manages file locks across agents
 
 /**
  * Manages file locks to prevent concurrent write access by different agents.

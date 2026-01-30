@@ -66,7 +66,7 @@ export class AuthSessionManager {
      * Check if a URL is a login/SSO page
      */
     public isLoginPage(url: string): boolean {
-        if (!url) return false;
+        if (!url) {return false;}
 
         return this.loginPagePatterns.some(pattern => pattern.test(url));
     }
@@ -75,7 +75,7 @@ export class AuthSessionManager {
      * Check if URL is specifically an Okta login page
      */
     public isOktaLoginPage(url: string): boolean {
-        if (!url) return false;
+        if (!url) {return false;}
         return /\.okta\.com/i.test(url);
     }
 

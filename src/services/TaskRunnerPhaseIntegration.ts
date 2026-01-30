@@ -46,16 +46,16 @@ export interface PhaseExecutionInfo {
 export interface PhaseIntegrationConfig {
     /** Enable phased execution (default: true) */
     enabled: boolean;
-    
+
     /** Token budget per phase (default: 30000) */
     tokenBudgetPerPhase: number;
-    
+
     /** Complexity score threshold to trigger phased execution (default: 40) */
     phasedExecutionThreshold: number;
-    
+
     /** Whether to auto-analyze requirements (default: true) */
     autoAnalyze: boolean;
-    
+
     /** Whether to require approval between phases (default: true) */
     requireApprovalBetweenPhases: boolean;
 }
@@ -85,17 +85,17 @@ const DEFAULT_CONFIG: PhaseIntegrationConfig = {
 export class TaskRunnerPhaseIntegration {
     private config: PhaseIntegrationConfig;
     private executors: Map<string, PhaseExecutor> = new Map();
-    
+
     // Events for webview communication
     private _onPhaseUpdate = new vscode.EventEmitter<{ taskId: string; info: PhaseExecutionInfo }>();
     readonly onPhaseUpdate = this._onPhaseUpdate.event;
-    
+
     private _onApprovalNeeded = new vscode.EventEmitter<{ taskId: string; request: PhaseApprovalRequest }>();
     readonly onApprovalNeeded = this._onApprovalNeeded.event;
-    
+
     private _onPhaseComplete = new vscode.EventEmitter<{ taskId: string; phaseId: string; result: PhaseResult }>();
     readonly onPhaseComplete = this._onPhaseComplete.event;
-    
+
     private _onAllPhasesComplete = new vscode.EventEmitter<{ taskId: string; totalTokens: number }>();
     readonly onAllPhasesComplete = this._onAllPhasesComplete.event;
 
@@ -219,7 +219,7 @@ export class TaskRunnerPhaseIntegration {
      */
     getPromptContext(taskId: string): string {
         const executor = this.executors.get(taskId);
-        if (!executor) return '';
+        if (!executor) { return ''; }
         return executor.getPhasePromptContext();
     }
 
@@ -228,7 +228,7 @@ export class TaskRunnerPhaseIntegration {
      */
     trackTokens(taskId: string, tokens: number, source: string): void {
         const executor = this.executors.get(taskId);
-        if (!executor) return;
+        if (!executor) { return; }
         executor.trackTokens(tokens, source);
     }
 
@@ -237,7 +237,7 @@ export class TaskRunnerPhaseIntegration {
      */
     trackText(taskId: string, text: string, source: string): void {
         const executor = this.executors.get(taskId);
-        if (!executor) return;
+        if (!executor) { return; }
         const monitor = executor.getContextMonitor();
         const tokens = monitor.estimateTokens(text);
         executor.trackTokens(tokens, source);
@@ -248,7 +248,7 @@ export class TaskRunnerPhaseIntegration {
      */
     shouldEndPhase(taskId: string): boolean {
         const executor = this.executors.get(taskId);
-        if (!executor) return false;
+        if (!executor) { return false; }
         return executor.shouldTriggerPhaseBoundary();
     }
 
@@ -257,7 +257,7 @@ export class TaskRunnerPhaseIntegration {
      */
     getBudget(taskId: string): ContextBudget | null {
         const executor = this.executors.get(taskId);
-        if (!executor) return null;
+        if (!executor) { return null; }
         return executor.getBudget();
     }
 
@@ -266,10 +266,10 @@ export class TaskRunnerPhaseIntegration {
      */
     getPhaseInfo(taskId: string): PhaseExecutionInfo | null {
         const executor = this.executors.get(taskId);
-        if (!executor) return null;
+        if (!executor) { return null; }
 
         const state = executor.getState();
-        if (!state) return null;
+        if (!state) { return null; }
 
         const budget = executor.getBudget();
         const progress = executor.getProgressSummary();
@@ -279,7 +279,7 @@ export class TaskRunnerPhaseIntegration {
             mode: state.executionMode,
             currentPhaseIndex: state.currentPhaseIndex,
             totalPhases: state.phases.length,
-            phases: state.phases.map((phase, index) => {
+            phases: state.phases.map((phase, _index) => {
                 const result = state.phaseResults.find(r => r.phaseId === phase.id);
                 return {
                     id: phase.id,
@@ -348,7 +348,7 @@ export class TaskRunnerPhaseIntegration {
         feedback?: string
     ): void {
         const executor = this.executors.get(taskId);
-        if (!executor) return;
+        if (!executor) { return; }
 
         executor.provideApproval({
             status: approved ? 'approved' : 'rejected',
@@ -363,7 +363,7 @@ export class TaskRunnerPhaseIntegration {
      */
     skipPhase(taskId: string, reason: string): void {
         const executor = this.executors.get(taskId);
-        if (!executor) return;
+        if (!executor) { return; }
         executor.skipCurrentPhase(reason);
     }
 
@@ -372,7 +372,7 @@ export class TaskRunnerPhaseIntegration {
      */
     abortMission(taskId: string, reason: string): void {
         const executor = this.executors.get(taskId);
-        if (!executor) return;
+        if (!executor) { return; }
         executor.abortMission(reason);
     }
 
@@ -388,7 +388,7 @@ export class TaskRunnerPhaseIntegration {
      */
     isPhasedMode(taskId: string): boolean {
         const executor = this.executors.get(taskId);
-        if (!executor) return false;
+        if (!executor) { return false; }
         const state = executor.getState();
         return state?.executionMode === 'phased';
     }
@@ -398,7 +398,7 @@ export class TaskRunnerPhaseIntegration {
      */
     getCurrentPhase(taskId: string): Phase | null {
         const executor = this.executors.get(taskId);
-        if (!executor) return null;
+        if (!executor) { return null; }
         return executor.getCurrentPhase();
     }
 
@@ -407,7 +407,7 @@ export class TaskRunnerPhaseIntegration {
      */
     hasPendingApproval(taskId: string): boolean {
         const executor = this.executors.get(taskId);
-        if (!executor) return false;
+        if (!executor) { return false; }
         return executor.hasPendingApproval();
     }
 
@@ -416,7 +416,7 @@ export class TaskRunnerPhaseIntegration {
      */
     generateReport(taskId: string): string {
         const executor = this.executors.get(taskId);
-        if (!executor) return 'No phase execution data available.';
+        if (!executor) { return 'No phase execution data available.'; }
         return executor.generateProgressReport();
     }
 

@@ -284,7 +284,7 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
         while ((match = fencedRegex.exec(text)) !== null) {
             try {
                 // Pre-process to fix common JSON issues with multi-line strings
-                let jsonStr = match[1].trim();
+                const jsonStr = match[1].trim();
                 const parsed = this.parseToolCallJson(jsonStr);
                 if (parsed && parsed.name) {
                     calls.push({
@@ -691,9 +691,9 @@ Respond ONLY with the JSON, no other text.`;
             // Parse the JSON response
             try {
                 let jsonText = responseText.trim();
-                if (jsonText.startsWith('```json')) jsonText = jsonText.slice(7);
-                if (jsonText.startsWith('```')) jsonText = jsonText.slice(3);
-                if (jsonText.endsWith('```')) jsonText = jsonText.slice(0, -3);
+                if (jsonText.startsWith('```json')) {jsonText = jsonText.slice(7);}
+                if (jsonText.startsWith('```')) {jsonText = jsonText.slice(3);}
+                if (jsonText.endsWith('```')) {jsonText = jsonText.slice(0, -3);}
                 jsonText = jsonText.trim();
 
                 const parsed = JSON.parse(jsonText);

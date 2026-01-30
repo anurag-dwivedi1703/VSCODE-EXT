@@ -18,7 +18,7 @@ export class TerminalManager {
                 close: () => {
                     this.terminal = undefined;
                 },
-                handleInput: (data: string) => {
+                handleInput: (_data: string) => {
                     // For now, we don't handle user input into the agent's shell
                     // But we could echo it if we wanted to simulate a real shell
                 }

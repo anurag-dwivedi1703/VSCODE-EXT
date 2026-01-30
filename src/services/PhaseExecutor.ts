@@ -315,7 +315,7 @@ export class PhaseExecutor {
      */
     beginPhaseExecution(): void {
         const phase = this.getCurrentPhase();
-        if (!phase || !this.stateManager) return;
+        if (!phase || !this.stateManager) {return;}
         
         this.stateManager.markPhaseStarted();
         

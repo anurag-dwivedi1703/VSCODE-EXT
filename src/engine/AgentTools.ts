@@ -6,10 +6,10 @@ import { GeminiClient } from '../ai/GeminiClient';
 import { ClaudeClient } from '../ai/ClaudeClient';
 import { CopilotClaudeClient } from '../ai/CopilotClaudeClient';
 import { FileLockManager } from '../services/FileLockManager';
-import { BrowserAutomationService, ScreenshotResult, RecordingResult } from '../services/BrowserAutomationService';
-import { VisualComparisonService, ComparisonResult } from '../services/VisualComparisonService';
-import { detectSecrets, detectPII, DetectedSecret, DetectedPII } from '../ai/SecurityInstructions';
-import { parseSearchReplaceBlocks, applySearchReplace, containsSearchReplaceBlocks, ApplyResult, DiffLogContext } from '../utils/SearchReplaceParser';
+import { BrowserAutomationService } from '../services/BrowserAutomationService';
+import { VisualComparisonService } from '../services/VisualComparisonService';
+import { detectSecrets, detectPII } from '../ai/SecurityInstructions';
+import { parseSearchReplaceBlocks, DiffLogContext } from '../utils/SearchReplaceParser';
 import { DiffLogger, findBestMatch } from '../utils/DiffLogger';
 import { getIDEDiffApplier } from '../utils/IDEDiffApplier';
 import { getSymbolNavigator } from '../utils/SymbolNavigator';
@@ -257,8 +257,8 @@ TIP: You can add line hints for faster matching:
                 const symbolNavigator = getSymbolNavigator();
 
                 let appliedBlocks = 0;
-                let failedBlocks: typeof blocks = [];
-                let errors: string[] = [];
+                const failedBlocks: typeof blocks = [];
+                const errors: string[] = [];
                 let usedLineHintsCount = 0;
 
                 // Apply each block using IDE integration
@@ -621,13 +621,13 @@ TIP: You can add line hints for faster matching:
             child.stdout.on('data', (data) => {
                 const text = data.toString();
                 combinedOutput += text;
-                if (this.terminalManager) this.terminalManager.print(text);
+                if (this.terminalManager) { this.terminalManager.print(text); }
             });
 
             child.stderr.on('data', (data) => {
                 const text = data.toString();
                 combinedOutput += text;
-                if (this.terminalManager) this.terminalManager.print(`\x1b[31m${text}\x1b[0m`); // Red for error
+                if (this.terminalManager) { this.terminalManager.print(`\x1b[31m${text}\x1b[0m`); } // Red for error
             });
 
             child.on('close', (code) => {
@@ -642,7 +642,7 @@ TIP: You can add line hints for faster matching:
             child.on('error', (err) => {
                 const errorMsg = `Error spawning process: ${err.message}`;
                 combinedOutput += errorMsg;
-                if (this.terminalManager) this.terminalManager.print(`\x1b[31m${errorMsg}\x1b[0m\n`);
+                if (this.terminalManager) { this.terminalManager.print(`\x1b[31m${errorMsg}\x1b[0m\n`); }
                 safeResolve(combinedOutput);
             });
 
@@ -993,12 +993,12 @@ TIP: You can add line hints for faster matching:
             let parenCount = 0;
 
             for (const char of content) {
-                if (char === '{') braceCount++;
-                if (char === '}') braceCount--;
-                if (char === '[') bracketCount++;
-                if (char === ']') bracketCount--;
-                if (char === '(') parenCount++;
-                if (char === ')') parenCount--;
+                if (char === '{') { braceCount++; }
+                if (char === '}') { braceCount--; }
+                if (char === '[') { bracketCount++; }
+                if (char === ']') { bracketCount--; }
+                if (char === '(') { parenCount++; }
+                if (char === ')') { parenCount--; }
             }
 
             if (braceCount !== 0) {
@@ -1018,7 +1018,7 @@ TIP: You can add line hints for faster matching:
     /**
      * Attempt to auto-repair common corruption patterns
      */
-    private repairFileContent(content: string, corruption: { issues: string[] }): string {
+    private repairFileContent(content: string, _corruption: { issues: string[] }): string {
         let repaired = content;
 
         // Fix trailing > at end of file

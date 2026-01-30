@@ -288,7 +288,7 @@ export class PhaseStateManager {
      * Check if all phases are complete
      */
     isComplete(): boolean {
-        if (!this.state) return false;
+        if (!this.state) {return false;}
         return this.state.currentPhaseIndex >= this.state.phases.length;
     }
 
@@ -303,7 +303,7 @@ export class PhaseStateManager {
      * Mark current phase as started
      */
     markPhaseStarted(): void {
-        if (!this.state) return;
+        if (!this.state) {return;}
 
         const currentPhase = this.getCurrentPhase();
         if (currentPhase) {
@@ -320,10 +320,10 @@ export class PhaseStateManager {
      * Mark current phase as complete and record result
      */
     markPhaseComplete(result: Omit<PhaseResult, 'phaseId' | 'completedAt'>): PhaseResult | null {
-        if (!this.state) return null;
+        if (!this.state) {return null;}
 
         const currentPhase = this.getCurrentPhase();
-        if (!currentPhase) return null;
+        if (!currentPhase) {return null;}
 
         // Create full result
         const fullResult: PhaseResult = {
@@ -381,7 +381,7 @@ export class PhaseStateManager {
      * Pause execution (for later resumption)
      */
     pauseExecution(): void {
-        if (!this.state) return;
+        if (!this.state) {return;}
 
         this.state.overallStatus = 'paused';
         this.state.lastUpdatedAt = Date.now();
@@ -395,7 +395,7 @@ export class PhaseStateManager {
      * Resume execution
      */
     resumeExecution(): void {
-        if (!this.state) return;
+        if (!this.state) {return;}
 
         if (this.state.overallStatus === 'paused') {
             this.state.overallStatus = 'in-progress';
@@ -411,7 +411,7 @@ export class PhaseStateManager {
      * Update token usage for current phase
      */
     updateTokenUsage(tokens: number): void {
-        if (!this.state) return;
+        if (!this.state) {return;}
 
         this.state.actualTokensUsed += tokens;
         this.state.lastUpdatedAt = Date.now();

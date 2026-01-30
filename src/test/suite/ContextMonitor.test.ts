@@ -9,7 +9,6 @@ import {
     ContextMonitor,
     createContextMonitor,
     ContextBudget,
-    BudgetStatus,
     TokenUsageEvent,
     BudgetAlert
 } from '../../services/ContextMonitor';
@@ -102,8 +101,8 @@ suite('ContextMonitor Test Suite', () => {
             const codeTokens = monitor.estimateTokens(codeText);
 
             // Code should have higher token estimate per character
-            const plainRatio = plainTokens / plainText.length;
-            const codeRatio = codeTokens / codeText.length;
+            const _plainRatio = plainTokens / plainText.length;
+            const _codeRatio = codeTokens / codeText.length;
 
             // Code ratio should be higher (more tokens per char)
             // This might not always be true due to whitespace, but the estimate should account for code
@@ -532,11 +531,11 @@ suite('ContextMonitor Test Suite', () => {
     suite('Edge Cases', () => {
         test('should handle zero budget', () => {
             const zeroMonitor = createContextMonitor({ totalBudget: 0 });
-            
+
             const budget = zeroMonitor.getBudget();
             // With zero budget, any usage would be exhausted, but with no usage it's a special case
             assert.strictEqual(budget.remaining, 0);
-            
+
             zeroMonitor.dispose();
         });
 

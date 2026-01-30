@@ -7,10 +7,7 @@
 import * as assert from 'assert';
 import {
     PhaseGenerator,
-    createPhaseGenerator,
-    Phase,
-    PhaseGenerationResult,
-    SplittingStrategy
+    createPhaseGenerator
 } from '../../services/PhaseGenerator';
 import { ComplexityAnalyzer, createComplexityAnalyzer } from '../../services/ComplexityAnalyzer';
 
@@ -155,7 +152,7 @@ suite('PhaseGenerator Test Suite', () => {
                 - Admin panel for system configuration
             `;
             const score = await analyzer.analyze(requirement);
-            
+
             if (score.level === 'EXTREME') {
                 const result = await generator.generatePhases(requirement, score);
                 assert.strictEqual(result.strategyUsed, 'incremental', 'Should use incremental for EXTREME complexity');
@@ -234,7 +231,7 @@ suite('PhaseGenerator Test Suite', () => {
             const result = await generator.generatePhases(requirement);
 
             const sum = result.phases.reduce((acc, p) => acc + p.estimatedTokens, 0);
-            
+
             // Allow some tolerance for rounding
             const tolerance = result.totalPhases * 100;
             assert.ok(
@@ -287,7 +284,7 @@ suite('PhaseGenerator Test Suite', () => {
             const result = await generator.generatePhases(requirement);
 
             const allCriteria = result.phases.flatMap(p => p.verificationCriteria);
-            
+
             // Should have at least basic compilation criteria
             assert.ok(
                 allCriteria.some(c => c.toLowerCase().includes('compile') || c.toLowerCase().includes('error')),
@@ -305,8 +302,8 @@ suite('PhaseGenerator Test Suite', () => {
 
             const allRequirements = result.phases.flatMap(p => p.requirements).join(' ').toLowerCase();
             assert.ok(
-                allRequirements.includes('login') || 
-                allRequirements.includes('register') || 
+                allRequirements.includes('login') ||
+                allRequirements.includes('register') ||
                 allRequirements.includes('auth'),
                 'Should capture authentication features'
             );
@@ -318,11 +315,11 @@ suite('PhaseGenerator Test Suite', () => {
             `;
             const result = await generator.generatePhases(requirement);
 
-            const hasPaymentPhase = result.phases.some(p => 
+            const hasPaymentPhase = result.phases.some(p =>
                 p.name.toLowerCase().includes('payment') ||
                 p.requirements.some(r => r.toLowerCase().includes('payment') || r.toLowerCase().includes('checkout'))
             );
-            
+
             assert.ok(hasPaymentPhase, 'Should detect payment features');
         });
 

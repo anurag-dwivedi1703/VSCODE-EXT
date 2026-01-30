@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI, Content, GenerateContentRequest, Part, Tool } from '@google/generative-ai';
+import { GoogleGenerativeAI, Part } from '@google/generative-ai';
 
 export interface ISession {
     sendMessage(prompt: string | Part[]): Promise<{

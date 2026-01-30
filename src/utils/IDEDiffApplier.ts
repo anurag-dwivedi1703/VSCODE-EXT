@@ -108,7 +108,7 @@ export class IDEDiffApplier {
         const fullText = document.getText();
 
         // Strategy 1: Exact match
-        let matchIndex = fullText.indexOf(searchContent);
+        const matchIndex = fullText.indexOf(searchContent);
         if (matchIndex !== -1) {
             const startPos = document.positionAt(matchIndex);
             const endPos = document.positionAt(matchIndex + searchContent.length);

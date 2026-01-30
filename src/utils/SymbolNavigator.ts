@@ -78,7 +78,7 @@ export class SymbolNavigator {
             /(?:interface|type)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/g,
             // Python patterns
             /def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g,
-            /class\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*[:\(]/g,
+            /class\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*[:(]/g,
         ];
 
         for (const pattern of patterns) {
@@ -146,7 +146,7 @@ export class SymbolNavigator {
     private calculateConfidence(
         symbol: vscode.DocumentSymbol,
         codeSnippet: string,
-        matchedName: string
+        _matchedName: string
     ): number {
         let confidence = 0.5; // Base confidence for name match
 

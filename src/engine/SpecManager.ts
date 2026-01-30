@@ -1,4 +1,3 @@
-import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -309,15 +308,15 @@ NO_UPDATE_NEEDED`;
      * Empty workspaces don't need a constitution.
      */
     isWorkspaceEmpty(): boolean {
-        if (!this._workspaceRoot) return true;
+        if (!this._workspaceRoot) { return true; }
 
         try {
             const entries = fs.readdirSync(this._workspaceRoot);
             // Filter out hidden files/folders and common non-code items
             const meaningfulEntries = entries.filter(entry => {
-                if (entry.startsWith('.')) return false;
-                if (entry === 'node_modules') return false;
-                if (entry === '.git') return false;
+                if (entry.startsWith('.')) { return false; }
+                if (entry === 'node_modules') { return false; }
+                if (entry === '.git') { return false; }
                 return true;
             });
             return meaningfulEntries.length === 0;

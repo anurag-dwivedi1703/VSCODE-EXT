@@ -85,7 +85,7 @@ export class DiffLogger {
      * Write a log entry to the current day's log file
      */
     public log(entry: DiffLogEntry): void {
-        if (!this.enabled) return;
+        if (!this.enabled) {return;}
 
         try {
             const logFile = this.getLogFilePath();
@@ -355,14 +355,14 @@ export function findBestMatch(
     fileContent: string,
     windowPadding: number = 50
 ): { text: string; similarity: number; position: number } | null {
-    if (!searchContent || !fileContent) return null;
+    if (!searchContent || !fileContent) {return null;}
 
     const searchLines = searchContent.split('\n');
     const fileLines = fileContent.split('\n');
 
     // For performance, limit to first 5 lines of search for matching
     const searchFirstLines = searchLines.slice(0, 5).join('\n').trim();
-    if (!searchFirstLines) return null;
+    if (!searchFirstLines) {return null;}
 
     let bestMatch = { text: '', similarity: 0, position: 0 };
 
@@ -399,18 +399,18 @@ export function findBestMatch(
  * Uses a simple token overlap approach for performance
  */
 function calculateSimilarity(a: string, b: string): number {
-    if (!a || !b) return 0;
-    if (a === b) return 1;
+    if (!a || !b) {return 0;}
+    if (a === b) {return 1;}
 
     // Tokenize by splitting on whitespace and special chars
     const tokensA = new Set(a.toLowerCase().split(/[\s\W]+/).filter(t => t.length > 2));
     const tokensB = new Set(b.toLowerCase().split(/[\s\W]+/).filter(t => t.length > 2));
 
-    if (tokensA.size === 0 || tokensB.size === 0) return 0;
+    if (tokensA.size === 0 || tokensB.size === 0) {return 0;}
 
     let intersection = 0;
     for (const token of tokensA) {
-        if (tokensB.has(token)) intersection++;
+        if (tokensB.has(token)) {intersection++;}
     }
 
     // Jaccard similarity

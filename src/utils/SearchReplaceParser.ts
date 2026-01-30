@@ -12,7 +12,7 @@
  * >>>>>>> REPLACE
  */
 
-import { DiffLogger, validateDiffBlock, findBestMatch, ValidationIssue } from './DiffLogger';
+import { DiffLogger, validateDiffBlock, ValidationIssue } from './DiffLogger';
 
 export interface SearchReplaceBlock {
     searchContent: string;
@@ -183,7 +183,7 @@ export function parseSearchReplaceBlocks(
  */
 export function findSearchBlock(fileContent: string, searchContent: string): { index: number; matchLength: number } | null {
     // Strategy 1: Try exact match first (fastest)
-    let index = fileContent.indexOf(searchContent);
+    const index = fileContent.indexOf(searchContent);
     if (index !== -1) {
         return { index, matchLength: searchContent.length };
     }
@@ -376,7 +376,7 @@ export function containsSearchReplaceBlocks(text: string): boolean {
 export function extractFilePath(text: string): string | null {
     // Look for path before the first SEARCH marker
     const searchIndex = text.indexOf('<<<<<<< SEARCH');
-    if (searchIndex === -1) return null;
+    if (searchIndex === -1) { return null; }
 
     const textBefore = text.slice(0, searchIndex);
 

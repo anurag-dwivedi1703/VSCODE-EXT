@@ -99,7 +99,7 @@ export const BUILTIN_SECRET_PATTERNS: SecretPattern[] = [
     // Generic API key assignment
     {
         name: 'Generic API Key Assignment',
-        pattern: /(?:api_?key|apiKey|API_KEY)\s*[:=]\s*["'][a-zA-Z0-9_\-]{16,}["']/gi,
+        pattern: /(?:api_?key|apiKey|API_KEY)\s*[:=]\s*["'][a-zA-Z0-9_-]{16,}["']/gi,
         severity: 'medium',
         suggestion: 'Use process.env.API_KEY instead'
     },

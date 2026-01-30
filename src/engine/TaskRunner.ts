@@ -105,7 +105,7 @@ export class TaskRunner {
     // Approval control methods for Agent Decides mode
     public approveReview(taskId: string, feedback?: string) {
         const task = this.tasks.get(taskId);
-        if (!task || task.status !== 'awaiting-approval') return;
+        if (!task || task.status !== 'awaiting-approval') { return; }
 
         // Clear awaiting state
         task.awaitingApproval = undefined;
@@ -132,7 +132,7 @@ export class TaskRunner {
 
     public rejectReview(taskId: string) {
         const task = this.tasks.get(taskId);
-        if (!task) return;
+        if (!task) { return; }
 
         task.awaitingApproval = undefined;
         task.status = 'failed';
@@ -152,7 +152,7 @@ export class TaskRunner {
 
     public approveCommand(taskId: string) {
         const task = this.tasks.get(taskId);
-        if (!task || task.status !== 'awaiting-approval') return;
+        if (!task || task.status !== 'awaiting-approval') { return; }
 
         task.awaitingApproval = undefined;
         task.status = 'executing';
@@ -172,7 +172,7 @@ export class TaskRunner {
 
     public declineCommand(taskId: string) {
         const task = this.tasks.get(taskId);
-        if (!task) return;
+        if (!task) { return; }
 
         const declinedCommand = task.awaitingApproval?.content || 'unknown command';
         task.awaitingApproval = undefined;
@@ -212,7 +212,7 @@ export class TaskRunner {
         riskReason?: string
     ): Promise<boolean> {
         const task = this.tasks.get(taskId);
-        if (!task) return false;
+        if (!task) { return false; }
 
         // Set task to awaiting approval state
         task.status = 'awaiting-approval';
@@ -501,7 +501,7 @@ export class TaskRunner {
         const isClaudeModel = newModel.startsWith('claude');
         const useCopilotForClaude = config.get<boolean>('useCopilotForClaude') || false;
 
-        let context = this.taskContexts.get(taskId);
+        const context = this.taskContexts.get(taskId);
         if (!context) {
             // Should not happen if task is running, but if it is paused/zombie, we might strictly need it?
             // If context is missing, we can't really update the client instance.
@@ -575,7 +575,7 @@ export class TaskRunner {
         }
 
         const oldMode = task.mode || 'planning';
-        if (oldMode === newMode) return;
+        if (oldMode === newMode) { return; }
 
         task.mode = newMode;
         task.logs.push(`**System**: Mode changed from ${oldMode} to ${newMode}`);
@@ -587,7 +587,7 @@ export class TaskRunner {
 
     private async processTask(taskId: string) {
         const task = this.tasks.get(taskId);
-        if (!task) return;
+        if (!task) { return; }
 
         try {
 
@@ -684,14 +684,14 @@ export class TaskRunner {
                         console.log(`[TaskRunner] Constitution: Using Copilot GPT for generation`);
                         const gptClient = new CopilotGPTClient();
                         const initialized = await gptClient.initialize();
-                        if (!initialized) throw new Error('Failed to initialize Copilot GPT for constitution');
+                        if (!initialized) { throw new Error('Failed to initialize Copilot GPT for constitution'); }
                         constitutionAI = gptClient;
                     } else if (isClaudeModel && useCopilotForClaude) {
                         // User selected Claude via Copilot
                         console.log(`[TaskRunner] Constitution: Using Copilot Claude for generation`);
                         const copilotClient = new CopilotClaudeClient();
                         const initialized = await copilotClient.initialize();
-                        if (!initialized) throw new Error('Failed to initialize Copilot Claude for constitution');
+                        if (!initialized) { throw new Error('Failed to initialize Copilot Claude for constitution'); }
                         constitutionAI = copilotClient;
                     } else if (isClaudeModel && claudeApiKey) {
                         // User selected Claude with API key - use Claude Opus 4
@@ -777,12 +777,12 @@ ${contextData}
                         // GPT-5-mini via Copilot
                         const gptClient = new CopilotGPTClient();
                         const initialized = await gptClient.initialize();
-                        if (!initialized) throw new Error('Failed to initialize Copilot GPT for drift detection');
+                        if (!initialized) { throw new Error('Failed to initialize Copilot GPT for drift detection'); }
                         driftAI = gptClient;
                     } else if (isClaudeModel && useCopilotForClaude) {
                         const copilotClient = new CopilotClaudeClient();
                         const initialized = await copilotClient.initialize();
-                        if (!initialized) throw new Error('Failed to initialize Copilot Claude for drift detection');
+                        if (!initialized) { throw new Error('Failed to initialize Copilot Claude for drift detection'); }
                         driftAI = copilotClient;
                     } else if (isClaudeModel && claudeApiKey) {
                         driftAI = new ClaudeClient(claudeApiKey, modelId);
@@ -842,21 +842,21 @@ ${contextData}
                 task.logs.push(`> [System]: Using GPT-5-mini via GitHub Copilot subscription`);
                 const gptClient = new CopilotGPTClient();
                 const initialized = await gptClient.initialize();
-                if (!initialized) throw new Error('Failed to init Copilot GPT');
+                if (!initialized) { throw new Error('Failed to init Copilot GPT'); }
                 taskContext.copilotGPT = gptClient;
             } else if (isClaudeModel) {
                 if (useCopilotForClaude) {
                     task.logs.push(`> [System]: Using Claude via GitHub Copilot subscription`);
                     const copilotClient = new CopilotClaudeClient();
                     const initialized = await copilotClient.initialize();
-                    if (!initialized) throw new Error('Failed to init Copilot Claude');
+                    if (!initialized) { throw new Error('Failed to init Copilot Claude'); }
                     taskContext.copilotClaude = copilotClient;
                 } else {
-                    if (!claudeApiKey) throw new Error('Claude API Key missing');
+                    if (!claudeApiKey) { throw new Error('Claude API Key missing'); }
                     taskContext.claude = new ClaudeClient(claudeApiKey, modelId);
                 }
             } else {
-                if (!geminiApiKey) throw new Error('Gemini API Key missing');
+                if (!geminiApiKey) { throw new Error('Gemini API Key missing'); }
                 taskContext.gemini = new GeminiClient(geminiApiKey, modelId);
             }
 
@@ -1062,7 +1062,7 @@ ${contextData}
 
     private async runExecutionLoop(taskId: string, chat: ISession, tools: AgentTools) {
         const task = this.tasks.get(taskId);
-        if (!task) return;
+        if (!task) { return; }
 
         let currentPrompt: string | any[] = "Start the mission.";
         // Reset or continue turns? We'll utilize a small loop for each 'batch' of reasoning
@@ -1110,8 +1110,8 @@ ${contextData}
                                         const base64Data = fileData.toString('base64');
                                         // Simple mime mapping
                                         let mimeType = 'image/png';
-                                        if (ext === '.jpg' || ext === '.jpeg') mimeType = 'image/jpeg';
-                                        if (ext === '.webp') mimeType = 'image/webp';
+                                        if (ext === '.jpg' || ext === '.jpeg') { mimeType = 'image/jpeg'; }
+                                        if (ext === '.webp') { mimeType = 'image/webp'; }
 
                                         promptParts.push({
                                             inlineData: {
@@ -1169,7 +1169,7 @@ ${contextData}
                         activeChat = copilotClient.startSession(continuationPrompt, task.mode === 'planning' ? 'high' : 'low');
                     } else if (isClaudeModel) {
                         const claudeApiKey = config.get<string>('claudeApiKey') || '';
-                        if (!claudeApiKey) throw new Error('Claude API key not configured');
+                        if (!claudeApiKey) { throw new Error('Claude API key not configured'); }
                         const claudeClient = new ClaudeClient(claudeApiKey, modelId);
                         if (this.taskContexts.has(taskId)) {
                             this.taskContexts.get(taskId)!.claude = claudeClient;
@@ -1177,7 +1177,7 @@ ${contextData}
                         activeChat = claudeClient.startSession(continuationPrompt, task.mode === 'planning' ? 'high' : 'low');
                     } else {
                         const geminiApiKey = config.get<string>('geminiApiKey') || '';
-                        if (!geminiApiKey) throw new Error('Gemini API key not configured');
+                        if (!geminiApiKey) { throw new Error('Gemini API key not configured'); }
                         const geminiClient = new GeminiClient(geminiApiKey, modelId);
                         if (this.taskContexts.has(taskId)) {
                             this.taskContexts.get(taskId)!.gemini = geminiClient;
@@ -1239,7 +1239,7 @@ ${contextData}
                                 case 'read_file':
                                     toolResult = await tools.readFile(args.path as string);
                                     break;
-                                case 'write_file':
+                                case 'write_file': {
                                     // DIFF TRACKING: Capture before content
                                     let beforeContent: string | null = null;
                                     const filePath = args.path as string;
@@ -1353,7 +1353,8 @@ ${contextData}
                                         }
                                     }
                                     break;
-                                case 'apply_diff':
+                                }
+                                case 'apply_diff': {
                                     // Token-efficient differential editing
                                     const diffPath = args.path as string;
                                     const diffContent = args.diff as string;
@@ -1401,11 +1402,12 @@ ${contextData}
                                         }
                                     }
                                     break;
+                                }
                                 case 'list_files':
                                     toolResult = await tools.listFiles(args.path as string);
                                     break;
 
-                                case 'run_command':
+                                case 'run_command': {
                                     const cmd = (args.command as string || '').trim();
                                     // Extract timeout from args, default to 15s, cap at 10min
                                     const waitTimeoutMs = Math.min((args.waitTimeoutMs as number) || 15000, 600000);
@@ -1431,15 +1433,17 @@ ${contextData}
                                         toolResult = await tools.runCommand(cmd, waitTimeoutMs);
                                     }
                                     break;
+                                }
                                 case 'reload_browser':
                                     this._onReloadBrowser.fire();
                                     toolResult = "Browser reload triggered.";
                                     break;
-                                case 'navigate_browser':
+                                case 'navigate_browser': {
                                     const navUrl = args.url as string || 'http://localhost:3000';
                                     this._onNavigateBrowser.fire(navUrl);
                                     toolResult = `Browser navigated to ${navUrl}.`;
                                     break;
+                                }
                                 case 'search_web':
                                     toolResult = await tools.searchWeb(args.query as string);
                                     break;
@@ -1579,7 +1583,7 @@ ${contextData}
                     const outputRegex = /(?:\*\*|#|\s)*MISSION SUMMARY(?:\*\*|#|:|\s)*([\s\S]*?)(?:(?:\*\*|#|\s)*MISSION COMPLETE|$)/i;
                     for (let j = task.logs.length - 1; j >= Math.max(0, task.logs.length - 10); j--) {
                         // Strip both Gemini and Claude prefixes
-                        let log = task.logs[j]
+                        const log = task.logs[j]
                             .replace(/\*\*Gemini\*\*:/g, '')
                             .replace(/\*\* Gemini \*\*:/g, '')
                             .replace(/\*\*Claude\*\*:/g, '')
@@ -1894,7 +1898,7 @@ ${contextData}
                         // Attempt to create a fallback search client
                         const config = vscode.workspace.getConfiguration('vibearchitect');
                         const geminiApiKey = config.get<string>('geminiApiKey') || '';
-                        if (geminiApiKey) searchClient = new GeminiClient(geminiApiKey);
+                        if (geminiApiKey) { searchClient = new GeminiClient(geminiApiKey); }
                     }
 
                     const tools = new AgentTools(
@@ -2033,7 +2037,6 @@ ${contextData}
         // ========================================
         const conversationHistory: string[] = [];
         let lastToolCall = '';
-        let lastToolResult = '';
 
         for (const log of task.logs) {
             // Extract AI (Claude/Gemini) responses
@@ -2163,7 +2166,7 @@ ${contextData}
         }
 
         // Pure math expressions (no code needed)
-        if (/^\d+[\s\+\-\*\/\(\)\^\d\.]+$/.test(lowerMsg.replace(/\s/g, ''))) {
+        if (/^\d+[\s+\-*/()^\d.]+$/.test(lowerMsg.replace(/\s/g, ''))) {
             return true;
         }
 

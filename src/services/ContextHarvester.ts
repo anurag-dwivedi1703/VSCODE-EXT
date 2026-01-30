@@ -1,4 +1,3 @@
-import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -217,8 +216,8 @@ export class ContextHarvester {
 
             // Sort: directories first, then files
             entries.sort((a, b) => {
-                if (a.isDirectory() && !b.isDirectory()) return -1;
-                if (!a.isDirectory() && b.isDirectory()) return 1;
+                if (a.isDirectory() && !b.isDirectory()) { return -1; }
+                if (!a.isDirectory() && b.isDirectory()) { return 1; }
                 return a.name.localeCompare(b.name);
             });
 

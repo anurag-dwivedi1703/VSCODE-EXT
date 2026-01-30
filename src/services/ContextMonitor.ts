@@ -343,7 +343,7 @@ export class ContextMonitor {
      * @returns Estimated token count
      */
     estimateTokens(text: string): number {
-        if (!text) return 0;
+        if (!text) {return 0;}
         
         // Base estimation: ~4 characters per token for English
         let estimate = Math.ceil(text.length / this.config.charsPerToken);

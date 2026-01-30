@@ -10,7 +10,7 @@ export class ClaudeClient {
         this.modelName = modelName;
     }
 
-    public startSession(systemPrompt: string, thinkingLevel: 'low' | 'high' = 'high'): ISession {
+    public startSession(systemPrompt: string, _thinkingLevel: 'low' | 'high' = 'high'): ISession {
         // Store full conversation history for multi-turn (includes tool_use blocks)
         const messages: Anthropic.MessageParam[] = [];
 

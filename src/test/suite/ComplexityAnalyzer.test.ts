@@ -5,12 +5,10 @@
  */
 
 import * as assert from 'assert';
-import { 
-    ComplexityAnalyzer, 
+import {
+    ComplexityAnalyzer,
     createComplexityAnalyzer,
-    ComplexityScore,
-    ComplexityLevel,
-    ComplexityRecommendation 
+    ComplexityLevel
 } from '../../services/ComplexityAnalyzer';
 
 suite('ComplexityAnalyzer Test Suite', () => {
@@ -300,12 +298,12 @@ suite('ComplexityAnalyzer Test Suite', () => {
 
             // With lower thresholds, same requirement should be rated higher
             const defaultResult = await analyzer.analyze(requirement);
-            
+
             // Custom analyzer should rate same or higher complexity level
             const levels: ComplexityLevel[] = ['LOW', 'MEDIUM', 'HIGH', 'EXTREME'];
             const customIndex = levels.indexOf(result.level);
             const defaultIndex = levels.indexOf(defaultResult.level);
-            
+
             assert.ok(customIndex >= defaultIndex, 'Custom thresholds should affect level classification');
         });
 

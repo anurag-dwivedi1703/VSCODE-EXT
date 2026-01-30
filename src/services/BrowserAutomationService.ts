@@ -51,11 +51,11 @@ async function installPlaywrightCore(): Promise<boolean> {
                     shell: true
                 });
 
-                let stdout = '';
+                let _stdout = '';
                 let stderr = '';
 
                 child.stdout?.on('data', (data) => {
-                    stdout += data.toString();
+                    _stdout += data.toString();
                 });
 
                 child.stderr?.on('data', (data) => {

@@ -10,9 +10,7 @@ import * as path from 'path';
 import * as os from 'os';
 import {
     PhaseStateManager,
-    createPhaseStateManager,
-    PhaseExecutionState,
-    PhaseResult
+    createPhaseStateManager
 } from '../../services/PhaseStateManager';
 import { PhaseGenerationResult, Phase } from '../../services/PhaseGenerator';
 

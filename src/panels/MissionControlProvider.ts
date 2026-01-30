@@ -2,12 +2,11 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { TaskRunner } from '../engine/TaskRunner';
-import { 
-    TaskRunnerPhaseIntegration, 
+import {
+    TaskRunnerPhaseIntegration,
     createTaskRunnerPhaseIntegration,
-    PhaseExecutionInfo 
+    PhaseExecutionInfo
 } from '../services/TaskRunnerPhaseIntegration';
-import { PhaseApprovalRequest } from '../services/PhaseExecutor';
 
 interface WorkspaceInfo {
     id: string;
@@ -24,7 +23,7 @@ export class MissionControlProvider {
     private _workspaces: WorkspaceInfo[] = [];
     private _context: vscode.ExtensionContext;
     private _isDisposed: boolean = false;
-    
+
     // Phase execution integration
     private _phaseIntegration: TaskRunnerPhaseIntegration;
     private _phasedExecutionEnabled: boolean = true;
@@ -292,7 +291,7 @@ export class MissionControlProvider {
 
             if (analysis.mode === 'phased' && analysis.phases) {
                 console.log(`[MissionControl] Splitting into ${analysis.phases.totalPhases} phases`);
-                
+
                 // Notify webview of phased execution
                 this.safePostMessage({
                     command: 'phasedExecutionStarted',
@@ -304,7 +303,7 @@ export class MissionControlProvider {
 
             // Prepend phase context to prompt if available
             const phaseContext = analysis.promptContext;
-            const modifiedPrompt = phaseContext 
+            const modifiedPrompt = phaseContext
                 ? `${phaseContext}\n\n---\n\n## USER REQUEST\n\n${prompt}`
                 : prompt;
 
@@ -351,7 +350,7 @@ export class MissionControlProvider {
         try {
             // Generate a temporary task ID for phase analysis
             const tempTaskId = `task-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-            
+
             // Prepare with phase analysis
             const { modifiedPrompt, isPhased } = await this._prepareTaskWithPhaseAnalysis(
                 tempTaskId,
@@ -447,14 +446,14 @@ export class MissionControlProvider {
                 const text = message.text;
 
                 switch (command) {
-                    case 'startTask':
+                    case 'startTask': {
                         // Pass workspaceId (path), mode, model, and chatId to task runner
                         const workspacePath = message.workspaceId;
                         const mode = message.mode;
                         const model = message.model;
                         const chatId = message.chatId;  // Chat-specific ID for mission folder isolation
                         console.log(`[MissionControl] Starting task in workspace: ${workspacePath} [${mode}] [${model}] [chatId: ${chatId || 'auto'}]`);
-                        
+
                         // Use phase-aware task start if enabled
                         if (this._phasedExecutionEnabled) {
                             this._startTaskWithPhaseAnalysis(text, workspacePath, mode, model, chatId);
@@ -462,6 +461,7 @@ export class MissionControlProvider {
                             this._taskRunner.startTask(text, workspacePath, mode, model, chatId);
                         }
                         return;
+                    }
                     case 'hello':
                         vscode.window.showInformationMessage(text);
                         return;
@@ -491,7 +491,7 @@ export class MissionControlProvider {
                     case 'getWorkspaces':
                         this.sendWorkspaces();
                         return;
-                    case 'getTasks':
+                    case 'getTasks': {
                         const tasks = this._taskRunner.getTasks();
                         tasks.forEach(t => {
                             this.safePostMessage({
@@ -502,6 +502,7 @@ export class MissionControlProvider {
                             });
                         });
                         return;
+                    }
                     case 'selectContext':
                         vscode.window.showOpenDialog({
                             canSelectFiles: true,
@@ -520,13 +521,14 @@ export class MissionControlProvider {
                     case 'replyToAgent':
                         this._taskRunner.replyToTask(message.taskId, message.text, message.attachments || []);
                         return;
-                    case 'saveBrowserComment':
+                    case 'saveBrowserComment': {
                         // Inject the comment into the chat stream as if it were a user message
                         // message: { command, taskId, comment, x, y, url }
                         const commentMsg = `[Browser Comment on ${message.url} at (${message.x}, ${message.y})]: ${message.comment}`;
                         this._taskRunner.replyToTask(message.taskId, commentMsg, []);
                         vscode.window.showInformationMessage('Comment added to agent context');
                         return;
+                    }
                     case 'requestRevert':
                         // message: { command, taskId, checkpointId }
                         this._taskRunner.revertTask(message.taskId, message.checkpointId);
@@ -633,7 +635,7 @@ export class MissionControlProvider {
                     case 'changeMode':
                         this._taskRunner.changeTaskMode(message.taskId, message.mode);
                         return;
-                    
+
                     // Phase Execution Handlers
                     case 'phaseApprove':
                         // User approved the current phase
@@ -651,7 +653,7 @@ export class MissionControlProvider {
                         // Toggle phased execution on/off
                         this.setPhasedExecutionEnabled(message.enabled);
                         return;
-                    case 'getPhaseInfo':
+                    case 'getPhaseInfo': {
                         // Request current phase info
                         const phaseInfo = this._phaseIntegration.getPhaseInfo(message.taskId);
                         if (phaseInfo) {
@@ -662,6 +664,7 @@ export class MissionControlProvider {
                             });
                         }
                         return;
+                    }
                 }
             },
             undefined,
