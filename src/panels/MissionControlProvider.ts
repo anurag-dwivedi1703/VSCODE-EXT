@@ -559,16 +559,17 @@ export class MissionControlProvider {
                         const taskId = message.taskId;
                         const task = this._taskRunner.getTask(taskId);
 
-                        if (task && task.worktreePath) {
+                        if (task) {
                             // Normalize path
                             let fsPath = message.path;
-                            if (!path.isAbsolute(fsPath)) {
+                            if (!path.isAbsolute(fsPath) && task.worktreePath) {
                                 fsPath = path.join(task.worktreePath, fsPath);
                             }
 
                             console.log(`[MissionControl] Previewing artifact: ${fsPath}`);
 
                             try {
+                                // Check original location first
                                 if (fs.existsSync(fsPath)) {
                                     const content = fs.readFileSync(fsPath, 'utf-8');
                                     this.safePostMessage({
@@ -577,14 +578,38 @@ export class MissionControlProvider {
                                         content: content
                                     });
                                 } else {
-                                    vscode.window.showErrorMessage(`File not found: ${fsPath}`);
-                                    console.error(`[MissionControl] Artifact not found at ${fsPath}`);
+                                    // Fallback: Check archived location for known artifact files
+                                    const fileName = path.basename(fsPath);
+                                    const artifactFiles = ['task.md', 'implementation_plan.md', 'mission_summary.md'];
+
+                                    if (artifactFiles.includes(fileName)) {
+                                        const archivedPath = path.join(
+                                            this._context.globalStorageUri.fsPath,
+                                            'missions', 'chats', taskId, fileName
+                                        );
+
+                                        if (fs.existsSync(archivedPath)) {
+                                            console.log(`[MissionControl] Found archived artifact: ${archivedPath}`);
+                                            const content = fs.readFileSync(archivedPath, 'utf-8');
+                                            this.safePostMessage({
+                                                command: 'fileContent',
+                                                path: archivedPath,
+                                                content: content
+                                            });
+                                        } else {
+                                            vscode.window.showErrorMessage(`File not found: ${fsPath}`);
+                                            console.error(`[MissionControl] Artifact not found at ${fsPath} or ${archivedPath}`);
+                                        }
+                                    } else {
+                                        vscode.window.showErrorMessage(`File not found: ${fsPath}`);
+                                        console.error(`[MissionControl] File not found at ${fsPath}`);
+                                    }
                                 }
                             } catch (err: any) {
                                 vscode.window.showErrorMessage(`Error reading file: ${err.message}`);
                             }
                         } else {
-                            vscode.window.showErrorMessage(`Cannot open artifact. Task or Worktree path missing.`);
+                            vscode.window.showErrorMessage(`Cannot open artifact. Task not found.`);
                         }
                         return;
                     }
