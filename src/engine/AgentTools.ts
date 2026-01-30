@@ -11,6 +11,8 @@ import { VisualComparisonService, ComparisonResult } from '../services/VisualCom
 import { detectSecrets, detectPII, DetectedSecret, DetectedPII } from '../ai/SecurityInstructions';
 import { parseSearchReplaceBlocks, applySearchReplace, containsSearchReplaceBlocks, ApplyResult, DiffLogContext } from '../utils/SearchReplaceParser';
 import { DiffLogger, findBestMatch } from '../utils/DiffLogger';
+import { getIDEDiffApplier } from '../utils/IDEDiffApplier';
+import { getSymbolNavigator } from '../utils/SymbolNavigator';
 
 export class AgentTools {
     private browserService: BrowserAutomationService | null = null;
@@ -171,8 +173,20 @@ export class AgentTools {
      * Apply a SEARCH/REPLACE diff to a file
      * This is much more token-efficient than rewriting entire files
      * 
+     * Enhanced with VS Code IDE integration:
+     * - Optional line hints: <<<<<<< SEARCH @@ 120-135 @@
+     * - Undo support via WorkspaceEdit
+     * - Symbol-aware fallback matching
+     * 
      * Format:
      * <<<<<<< SEARCH
+     * exact code to find
+     * =======
+     * replacement code
+     * >>>>>>> REPLACE
+     * 
+     * Or with line hints (faster for large files):
+     * <<<<<<< SEARCH @@ 120-135 @@
      * exact code to find
      * =======
      * replacement code
@@ -193,11 +207,9 @@ export class AgentTools {
             const fileUri = this.getUri(relativePath);
             const absolutePath = fileUri.fsPath;
 
-            // Read existing file content
-            let existingContent: string;
+            // Verify file exists
             try {
-                const uint8Array = await vscode.workspace.fs.readFile(fileUri);
-                existingContent = new TextDecoder().decode(uint8Array);
+                await vscode.workspace.fs.stat(fileUri);
             } catch (error: any) {
                 return `Error: Cannot apply diff - file does not exist: ${relativePath}. Use write_file to create new files.`;
             }
@@ -209,7 +221,7 @@ export class AgentTools {
                 source: source || 'unknown'
             };
 
-            // Parse SEARCH/REPLACE blocks from diff content (now with logging)
+            // Parse SEARCH/REPLACE blocks from diff content (now with line hints!)
             const blocks = parseSearchReplaceBlocks(diffContent, logContext);
             if (blocks.length === 0) {
                 // Log the failure
@@ -223,46 +235,13 @@ export class AgentTools {
 exact code to find
 =======
 replacement code
->>>>>>> REPLACE`;
+>>>>>>> REPLACE
+
+TIP: You can add line hints for faster matching:
+<<<<<<< SEARCH @@ 120-135 @@`;
             }
 
-            // Apply the diff
-            const result: ApplyResult = applySearchReplace(existingContent, blocks);
-
-            // Log match failures with similarity analysis
-            if (logger && result.failedBlocks.length > 0) {
-                result.failedBlocks.forEach((block, index) => {
-                    const bestMatch = findBestMatch(block.searchContent, existingContent);
-                    logger!.logMatchFailure(
-                        this.taskId,
-                        relativePath,
-                        index,
-                        block.searchContent,
-                        existingContent,
-                        bestMatch
-                    );
-                });
-            }
-
-            if (!result.success && result.appliedBlocks === 0) {
-                // Complete failure - log result
-                if (logger) {
-                    logger.logResult(
-                        this.taskId,
-                        relativePath,
-                        false,
-                        result.appliedBlocks,
-                        blocks.length,
-                        result.errors
-                    );
-                }
-                return `Error applying diff to ${relativePath}:\n` +
-                    result.errors.join('\n') +
-                    `\n\nTip: The SEARCH block must match the file content EXACTLY, including whitespace.` +
-                    `\n\n📋 Diagnostic logs written to: ${logger?.getLogDirectory() || '.antigravity/logs/'}`;
-            }
-
-            // Enforce locking
+            // Enforce locking BEFORE applying
             if (this.fileLockManager && this.taskId) {
                 if (!this.fileLockManager.acquireLock(absolutePath, this.taskId)) {
                     return `Error: File ${relativePath} is currently locked by another agent. Please wait.`;
@@ -270,23 +249,110 @@ replacement code
             }
 
             try {
-                // Write the updated content
-                const uint8Array = new TextEncoder().encode(result.newContent);
-                await vscode.workspace.fs.writeFile(fileUri, uint8Array);
+                // ============================================
+                // IDE-INTEGRATED DIFF APPLICATION
+                // Uses VS Code's WorkspaceEdit for undo support
+                // ============================================
+                const ideDiffApplier = getIDEDiffApplier();
+                const symbolNavigator = getSymbolNavigator();
+
+                let appliedBlocks = 0;
+                let failedBlocks: typeof blocks = [];
+                let errors: string[] = [];
+                let usedLineHintsCount = 0;
+
+                // Apply each block using IDE integration
+                for (const block of blocks) {
+                    const result = await ideDiffApplier.applyBlock(absolutePath, block);
+
+                    if (result.success) {
+                        appliedBlocks++;
+                        if (result.usedLineHints) {
+                            usedLineHintsCount++;
+                        }
+                    } else {
+                        // Tier 3: Try symbol-aware fallback
+                        let fallbackSuccess = false;
+                        try {
+                            const document = await vscode.workspace.openTextDocument(fileUri);
+                            const symbolMatch = await symbolNavigator.findNearSymbol(
+                                document,
+                                block.searchContent,
+                                0.5 // minimum confidence
+                            );
+
+                            if (symbolMatch) {
+                                // Found via symbol - apply using WorkspaceEdit
+                                let finalReplace = block.replaceContent;
+                                const docText = document.getText();
+                                if (docText.includes('\r\n') && !block.replaceContent.includes('\r\n')) {
+                                    finalReplace = block.replaceContent.replace(/\n/g, '\r\n');
+                                }
+
+                                const edit = new vscode.WorkspaceEdit();
+                                edit.replace(document.uri, symbolMatch.range, finalReplace);
+                                fallbackSuccess = await vscode.workspace.applyEdit(edit);
+
+                                if (fallbackSuccess) {
+                                    await document.save();
+                                    appliedBlocks++;
+                                    console.log(`[applyDiff] Block applied via symbol fallback (${symbolMatch.symbol.name}, confidence: ${symbolMatch.confidence.toFixed(2)})`);
+                                }
+                            }
+                        } catch (fallbackError) {
+                            console.warn('[applyDiff] Symbol fallback failed:', fallbackError);
+                        }
+
+                        if (!fallbackSuccess) {
+                            failedBlocks.push(block);
+                            errors.push(result.error || 'Unknown error');
+
+                            // Log match failure with similarity analysis
+                            if (logger) {
+                                const existingContent = (await vscode.workspace.fs.readFile(fileUri)).toString();
+                                const bestMatch = findBestMatch(block.searchContent, existingContent);
+                                logger.logMatchFailure(
+                                    this.taskId,
+                                    relativePath,
+                                    failedBlocks.length - 1,
+                                    block.searchContent,
+                                    existingContent,
+                                    bestMatch
+                                );
+                            }
+                        }
+                    }
+                }
+
+                // Check for complete failure
+                if (appliedBlocks === 0) {
+                    if (logger) {
+                        logger.logResult(
+                            this.taskId,
+                            relativePath,
+                            false,
+                            appliedBlocks,
+                            blocks.length,
+                            errors
+                        );
+                    }
+                    return `Error applying diff to ${relativePath}:\n` +
+                        errors.join('\n') +
+                        `\n\nTip: The SEARCH block must match the file content EXACTLY, including whitespace.` +
+                        `\nTip: Add line hints <<<<<<< SEARCH @@ lineStart-lineEnd @@ for more precise matching.` +
+                        `\n\n📋 Diagnostic logs written to: ${logger?.getLogDirectory() || '.antigravity/logs/'}`;
+                }
 
                 // POST-APPLY VALIDATION: Check for corruption and auto-repair
-                const corruption = this.detectFileCorruption(result.newContent, relativePath);
-                let finalContent = result.newContent;
-                let wasRepaired = false;
+                const updatedContent = (await vscode.workspace.fs.readFile(fileUri)).toString();
+                const corruption = this.detectFileCorruption(updatedContent, relativePath);
 
                 if (corruption.hasIssues) {
-                    const repaired = this.repairFileContent(result.newContent, corruption);
-                    if (repaired !== result.newContent) {
+                    const repaired = this.repairFileContent(updatedContent, corruption);
+                    if (repaired !== updatedContent) {
                         // Write repaired content
                         const repairedBytes = new TextEncoder().encode(repaired);
                         await vscode.workspace.fs.writeFile(fileUri, repairedBytes);
-                        finalContent = repaired;
-                        wasRepaired = true;
 
                         // Log the repair
                         if (logger) {
@@ -298,7 +364,7 @@ replacement code
                                 data: {
                                     repaired: true,
                                     issues: corruption.issues,
-                                    originalLength: result.newContent.length,
+                                    originalLength: updatedContent.length,
                                     repairedLength: repaired.length
                                 }
                             });
@@ -311,20 +377,24 @@ replacement code
                     logger.logResult(
                         this.taskId,
                         relativePath,
-                        result.success,
-                        result.appliedBlocks,
+                        failedBlocks.length === 0,
+                        appliedBlocks,
                         blocks.length,
-                        result.errors
+                        errors
                     );
                 }
 
                 // Build response
                 let response = `✅ Successfully applied diff to ${relativePath}\n`;
-                response += `   • Blocks applied: ${result.appliedBlocks}/${blocks.length}\n`;
+                response += `   • Blocks applied: ${appliedBlocks}/${blocks.length}\n`;
+                if (usedLineHintsCount > 0) {
+                    response += `   • Line hints used: ${usedLineHintsCount} (faster matching)\n`;
+                }
+                response += `   • Undo supported: Ctrl+Z to revert\n`;
 
-                if (result.failedBlocks.length > 0) {
-                    response += `   ⚠️ ${result.failedBlocks.length} block(s) failed to apply:\n`;
-                    result.errors.forEach((err, i) => {
+                if (failedBlocks.length > 0) {
+                    response += `   ⚠️ ${failedBlocks.length} block(s) failed to apply:\n`;
+                    errors.forEach((err, i) => {
                         response += `      ${i + 1}. ${err}\n`;
                     });
                     response += `   📋 See diagnostic logs: ${logger?.getLogDirectory() || '.antigravity/logs/'}\n`;
