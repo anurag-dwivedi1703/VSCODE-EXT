@@ -343,7 +343,7 @@ export class MissionControlProvider {
     private async _startTaskWithPhaseAnalysis(
         text: string,
         workspacePath: string,
-        mode: 'planning' | 'fast',
+        mode: 'planning' | 'fast' | 'refinement',
         model: string,
         chatId: string
     ): Promise<void> {

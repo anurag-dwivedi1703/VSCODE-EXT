@@ -17,6 +17,7 @@ import { FileLockManager } from '../services/FileLockManager';
 import { detectSecrets, detectPII } from '../ai/SecurityInstructions';
 import { SpecManager, SpecPhase } from './SpecManager';
 import { ContextHarvester } from '../services/ContextHarvester';
+import { getRefinementManager, skeletonizeDirectory } from './refinement';
 
 interface TaskContext {
     shadowRepo: ShadowRepository;
@@ -47,7 +48,7 @@ interface AgentTask {
     branchName?: string;
     userMessages: { text: string, attachments: string[] }[];
     artifacts: string[];
-    mode?: 'planning' | 'fast';
+    mode?: 'planning' | 'fast' | 'refinement';
     model?: string;
     checkpoints?: { id: string, message: string, timestamp: number }[];
     fileEdits?: FileEdit[];
@@ -199,6 +200,13 @@ export class TaskRunner {
 
         // Load tasks from disk
         this.loadTasks();
+
+        // Subscribe to refinement completion events
+        const refinementManager = getRefinementManager();
+        refinementManager.onRefinementComplete(({ taskId, artifact }) => {
+            console.log(`[TaskRunner] Refinement complete for task ${taskId}, transitioning to Planning`);
+            this.transitionFromRefinementToPlanning(taskId, artifact.rawMarkdown);
+        });
     }
 
     /**
@@ -459,7 +467,7 @@ export class TaskRunner {
         }
     }
 
-    public async startTask(prompt: string, worktreePath?: string, mode: 'planning' | 'fast' = 'planning', model: string = 'gemini-3-pro-preview', chatId?: string, displayPrompt?: string): Promise<string> {
+    public async startTask(prompt: string, worktreePath?: string, mode: 'planning' | 'fast' | 'refinement' = 'planning', model: string = 'gemini-3-pro-preview', chatId?: string, displayPrompt?: string): Promise<string> {
         const taskId = `agent-${Date.now()}`;
         const task: AgentTask = {
             id: taskId,
@@ -565,9 +573,9 @@ export class TaskRunner {
     }
 
     /**
-     * Change task mode between 'planning' and 'fast'
+     * Change task mode between 'planning', 'fast', and 'refinement'
      */
-    public changeTaskMode(taskId: string, newMode: 'planning' | 'fast') {
+    public changeTaskMode(taskId: string, newMode: 'planning' | 'fast' | 'refinement') {
         const task = this.tasks.get(taskId);
         if (!task) {
             console.log(`[TaskRunner] changeTaskMode: task ${taskId} not found`);
@@ -583,6 +591,47 @@ export class TaskRunner {
         this._onTaskUpdate.fire({ taskId, task });
         this.saveTask(task);
         console.log(`[TaskRunner] Task ${taskId} mode changed to ${newMode}`);
+    }
+
+    /**
+     * Transition from Refinement mode to Planning mode after PRD approval.
+     * Updates the task prompt with the PRD content and restarts processing.
+     */
+    public async transitionFromRefinementToPlanning(taskId: string, prdContent: string): Promise<void> {
+        const task = this.tasks.get(taskId);
+        if (!task) {
+            console.error(`[TaskRunner] transitionFromRefinementToPlanning: task ${taskId} not found`);
+            return;
+        }
+
+        console.log(`[TaskRunner] Transitioning task ${taskId} from Refinement to Planning mode`);
+
+        // Change mode to planning
+        task.mode = 'planning';
+
+        // Prepend PRD to prompt for the planning phase
+        const originalPrompt = task.displayPrompt || task.prompt;
+        task.prompt = `## Approved Product Requirement Document (PRD)
+
+The following PRD has been approved by the user after requirement refinement. Implement it exactly as specified.
+
+${prdContent}
+
+---
+
+## Original User Request
+${originalPrompt}`;
+
+        // Update status and log
+        task.status = 'pending';
+        task.logs.push('\n**System**: 🎯 PRD Approved! Transitioning to Planning Mode for implementation...');
+        task.logs.push('\n---\n');
+
+        this._onTaskUpdate.fire({ taskId, task });
+        this.saveTask(task);
+
+        // Restart processing in planning mode
+        this.processTask(taskId);
     }
 
     private async processTask(taskId: string) {
@@ -2179,7 +2228,7 @@ ${contextData}
      * Build mode-specific workflow instructions for the AI agent.
      * Used by both processTask() and replyToTask() for consistency.
      */
-    private buildModeWorkflow(mode: 'planning' | 'fast', isTrivial: boolean): string {
+    private buildModeWorkflow(mode: 'planning' | 'fast' | 'refinement', isTrivial: boolean): string {
         // Trivial requests skip planning regardless of mode
         if (isTrivial) {
             return `
@@ -2187,6 +2236,27 @@ WORKFLOW (TRIVIAL REQUEST):
 - This is a simple question/search/calculation. Answer directly without creating files.
 - Do NOT create '.vibearchitect/task.md' or '.vibearchitect/implementation_plan.md' for this request.
 - Use tools only if needed (e.g., search_web for research questions).
+            `.trim();
+        }
+
+        if (mode === 'refinement') {
+            // Refinement mode: defer to RefinementManager for multi-turn clarification
+            return `
+WORKFLOW (REFINEMENT MODE):
+⚠️ REFINEMENT MODE ACTIVE - This request will go through requirements clarification.
+
+The Refinement Mode uses a multi-agent loop to clarify requirements before coding:
+1. ANALYST: Ask targeted questions to understand requirements
+2. CRITIC: Review the draft PRD for completeness
+3. REFINER: Produce a detailed specification
+
+During this mode:
+- You will ask clarifying questions about the user's requirements
+- Focus on Entity Extraction, Attribute Verification, and Relationship Mapping
+- Once requirements are clear, produce a PRD (Product Requirement Document)
+- After PRD approval, transition to PLANNING mode for implementation
+
+Do NOT write code in refinement mode. Focus only on requirements clarification.
             `.trim();
         }
 

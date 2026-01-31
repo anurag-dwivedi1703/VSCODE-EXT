@@ -437,11 +437,21 @@ function App() {
 
     const activeAgents = dynamicAgents;
     // State for New Agent Composer
-    const [composerMode, setComposerMode] = useState<'planning' | 'fast'>('planning');
+    const [composerMode, setComposerMode] = useState<'planning' | 'fast' | 'refinement'>('planning');
     const [composerModel, setComposerModel] = useState<string>('gemini-3-pro-preview');
+    // Track if refinement mode has been used in this chat (prevents reuse in replyToTask)
+    const [refinementUsed, setRefinementUsed] = useState(false);
 
     const handleStartTask = (prompt: string) => {
         if (!prompt.trim()) return;
+
+        // Mark refinement as used if selected, then switch to planning for future messages
+        if (composerMode === 'refinement') {
+            setRefinementUsed(true);
+            // After starting refinement, default to planning for follow-ups
+            setComposerMode('planning');
+        }
+
         vscode.postMessage({
             command: 'startTask',
             text: prompt,
@@ -1146,6 +1156,20 @@ function App() {
                                     <div className="control-group">
                                         <div className="control-label">Mode</div>
                                         <div className="mode-selector">
+                                            <div
+                                                className={`mode-option ${composerMode === 'refinement' ? 'selected' : ''} ${refinementUsed ? 'disabled' : ''}`}
+                                                onClick={() => !refinementUsed && setComposerMode('refinement')}
+                                                title={refinementUsed
+                                                    ? "Refinement already used for this chat. Start a new chat to use Refinement again."
+                                                    : "Agent clarifies requirements before planning. Best for ambiguous or complex tasks."}
+                                                style={refinementUsed ? { opacity: 0.5, cursor: 'not-allowed' } : {}}
+                                            >
+                                                <span className="mode-icon">🧠</span>
+                                                <div className="mode-info">
+                                                    <div className="mode-title">Refinement {refinementUsed && '✓'}</div>
+                                                    <div className="mode-desc">{refinementUsed ? 'Already used in this chat' : 'Clarify requirements first. Best for ambiguous tasks.'}</div>
+                                                </div>
+                                            </div>
                                             <div
                                                 className={`mode-option ${composerMode === 'planning' ? 'selected' : ''}`}
                                                 onClick={() => setComposerMode('planning')}
