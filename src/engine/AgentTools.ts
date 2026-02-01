@@ -250,28 +250,30 @@ TIP: You can add line hints for faster matching:
 
             try {
                 // ============================================
-                // IDE-INTEGRATED DIFF APPLICATION
-                // Uses VS Code's WorkspaceEdit for undo support
+                // IDE-INTEGRATED DIFF APPLICATION (BATCHED)
+                // Uses VS Code's WorkspaceEdit for:
+                // - Single atomic edit (all blocks applied at once)
+                // - Single undo step (Ctrl+Z undoes all changes)
+                // - No offset drift (blocks sorted by position descending)
                 // ============================================
                 const ideDiffApplier = getIDEDiffApplier();
                 const symbolNavigator = getSymbolNavigator();
 
-                let appliedBlocks = 0;
-                const failedBlocks: typeof blocks = [];
-                const errors: string[] = [];
-                let usedLineHintsCount = 0;
+                // PHASE 1: Try batched application first (most reliable)
+                const batchResult = await ideDiffApplier.applyBlocks(absolutePath, blocks);
+                
+                let appliedBlocks = batchResult.appliedBlocks;
+                let failedBlocks = batchResult.failedBlocks;
+                let errors = batchResult.errors;
+                let usedLineHintsCount = batchResult.usedLineHintsCount;
 
-                // Apply each block using IDE integration
-                for (const block of blocks) {
-                    const result = await ideDiffApplier.applyBlock(absolutePath, block);
+                // PHASE 2: For any failed blocks, try symbol-aware fallback
+                if (failedBlocks.length > 0) {
+                    console.log(`[applyDiff] ${failedBlocks.length} blocks failed batch apply, trying symbol fallback...`);
+                    const stillFailed: typeof blocks = [];
+                    const fallbackErrors: string[] = [];
 
-                    if (result.success) {
-                        appliedBlocks++;
-                        if (result.usedLineHints) {
-                            usedLineHintsCount++;
-                        }
-                    } else {
-                        // Tier 3: Try symbol-aware fallback
+                    for (const block of failedBlocks) {
                         let fallbackSuccess = false;
                         try {
                             const document = await vscode.workspace.openTextDocument(fileUri);
@@ -304,7 +306,7 @@ TIP: You can add line hints for faster matching:
                         }
 
                         if (!fallbackSuccess) {
-                            failedBlocks.push(block);
+                            stillFailed.push(block);
 
                             // Enhanced error with similarity feedback
                             const existingContent = new TextDecoder().decode(await vscode.workspace.fs.readFile(fileUri));
@@ -316,8 +318,7 @@ TIP: You can add line hints for faster matching:
                                 const lineNum = document.positionAt(bestMatch.position).line + 1;
                                 const similarityPct = Math.round(bestMatch.similarity * 100);
 
-                                let errorMsg = result.error || 'SEARCH content not found';
-                                errorMsg += ` (${similarityPct}% similar match at line ${lineNum})`;
+                                let errorMsg = `SEARCH content not found (${similarityPct}% similar match at line ${lineNum})`;
 
                                 if (similarityPct >= 80) {
                                     errorMsg += `. The code may have changed slightly. Here's what I found:\n\`\`\`\n${bestMatch.text.slice(0, 200)}${bestMatch.text.length > 200 ? '...' : ''}\n\`\`\``;
@@ -325,25 +326,29 @@ TIP: You can add line hints for faster matching:
                                     errorMsg += `. Found partial match but significant differences exist.`;
                                 }
 
-                                errors.push(errorMsg);
+                                fallbackErrors.push(errorMsg);
+
+                                // Log match failure with similarity analysis
+                                if (logger) {
+                                    logger.logMatchFailure(
+                                        this.taskId,
+                                        relativePath,
+                                        stillFailed.length - 1,
+                                        block.searchContent,
+                                        existingContent,
+                                        bestMatch
+                                    );
+                                }
                             } else {
                                 // No similar content found
-                                errors.push((result.error || 'Unknown error') + '. No similar content found in file - verify the SEARCH block is exact.');
-                            }
-
-                            // Log match failure with similarity analysis
-                            if (logger && bestMatch) {
-                                logger.logMatchFailure(
-                                    this.taskId,
-                                    relativePath,
-                                    failedBlocks.length - 1,
-                                    block.searchContent,
-                                    existingContent,
-                                    bestMatch
-                                );
+                                fallbackErrors.push('SEARCH content not found. No similar content found in file - verify the SEARCH block is exact.');
                             }
                         }
                     }
+
+                    // Update with fallback results
+                    failedBlocks = stillFailed;
+                    errors = fallbackErrors;
                 }
 
                 // Check for complete failure
@@ -856,7 +861,7 @@ TIP: You can add line hints for faster matching:
                     const config = vscode.workspace.getConfiguration('vibearchitect');
                     const geminiApiKey = config.get<string>('geminiApiKey') || '';
                     if (geminiApiKey) {
-                        const { GeminiClient } = await import('../ai/GeminiClient.js');
+                        const { GeminiClient } = await import('../ai/GeminiClient');
                         visionClient = new GeminiClient(geminiApiKey, 'gemini-2.0-flash');
                         console.log('[AgentTools] Created on-demand Gemini API client for vision analysis');
                     }

@@ -165,10 +165,16 @@ export class IDEDiffApplier {
             };
         }
 
-        // Strategy 3: Fuzzy matching with 5% tolerance
-        const fuzzyResult = findFuzzyMatch(fullText, searchContent, 0.05);
-        if (fuzzyResult && fuzzyResult.similarity >= 0.95) {
-            console.log(`[IDEDiffApplier] Fuzzy match found: ${describeFuzzyMatch(fuzzyResult.similarity)} (${(fuzzyResult.similarity * 100).toFixed(1)}%)`);
+        // Strategy 3: Fuzzy matching with adaptive tolerance
+        // Start with 10% tolerance (handles minor whitespace/comment changes)
+        // For short searches (<100 chars), allow up to 15% tolerance
+        const baseContentLength = searchContent.length;
+        const adaptiveTolerance = baseContentLength < 100 ? 0.15 : 0.10;
+        const minSimilarity = 1 - adaptiveTolerance;
+
+        const fuzzyResult = findFuzzyMatch(fullText, searchContent, adaptiveTolerance);
+        if (fuzzyResult && fuzzyResult.similarity >= minSimilarity) {
+            console.log(`[IDEDiffApplier] Fuzzy match found: ${describeFuzzyMatch(fuzzyResult.similarity)} (${(fuzzyResult.similarity * 100).toFixed(1)}%, tolerance: ${(adaptiveTolerance * 100).toFixed(0)}%)`);
             const startPos = document.positionAt(fuzzyResult.index);
             const endPos = document.positionAt(fuzzyResult.index + fuzzyResult.matchLength);
             return {
@@ -225,7 +231,7 @@ export class IDEDiffApplier {
                 finalReplace = block.replaceContent.replace(/\n/g, '\r\n');
             }
 
-            // Apply using WorkspaceEdit (supports undo!)
+            // Apply using WorkspaceEdit (supports undo)
             const edit = new vscode.WorkspaceEdit();
             edit.replace(document.uri, findResult.range, finalReplace);
 
@@ -358,7 +364,7 @@ export class IDEDiffApplier {
                 batchEdit.replace(document.uri, r.range, r.content);
             }
 
-            // Phase 4: Apply atomically (single undo step!)
+            // Phase 4: Apply atomically (single undo step)
             const success = await vscode.workspace.applyEdit(batchEdit);
 
             if (!success) {
@@ -392,6 +398,106 @@ export class IDEDiffApplier {
                 usedLineHintsCount: 0
             };
         }
+    }
+
+    /**
+     * Preview diff using VS Code's native diff editor
+     * This shows a side-by-side comparison before applying changes
+     * 
+     * @param absolutePath - Path to the file being modified
+     * @param blocks - The SEARCH/REPLACE blocks to preview
+     * @returns True if user can see the diff, false on error
+     */
+    async previewDiff(absolutePath: string, blocks: SearchReplaceBlock[]): Promise<boolean> {
+        try {
+            const document = await this.openDocument(absolutePath);
+            const originalContent = document.getText();
+            
+            // Apply blocks to create preview content (in memory only)
+            let previewContent = originalContent;
+            for (const block of blocks) {
+                const normalizedContent = previewContent.replace(/\r\n/g, '\n');
+                const normalizedSearch = block.searchContent.replace(/\r\n/g, '\n');
+                
+                const matchIndex = normalizedContent.indexOf(normalizedSearch);
+                if (matchIndex !== -1) {
+                    // Convert normalized index to original
+                    let originalIndex = 0;
+                    let normalizedPos = 0;
+                    while (normalizedPos < matchIndex && originalIndex < previewContent.length) {
+                        if (previewContent[originalIndex] === '\r' && previewContent[originalIndex + 1] === '\n') {
+                            originalIndex += 2;
+                            normalizedPos += 1;
+                        } else {
+                            originalIndex += 1;
+                            normalizedPos += 1;
+                        }
+                    }
+                    
+                    // Find original match length
+                    let matchLen = 0;
+                    normalizedPos = 0;
+                    let i = originalIndex;
+                    while (normalizedPos < normalizedSearch.length && i < previewContent.length) {
+                        if (previewContent[i] === '\r' && previewContent[i + 1] === '\n' && normalizedSearch[normalizedPos] === '\n') {
+                            matchLen += 2;
+                            normalizedPos += 1;
+                            i += 2;
+                        } else {
+                            matchLen += 1;
+                            normalizedPos += 1;
+                            i += 1;
+                        }
+                    }
+                    
+                    // Preserve line endings
+                    let replacement = block.replaceContent;
+                    if (previewContent.includes('\r\n') && !replacement.includes('\r\n')) {
+                        replacement = replacement.replace(/\n/g, '\r\n');
+                    }
+                    
+                    previewContent = previewContent.slice(0, originalIndex) + replacement + previewContent.slice(originalIndex + matchLen);
+                }
+            }
+            
+            // Create virtual documents for diff view
+            const originalUri = vscode.Uri.parse(`antigravity-diff-original:${absolutePath}`);
+            const previewUri = vscode.Uri.parse(`antigravity-diff-preview:${absolutePath}`);
+            
+            // Register content providers if not already done
+            const originalProvider = new (class implements vscode.TextDocumentContentProvider {
+                provideTextDocumentContent(): string { return originalContent; }
+            })();
+            const previewProvider = new (class implements vscode.TextDocumentContentProvider {
+                provideTextDocumentContent(): string { return previewContent; }
+            })();
+            
+            const disposable1 = vscode.workspace.registerTextDocumentContentProvider('antigravity-diff-original', originalProvider);
+            const disposable2 = vscode.workspace.registerTextDocumentContentProvider('antigravity-diff-preview', previewProvider);
+            
+            // Show diff editor
+            const fileName = absolutePath.split(/[/\\]/).pop() || 'file';
+            await vscode.commands.executeCommand('vscode.diff', originalUri, previewUri, `${fileName} (Preview Changes)`);
+            
+            // Cleanup providers after a delay
+            setTimeout(() => {
+                disposable1.dispose();
+                disposable2.dispose();
+            }, 60000); // Keep for 1 minute
+            
+            return true;
+        } catch (error: any) {
+            console.error('[IDEDiffApplier] Preview failed:', error.message);
+            return false;
+        }
+    }
+
+    /**
+     * Get token estimate for a file (rough approximation)
+     * Uses ~4 characters per token as heuristic
+     */
+    estimateTokens(content: string): number {
+        return Math.ceil(content.length / 4);
     }
 }
 

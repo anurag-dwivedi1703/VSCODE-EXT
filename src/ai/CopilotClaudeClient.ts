@@ -163,7 +163,7 @@ new replacement code
    The [APPLY_DIFF: path]...[END_DIFF] format is intentionally NOT JSON to avoid escaping issues.
    Do NOT wrap apply_diff in \`\`\`tool_call blocks!
 
-For MULTIPLE changes in one file, use multiple SEARCH/REPLACE blocks:
+For MULTIPLE changes in one file, use multiple SEARCH/REPLACE blocks in ONE apply_diff call:
 
 [APPLY_DIFF: src/file.ts]
 <<<<<<< SEARCH
@@ -179,10 +179,19 @@ second replacement
 >>>>>>> REPLACE
 [END_DIFF]
 
+⚡ PERFORMANCE TIP: Use line hints for faster matching on large files:
+<<<<<<< SEARCH @@ 120-135 @@
+code near lines 120-135
+=======
+replacement
+>>>>>>> REPLACE
+
 apply_diff Rules:
 1. SEARCH block must match file content EXACTLY (including whitespace and indentation)
 2. Include enough unique context (2-3 lines) to identify the exact location
 3. Before editing, ALWAYS read_file first to see exact current content
+4. BATCH ALL CHANGES to the same file in ONE apply_diff call (more reliable, single undo)
+5. For large files (>500 lines), add line hints @@ startLine-endLine @@
 
 ❌ WRONG - Never use write_file to modify existing files:
 \`\`\`tool_call
@@ -224,6 +233,14 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
         // Add system context as first user message (vscode.lm may not support system role)
         messages.push(vscode.LanguageModelChatMessage.User(`[SYSTEM CONTEXT]\n${systemPrompt}\n${toolCallInstructions}\n[END SYSTEM CONTEXT]`));
 
+        // Token tracking for context window management
+        const maxTokens = model?.maxInputTokens ?? 128000;
+        const responseReserve = 8000; // Reserve for model response
+        let estimatedTokensUsed = Math.ceil((systemPrompt.length + toolCallInstructions.length) / 4);
+
+        const estimateTokens = (text: string): number => Math.ceil(text.length / 4);
+        const getAvailableTokens = (): number => maxTokens - responseReserve - estimatedTokensUsed;
+
         return {
             sendMessage: async (prompt: string | any[]) => {
                 if (!model) {
@@ -256,6 +273,25 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
                     }
 
                     if (userMessage) {
+                        // Track token usage
+                        const messageTokens = estimateTokens(userMessage);
+                        estimatedTokensUsed += messageTokens;
+                        
+                        // Warn if approaching context limit (>80% usage)
+                        const utilizationPct = Math.round((estimatedTokensUsed / (maxTokens - responseReserve)) * 100);
+                        if (utilizationPct > 80) {
+                            console.warn(`[CopilotClaudeClient] ⚠️ Token usage at ${utilizationPct}% (${estimatedTokensUsed}/${maxTokens - responseReserve})`);
+                        }
+                        
+                        // Truncate message if it would exceed available tokens
+                        const available = getAvailableTokens();
+                        if (messageTokens > available && available > 1000) {
+                            const maxChars = available * 4;
+                            userMessage = userMessage.slice(0, maxChars - 100) + 
+                                '\n\n[MESSAGE TRUNCATED - context limit reached. Please complete current work before reading more files.]';
+                            console.warn(`[CopilotClaudeClient] Truncated message from ${messageTokens} to ${estimateTokens(userMessage)} tokens`);
+                        }
+                        
                         messages.push(vscode.LanguageModelChatMessage.User(userMessage));
                     }
 
@@ -294,6 +330,13 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
                     // ==================== END TRUNCATION RECOVERY ====================
 
                     // Add final (possibly recovered) response to history
+                    // Track response tokens for context window management
+                    const responseTokens = estimateTokens(responseText);
+                    estimatedTokensUsed += responseTokens;
+                    
+                    const finalUtilization = Math.round((estimatedTokensUsed / (maxTokens - responseReserve)) * 100);
+                    console.log(`[CopilotClaudeClient] Context: ${estimatedTokensUsed} tokens used (${finalUtilization}% of ${maxTokens})`);
+                    
                     messages.push(vscode.LanguageModelChatMessage.Assistant(responseText));
 
                     // ==================== PARSE TOOL CALLS ====================

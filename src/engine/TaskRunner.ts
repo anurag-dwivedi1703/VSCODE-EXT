@@ -18,6 +18,9 @@ import { detectSecrets, detectPII } from '../ai/SecurityInstructions';
 import { SpecManager, SpecPhase } from './SpecManager';
 import { ContextHarvester } from '../services/ContextHarvester';
 import { getRefinementManager, skeletonizeDirectory } from './refinement';
+import { DiffAggregator } from '../utils/DiffAggregator';
+import { TokenBudget, truncateFileIntelligently } from '../utils/TokenBudget';
+import { MissionFolderManager } from '../utils/MissionFolderManager';
 
 interface TaskContext {
     shadowRepo: ShadowRepository;
@@ -27,6 +30,8 @@ interface TaskContext {
     claude?: ClaudeClient;
     copilotClaude?: CopilotClaudeClient;
     copilotGPT?: CopilotGPTClient;  // GPT-5-mini via Copilot
+    diffAggregator?: DiffAggregator;  // Aggregates multiple diffs to same file
+    tokenBudget?: TokenBudget;  // Tracks context window usage
 }
 
 interface FileEdit {
@@ -236,7 +241,15 @@ export class TaskRunner {
             task.logs.push('> [Refinement]: Processing your feedback...');
             this._onTaskUpdate.fire({ taskId, task });
 
-            await refinementManager.handleUserMessage(sessionId, feedback);
+            try {
+                await refinementManager.handleUserMessage(sessionId, feedback);
+            } catch (err: unknown) {
+                const message = err instanceof Error ? err.message : String(err);
+                console.error('[TaskRunner] Refinement feedback failed:', err);
+                task.logs.push(`> [Refinement Error]: ${message}`);
+                task.status = 'failed';
+                this._onTaskUpdate.fire({ taskId, task });
+            }
         } else {
             console.error('[TaskRunner] No active refinement session found for task:', taskId);
             task.logs.push('> [Error]: Refinement session not found.');
@@ -649,7 +662,7 @@ export class TaskRunner {
 
     /**
      * Transition from Refinement mode to Planning mode after PRD approval.
-     * Updates the task prompt with the PRD content and restarts processing.
+     * Saves the PRD to .vibearchitect and updates the task for planning.
      */
     public async transitionFromRefinementToPlanning(taskId: string, prdContent: string): Promise<void> {
         const task = this.tasks.get(taskId);
@@ -663,11 +676,40 @@ export class TaskRunner {
         // Change mode to planning
         task.mode = 'planning';
 
+        // Save PRD to .vibearchitect folder for persistence and AI access
+        let prdRelativePath = '';
+        if (task.worktreePath) {
+            const chatId = task.chatId || 'default';
+            const missionFolderManager = new MissionFolderManager(task.worktreePath);
+            
+            // Get or create the mission folder for this chat
+            const missionFolder = missionFolderManager.getMissionFolder(chatId);
+            
+            // Save PRD to the mission folder
+            const prdFilePath = path.join(missionFolder, 'prd.md');
+            try {
+                fs.writeFileSync(prdFilePath, prdContent, 'utf-8');
+                prdRelativePath = path.relative(task.worktreePath, prdFilePath).replace(/\\/g, '/');
+                console.log(`[TaskRunner] Saved PRD to ${prdFilePath}`);
+                task.logs.push(`> [System]: PRD saved to ${prdRelativePath}`);
+                
+                // Update the current symlink to point to this mission folder
+                missionFolderManager.updateCurrentSymlink(missionFolder);
+                task.logs.push(`> [System]: Mission folder set to current: .vibearchitect/current/prd.md`);
+            } catch (error) {
+                console.error(`[TaskRunner] Failed to save PRD file: ${error}`);
+            }
+        }
+
         // Prepend PRD to prompt for the planning phase
         const originalPrompt = task.displayPrompt || task.prompt;
+        const prdReference = prdRelativePath 
+            ? `\n\n**IMPORTANT**: The full PRD is saved at \`.vibearchitect/current/prd.md\` (also at \`${prdRelativePath}\`). You MUST read this file first and implement according to its specifications.`
+            : '';
+        
         task.prompt = `## Approved Product Requirement Document (PRD)
 
-The following PRD has been approved by the user after requirement refinement. Implement it exactly as specified.
+The following PRD has been approved by the user after requirement refinement. Implement it exactly as specified.${prdReference}
 
 ${prdContent}
 
@@ -807,6 +849,8 @@ ${originalPrompt}`;
                     });
                 } else if (event.type === 'state-change') {
                     task.logs.push(`> [Refinement]: State → ${event.payload}`);
+                } else if (event.type === 'progress') {
+                    task.logs.push(`> [Refinement]: ${event.payload}`);
                 } else if (event.type === 'error') {
                     task.logs.push(`> [Refinement Error]: ${event.payload}`);
                 }
@@ -916,10 +960,33 @@ ${originalPrompt}`;
             await shadowRepo.initialize();
             const revertManager = new RevertManager(shadowRepo);
 
-            // Initialize Context
+            // Initialize Context with DiffAggregator for batched diff operations
+            const diffAggregator = new DiffAggregator(
+                workspaceRoot,
+                taskId,
+                // Callback to track file edits for UI
+                (filePath, beforeContent, afterContent) => {
+                    if (!task.fileEdits) {
+                        task.fileEdits = [];
+                    }
+                    task.fileEdits.push({
+                        path: filePath,
+                        beforeContent,
+                        afterContent,
+                        timestamp: Date.now(),
+                        checkpointId: task.checkpoints?.[task.checkpoints.length - 1]?.id
+                    });
+                    if (!task.artifacts.includes(filePath)) {
+                        task.artifacts.push(filePath);
+                        task.logs.push(`[Artifact Modified]: ${filePath}`);
+                    }
+                }
+            );
+
             const taskContext: TaskContext = {
                 shadowRepo,
-                revertManager
+                revertManager,
+                diffAggregator
             };
             this.taskContexts.set(taskId, taskContext);
 
@@ -1185,22 +1252,38 @@ ${contextData}
             When MODIFYING existing files, ALWAYS use apply_diff instead of write_file.
             
             apply_diff Format:
+            <<<<<<< SEARCH
             exact code to find (must match perfectly)
             =======
             replacement code
             >>>>>>> REPLACE
             
             Example - to change a function name:
-            apply_diff("src/utils.ts", "function oldName() {
+            apply_diff("src/utils.ts", "<<<<<<< SEARCH
+            function oldName() {
             =======
             function newName() {
             >>>>>>> REPLACE")
             
-            Rules for apply_diff:
-            - SEARCH block must match file content EXACTLY (including whitespace)
-            - Include enough context to make the match unique
-            - For multiple changes in the same file, use multiple SEARCH/REPLACE blocks
-            - Use write_file ONLY for creating NEW files or complete rewrites
+            === APPLY_DIFF BEST PRACTICES ===
+            1. SEARCH block must match file content EXACTLY (including whitespace and indentation)
+            2. Include 2-3 lines of unique context to ensure correct match location
+            3. BATCH ALL CHANGES to the same file in ONE apply_diff call:
+               <<<<<<< SEARCH
+               first change
+               =======
+               first replacement
+               >>>>>>> REPLACE
+               
+               <<<<<<< SEARCH
+               second change
+               =======
+               second replacement
+               >>>>>>> REPLACE
+            4. For large files (>300 lines), add line hints: <<<<<<< SEARCH @@ 120-135 @@
+            5. Use write_file ONLY for creating NEW files
+            6. ALWAYS read_file BEFORE apply_diff to see exact current content
+            7. If apply_diff fails, read the file again - content may have changed
             
             === SIMPLE PREVIEW (just for quick display to user) ===
             - reload_browser(): Reload the embedded preview pane. Use ONLY to show the user what you built.
@@ -1258,27 +1341,42 @@ ${contextData}
             if (task.mode === 'planning') {
                 systemPrompt += `
             CORE WORKFLOW(PLANNING MODE):
-            1. EXPLORE: Use list_files / read_file to understand the codebase.
-            2. PLAN(Mandatory):
-            - Create a file named '.vibearchitect/task.md'. This must be a Markdown checklist of steps (e.g., "- [ ] Step 1").
-                - Create a file named '.vibearchitect/implementation_plan.md'. This must detail your technical approach.
-            3. ACT: Use write_file / run_command to implement the plan.
-            4. UPDATE: After completing a step, OVERWRITE '.vibearchitect/task.md' to mark the item as done (e.g., "- [x] Step 1").
-            5. VERIFY (ATTEMPT):
-            - Run tests or verification scripts if possible.
-                - ** Web Apps **: You MUST start the server (e.g. 'npm run dev') and call 'reload_browser()' to refresh the internal preview.
-                - ** Check Ports **: Ensure you are viewing the correct port. If the preview shows old content, the old server might still be running. Kill it.
-                - Confirm the output is correct.
-                - If verification fails, note the failure but CONTINUE to the FINISH step.
-                - IMPORTANT: Verification failure should NOT block mission completion.
-            6. FINISH (ALWAYS REQUIRED):
-            - You MUST create a file named ".vibearchitect/mission_summary.md", REGARDLESS of verification outcome.
-            - Include:
-                - Summary of changes made
-                - Verification status (passed, failed, or skipped with reason)
-                - Any known issues or warnings
-                - Instructions for the user to verify manually if needed
-            - Answer with "MISSION COMPLETE" only after creating this file.
+            1. **CHECK FOR PRD** (Refinement Mode Output):
+               - First, check if a PRD file exists at '.vibearchitect/current/prd.md'.
+               - If a PRD exists, READ IT FIRST using read_file('.vibearchitect/current/prd.md').
+               - This is the APPROVED specification from refinement mode - you MUST implement it exactly.
+               - Your task.md and implementation_plan.md MUST implement the PRD requirements.
+               - If no PRD exists (file not found), proceed to EXPLORE.
+               
+            2. EXPLORE: Use list_files / read_file to understand the codebase.
+            
+            3. PLAN(Mandatory):
+               - Create '.vibearchitect/task.md' - a Markdown checklist of implementation steps.
+               - If PRD exists: Derive steps DIRECTLY from the PRD's functional requirements and acceptance criteria.
+               - Create '.vibearchitect/implementation_plan.md' - your technical approach.
+               - If PRD exists: Your plan MUST reference and align with the PRD specifications.
+               
+            4. ACT: Use write_file / run_command to implement the plan.
+            
+            5. UPDATE: After completing a step, OVERWRITE '.vibearchitect/task.md' to mark items done (e.g., "- [x] Step 1").
+            
+            6. VERIFY (ATTEMPT):
+               - Run tests or verification scripts if possible.
+               - ** Web Apps **: Start the server (e.g. 'npm run dev') and call 'reload_browser()' to refresh.
+               - ** Check Ports **: Ensure correct port. Kill old servers if preview shows stale content.
+               - If PRD exists: Verify against PRD's acceptance criteria.
+               - If verification fails, note it but CONTINUE to FINISH.
+               - IMPORTANT: Verification failure should NOT block mission completion.
+               
+            7. FINISH (ALWAYS REQUIRED):
+               - Create ".vibearchitect/mission_summary.md", REGARDLESS of verification outcome.
+               - Include:
+                   - Summary of changes made
+                   - Verification status (passed, failed, or skipped with reason)
+                   - If PRD was used: List which PRD requirements were implemented
+                   - Any known issues or warnings
+                   - Instructions for user to verify manually if needed
+               - Answer with "MISSION COMPLETE" only after creating this file.
             `;
             } else {
                 // FAST MODE
@@ -1521,9 +1619,28 @@ ${contextData}
                             }
 
                             switch (fnName) {
-                                case 'read_file':
-                                    toolResult = await tools.readFile(args.path as string);
+                                case 'read_file': {
+                                    const filePath = args.path as string;
+                                    let content = await tools.readFile(filePath);
+                                    
+                                    // Token-aware truncation for large files
+                                    // VS Code Copilot models typically have 128K-200K token limits
+                                    // Reserve ~60K tokens for context + response
+                                    const MAX_FILE_CHARS = 100000; // ~25K tokens at 4 chars/token
+                                    
+                                    if (!content.startsWith('Error') && content.length > MAX_FILE_CHARS) {
+                                        // Use intelligent truncation that preserves important parts
+                                        const originalLength = content.length;
+                                        content = truncateFileIntelligently(content, MAX_FILE_CHARS, filePath);
+                                        const truncatedLength = content.length;
+                                        
+                                        task.logs.push(`[TokenBudget] Truncated ${filePath}: ${Math.round(originalLength/1000)}KB → ${Math.round(truncatedLength/1000)}KB`);
+                                        content += `\n\n[FILE TRUNCATED: Original ${Math.round(originalLength/1000)}KB. Use apply_diff for edits - do NOT use write_file on truncated content.]`;
+                                    }
+                                    
+                                    toolResult = content;
                                     break;
+                                }
                                 case 'write_file': {
                                     // DIFF TRACKING: Capture before content
                                     let beforeContent: string | null = null;
@@ -1640,50 +1757,49 @@ ${contextData}
                                     break;
                                 }
                                 case 'apply_diff': {
-                                    // Token-efficient differential editing
+                                    // Token-efficient differential editing with AGGREGATION
+                                    // Multiple diffs to the same file are batched for:
+                                    // - Single undo step
+                                    // - No offset drift
+                                    // - Better performance
                                     const diffPath = args.path as string;
                                     const diffContent = args.diff as string;
-                                    const diffTimestamp = Date.now();
 
-                                    // Read existing content for diff tracking
-                                    let diffBeforeContent: string | null = null;
-                                    try {
-                                        const existing = await tools.readFile(diffPath);
-                                        if (!existing.startsWith('Error reading file')) {
-                                            diffBeforeContent = existing;
-                                        }
-                                    } catch {
-                                        // File doesn't exist
-                                    }
-
-                                    // Apply the diff (with source for logging)
+                                    // Get model source for logging
                                     const modelSource = (task.model || '').startsWith('claude') ? 'CopilotClaude' :
                                         (task.model || '').startsWith('gpt') ? 'CopilotGPT' : 'Gemini';
-                                    toolResult = await tools.applyDiff(diffPath, diffContent, modelSource);
 
-                                    // Track file edit if successful (for diff viewing in UI)
-                                    if (toolResult.includes('Successfully applied diff')) {
-                                        if (!task.fileEdits) {
-                                            task.fileEdits = [];
+                                    // Get or create diff aggregator from task context
+                                    const taskContext = this.taskContexts.get(taskId);
+                                    const aggregator = taskContext?.diffAggregator;
+
+                                    if (aggregator) {
+                                        // Queue the diff for batched application
+                                        const flushResult = await aggregator.queueDiff(diffPath, diffContent, modelSource);
+                                        
+                                        // If a different file was flushed, report that result first
+                                        if (flushResult) {
+                                            toolResult = flushResult.message;
+                                            task.logs.push(`[DiffAggregator] Auto-flushed ${flushResult.filePath}: ${flushResult.appliedBlocks}/${flushResult.totalBlocks} blocks`);
                                         }
-                                        // Read new content
-                                        let diffAfterContent = '';
-                                        try {
-                                            diffAfterContent = await tools.readFile(diffPath);
-                                        } catch { /* ignore */ }
 
-                                        task.fileEdits.push({
-                                            path: diffPath,
-                                            beforeContent: diffBeforeContent,
-                                            afterContent: diffAfterContent,
-                                            timestamp: diffTimestamp,
-                                            checkpointId: task.checkpoints?.[task.checkpoints.length - 1]?.id
-                                        });
-
-                                        // Artifact tracking
-                                        if (!task.artifacts.includes(diffPath)) {
-                                            task.artifacts.push(diffPath);
-                                            task.logs.push(`[Artifact Modified]: ${diffPath}`);
+                                        // Report queuing status
+                                        const pending = aggregator.getPendingCount();
+                                        if (pending.totalBlocks > 0) {
+                                            toolResult = toolResult 
+                                                ? `${toolResult}\n\n✅ Queued diff for ${diffPath} (${pending.totalBlocks} blocks pending, will batch apply)`
+                                                : `✅ Queued diff for ${diffPath} (${pending.totalBlocks} blocks pending, will batch apply)`;
+                                        }
+                                    } else {
+                                        // Fallback: Direct application if no aggregator
+                                        toolResult = await tools.applyDiff(diffPath, diffContent, modelSource);
+                                        
+                                        // Track file edit if successful
+                                        if (toolResult.includes('Successfully applied diff') || toolResult.includes('✅')) {
+                                            if (!task.artifacts.includes(diffPath)) {
+                                                task.artifacts.push(diffPath);
+                                                task.logs.push(`[Artifact Modified]: ${diffPath}`);
+                                            }
                                         }
                                     }
                                     break;
@@ -1804,6 +1920,41 @@ ${contextData}
                                 response: { content: truncatedForAI }
                             }
                         });
+                    }
+
+                    // ============================================
+                    // FLUSH AGGREGATED DIFFS AT END OF TURN
+                    // After processing all tool calls, apply any queued diffs
+                    // This ensures batched application with single undo step
+                    // ============================================
+                    const flushContext = this.taskContexts.get(taskId);
+                    if (flushContext?.diffAggregator?.hasPendingDiffs()) {
+                        const pending = flushContext.diffAggregator.getPendingCount();
+                        task.logs.push(`[DiffAggregator] Flushing ${pending.files} file(s) with ${pending.totalBlocks} pending blocks...`);
+                        
+                        const flushResults = await flushContext.diffAggregator.flushAll();
+                        
+                        for (const result of flushResults.results) {
+                            task.logs.push(`[DiffAggregator] ${result.filePath}: ${result.message}`);
+                            
+                            // Add flush result to tool parts so model knows what happened
+                            toolParts.push({
+                                functionResponse: {
+                                    name: 'apply_diff_batch',
+                                    response: { 
+                                        content: `Batched diff result for ${result.filePath}:\n${result.message}`,
+                                        success: result.success,
+                                        appliedBlocks: result.appliedBlocks,
+                                        totalBlocks: result.totalBlocks,
+                                        aggregatedDiffs: result.aggregatedDiffs
+                                    }
+                                }
+                            });
+                        }
+
+                        if (flushResults.totalBlocksFailed > 0) {
+                            task.logs.push(`[DiffAggregator] ⚠️ ${flushResults.totalBlocksFailed} blocks failed to apply`);
+                        }
                     }
 
                     currentPrompt = toolParts;
@@ -2180,7 +2331,26 @@ ${contextData}
                         const shadowRepo = new ShadowRepository(this.context, worktreePath);
                         await shadowRepo.initialize(); // Essential for checkpoints to work!
                         const revertManager = new RevertManager(shadowRepo);
-                        taskContext = { shadowRepo, revertManager };
+                        
+                        // Create DiffAggregator for batched diff operations
+                        const diffAggregator = new DiffAggregator(
+                            worktreePath,
+                            taskId,
+                            (filePath, beforeContent, afterContent) => {
+                                if (!task.fileEdits) { task.fileEdits = []; }
+                                task.fileEdits.push({
+                                    path: filePath,
+                                    beforeContent,
+                                    afterContent,
+                                    timestamp: Date.now()
+                                });
+                                if (!task.artifacts.includes(filePath)) {
+                                    task.artifacts.push(filePath);
+                                }
+                            }
+                        );
+                        
+                        taskContext = { shadowRepo, revertManager, diffAggregator };
                         this.taskContexts.set(taskId, taskContext);
                     }
 
@@ -2280,7 +2450,26 @@ ${contextData}
                 const shadowRepo = new ShadowRepository(this.context, task.worktreePath);
                 await shadowRepo.initialize(); // Must initialize for revert to work!
                 const revertManager = new RevertManager(shadowRepo);
-                taskContext = { shadowRepo, revertManager };
+                
+                // Create DiffAggregator for batched diff operations
+                const diffAggregator = new DiffAggregator(
+                    task.worktreePath,
+                    taskId,
+                    (filePath, beforeContent, afterContent) => {
+                        if (!task.fileEdits) { task.fileEdits = []; }
+                        task.fileEdits.push({
+                            path: filePath,
+                            beforeContent,
+                            afterContent,
+                            timestamp: Date.now()
+                        });
+                        if (!task.artifacts.includes(filePath)) {
+                            task.artifacts.push(filePath);
+                        }
+                    }
+                );
+                
+                taskContext = { shadowRepo, revertManager, diffAggregator };
                 this.taskContexts.set(taskId, taskContext);
 
             } else {
@@ -2569,13 +2758,26 @@ CORE WORKFLOW (FAST MODE):
         // PLANNING MODE (default for substantial requests)
         return `
 CORE WORKFLOW (PLANNING MODE):
-1. EXPLORE: Use list_files / read_file to understand the codebase.
-2. PLAN (Mandatory):
-   - Create a file named '.vibearchitect/task.md'. This must be a Markdown checklist of steps (e.g., "- [ ] Step 1").
-   - Create a file named '.vibearchitect/implementation_plan.md'. This must detail your technical approach.
-3. ACT: Use write_file / run_command to implement the plan.
-4. UPDATE: After completing a step, OVERWRITE '.vibearchitect/task.md' to mark the item as done (e.g., "- [x] Step 1").
-5. VERIFY (MANDATORY - AI-POWERED):
+1. **CHECK FOR PRD** (Refinement Mode Output):
+   - First, check if a PRD file exists at '.vibearchitect/current/prd.md'.
+   - If a PRD exists, READ IT FIRST using read_file('.vibearchitect/current/prd.md').
+   - This is the APPROVED specification from refinement mode - you MUST implement it exactly.
+   - Your task.md and implementation_plan.md MUST implement the PRD requirements.
+   - If no PRD exists (file not found), proceed to EXPLORE.
+
+2. EXPLORE: Use list_files / read_file to understand the codebase.
+
+3. PLAN (Mandatory):
+   - Create '.vibearchitect/task.md' - a Markdown checklist of implementation steps.
+   - If PRD exists: Derive steps DIRECTLY from the PRD's functional requirements and acceptance criteria.
+   - Create '.vibearchitect/implementation_plan.md' - your technical approach.
+   - If PRD exists: Your plan MUST reference and align with the PRD specifications.
+
+4. ACT: Use write_file / run_command to implement the plan.
+
+5. UPDATE: After completing a step, OVERWRITE '.vibearchitect/task.md' to mark items done (e.g., "- [x] Step 1").
+
+6. VERIFY (MANDATORY - AI-POWERED):
    - Run tests or verification scripts.
    - **Web Apps**: You MUST:
      a) Start the server (e.g. 'npm run dev')
@@ -2583,10 +2785,13 @@ CORE WORKFLOW (PLANNING MODE):
      c) Call 'browser_verify_ui("page-name", "description of expected UI")' for AI vision verification
      d) If FAIL: Read the issues, fix the code, and call browser_verify_ui AGAIN
    - **Check Ports**: Ensure you are viewing the correct port.
+   - If PRD exists: Verify against PRD's acceptance criteria.
    - CRITICAL: browser_verify_ui() provides actual AI verification. Never say "verified" unless you got PASS.
-6. FINISH:
-   - You MUST create a file named ".vibearchitect/mission_summary.md".
+
+7. FINISH:
+   - Create ".vibearchitect/mission_summary.md".
    - Write a detailed summary of changes and verification results.
+   - If PRD was used: List which PRD requirements were implemented.
    - Answer with "MISSION COMPLETE" only after creating this file.
         `.trim();
     }

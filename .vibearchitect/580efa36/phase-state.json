@@ -1,0 +1,36 @@
+{
+  "taskId": "task-1769927784281-t20vbi9m1",
+  "originalRequirement": "I want to correct issues related to applyDiff in this extension where applyDIff does not work properly.",
+  "phases": [
+    {
+      "id": "phase-1",
+      "name": "Implementation",
+      "description": "Complete implementation of the requirement",
+      "requirements": [
+        "I want to correct issues related to applyDiff in this extension where applyDIff does not work properly."
+      ],
+      "deliverables": [
+        "Working implementation"
+      ],
+      "verificationCriteria": [
+        "Code compiles",
+        "Basic functionality works"
+      ],
+      "estimatedTokens": 526,
+      "dependencies": [],
+      "status": "in-progress",
+      "order": 0,
+      "domains": [],
+      "riskFactors": []
+    }
+  ],
+  "currentPhaseIndex": 0,
+  "phaseResults": [],
+  "executionMode": "single",
+  "strategyUsed": "none",
+  "estimatedTotalTokens": 526,
+  "actualTokensUsed": 0,
+  "startedAt": 1769927784293,
+  "lastUpdatedAt": 1769927784293,
+  "overallStatus": "in-progress"
+}

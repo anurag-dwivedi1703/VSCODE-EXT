@@ -120,7 +120,7 @@ export interface ProjectAxiom {
  * Event emitted by RefinementSession for UI updates.
  */
 export interface RefinementEvent {
-    type: 'state-change' | 'question' | 'draft-ready' | 'critique-ready' | 'artifact-ready' | 'error';
+    type: 'state-change' | 'question' | 'draft-ready' | 'critique-ready' | 'artifact-ready' | 'error' | 'progress';
     sessionId: string;
     payload: unknown;
 }

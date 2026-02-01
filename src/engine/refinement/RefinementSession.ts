@@ -33,6 +33,11 @@ const CONFIDENCE_THRESHOLD = 70;
  */
 const MAX_ITERATIONS = 5;
 
+/**
+ * Timeout for AI calls (e.g. Copilot/API) - safety net only; critic/refiner can take 1–2+ minutes.
+ */
+const AI_CALL_TIMEOUT_MS = 300000; // 5 minutes
+
 export class RefinementSession {
     private _state: RefinementSessionState;
     private _aiSession: ISession | null = null;
@@ -224,7 +229,16 @@ export class RefinementSession {
             '' // Skeleton context - will be injected by manager
         );
 
+        this._onEvent.fire({
+            type: 'progress',
+            sessionId: this.sessionId,
+            payload: 'Calling critic... (this may take a minute or two)'
+        });
+
         const response = await this.callAI('critic', prompt);
+        // #region debug instrumentation
+        fetch('http://127.0.0.1:7242/ingest/2339ffe5-68e3-436b-9b87-c502b12becf6', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'RefinementSession.ts:triggerCritique', message: 'critic raw response', data: { responseLength: response?.length ?? 0, responseStart: (response || '').slice(0, 300), responseEnd: (response || '').slice(-150), hypothesisId: 'H5' }, timestamp: Date.now(), sessionId: 'debug-session' }) }).catch(() => {});
+        // #endregion
         const critique = this.parseCritiqueResponse(response);
         this._state.latestCritique = critique;
 
@@ -359,20 +373,30 @@ export class RefinementSession {
             throw new Error('No AI session configured');
         }
 
+        const timeoutPromise = new Promise<never>((_, reject) => {
+            setTimeout(() => {
+                reject(new Error(`AI call (${persona}) timed out after ${AI_CALL_TIMEOUT_MS / 1000}s. The model may be busy or unavailable. Try again or use a different model.`));
+            }, AI_CALL_TIMEOUT_MS);
+        });
+
         try {
             console.log(`[RefinementSession] Calling AI with persona: ${persona}`);
-            // The AI session should already be configured with the persona's system prompt
-            const result = await this._aiSession.sendMessage(prompt);
+            // Race the AI call against a timeout to prevent indefinite hang (e.g. on "Request Changes")
+            const result = await Promise.race([
+                this._aiSession.sendMessage(prompt),
+                timeoutPromise
+            ]);
             // response is an object, not a Promise
             const text = result.response.text();
             console.log(`[RefinementSession] AI response received (${text.length} chars)`);
             return text;
         } catch (error: any) {
+            const message = error?.message || String(error);
             console.error(`[RefinementSession] AI call failed:`, error);
             this._onEvent.fire({
                 type: 'error',
                 sessionId: this.sessionId,
-                payload: `AI call failed: ${error.message}`
+                payload: message
             });
             throw error;
         }
@@ -436,18 +460,39 @@ export class RefinementSession {
             }]
         };
 
+        // #region debug instrumentation
+        const logCritique = (message: string, data: Record<string, unknown>, hypothesisId: string) => {
+            fetch('http://127.0.0.1:7242/ingest/2339ffe5-68e3-436b-9b87-c502b12becf6', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'RefinementSession.ts:parseCritiqueResponse', message, data: { ...data, hypothesisId }, timestamp: Date.now(), sessionId: 'debug-session' }) }).catch(() => {});
+        };
+        logCritique('parseCritiqueResponse entry', { responseLength: response?.length ?? 0, responseStart: (response || '').slice(0, 200), responseEnd: (response || '').slice(-200), hasBacktickJson: (response || '').includes('```json'), hasBacktickJSON: (response || '').includes('```JSON') }, 'H1');
+        // #endregion
+
         try {
             let parsed: any;
             const jsonMatch = response.match(/```json\n?([\s\S]*?)\n?```/);
+            // #region debug instrumentation
+            logCritique('json match result', { jsonMatchFound: !!jsonMatch, jsonMatchLength: jsonMatch?.[1]?.length ?? 0, extractedStart: jsonMatch?.[1]?.slice(0, 150) ?? null }, 'H1');
+            // #endregion
+
             if (jsonMatch) {
                 parsed = JSON.parse(jsonMatch[1]);
             } else {
                 // Try direct JSON parse
+                // #region debug instrumentation
+                logCritique('no json fence, trying direct parse', { responseTrimmed: response?.trim().slice(0, 100) ?? null }, 'H2');
+                // #endregion
                 parsed = JSON.parse(response);
             }
 
+            // #region debug instrumentation
+            logCritique('after parse', { confidenceScore: parsed?.confidenceScore, confidenceScoreType: typeof parsed?.confidenceScore, hasIssues: Array.isArray(parsed?.issues), passedValidation: parsed?.passedValidation }, 'H4');
+            // #endregion
+
             // Validate parsed JSON has required structure
             if (typeof parsed.confidenceScore !== 'number') {
+                // #region debug instrumentation
+                logCritique('validation failed: confidenceScore not number', { confidenceScore: parsed?.confidenceScore }, 'H4');
+                // #endregion
                 console.warn('[RefinementSession] Parsed critique missing confidenceScore, using fallback');
                 return defaultFallback;
             }
@@ -462,8 +507,15 @@ export class RefinementSession {
                 parsed.passedValidation = parsed.confidenceScore >= 70;
             }
 
+            // #region debug instrumentation
+            logCritique('parseCritiqueResponse success', { confidenceScore: parsed.confidenceScore }, 'H4');
+            // #endregion
             return parsed as CritiqueResult;
-        } catch {
+        } catch (err: unknown) {
+            // #region debug instrumentation
+            const errMsg = err instanceof Error ? err.message : String(err);
+            logCritique('parseCritiqueResponse catch', { errorMessage: errMsg, errorName: err instanceof Error ? err.name : undefined }, 'H3');
+            // #endregion
             // Fallback: create a default critique
             console.warn('[RefinementSession] Failed to parse Critic JSON, using fallback');
             return defaultFallback;

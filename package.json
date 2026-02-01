@@ -73,7 +73,7 @@
         }
     },
     "scripts": {
-        "vscode:prepublish": "npm run package",
+        "vscode:prepublish": "cd webview-ui && npm run build && cd .. && npm run package",
         "compile": "webpack",
         "watch": "webpack --watch",
         "package": "webpack --mode production --devtool hidden-source-map",
@@ -85,7 +85,8 @@
         "install:all": "npm install && cd webview-ui && npm install",
         "build:all": "npm run compile && cd webview-ui && npm run build",
         "setup": "npm run install:all && npm run build:all",
-        "install-browsers": "npx playwright install chromium"
+        "install-browsers": "npx playwright install chromium",
+        "vsix": "vsce package"
     },
     "devDependencies": {
         "@types/fs-extra": "^11.0.4",
@@ -98,6 +99,7 @@
         "@typescript-eslint/eslint-plugin": "^6.15.0",
         "@typescript-eslint/parser": "^6.15.0",
         "@vscode/test-electron": "^2.3.8",
+        "@vscode/vsce": "^3.7.1",
         "eslint": "^8.56.0",
         "glob": "^8.1.0",
         "mocha": "^10.2.0",

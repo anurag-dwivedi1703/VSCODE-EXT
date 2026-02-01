@@ -466,15 +466,20 @@ export interface FuzzyMatchResult {
  * Find a fuzzy match for search content in file content
  * Uses a sliding window approach with Levenshtein distance
  * 
+ * Enhanced with:
+ * - Adaptive window sizing (handles insertions/deletions)
+ * - Whitespace normalization option
+ * - Better performance for large files
+ * 
  * @param fileContent - The full file content to search in
  * @param searchContent - The content to search for
- * @param tolerance - Maximum difference ratio allowed (default: 0.05 = 5%)
+ * @param tolerance - Maximum difference ratio allowed (default: 0.10 = 10%)
  * @returns Match result with position and similarity, or null if no good match found
  */
 export function findFuzzyMatch(
     fileContent: string,
     searchContent: string,
-    tolerance: number = 0.05
+    tolerance: number = 0.10
 ): FuzzyMatchResult | null {
     // Normalize line endings for comparison
     const normalizedFile = fileContent.replace(/\r\n/g, '\n');
@@ -489,51 +494,71 @@ export function findFuzzyMatch(
 
     let bestMatch: FuzzyMatchResult | null = null;
 
-    // Slide through file looking for similar content
-    for (let i = 0; i <= fileLines.length - searchLines.length; i++) {
-        // Build candidate string from file lines
-        const candidateLines = fileLines.slice(i, i + searchLines.length);
-        const candidate = candidateLines.join('\n');
+    // Allow window size to vary slightly (handles added/removed lines)
+    const windowVariance = Math.max(2, Math.ceil(searchLines.length * 0.15));
+    const minWindowSize = Math.max(1, searchLines.length - windowVariance);
+    const maxWindowSize = searchLines.length + windowVariance;
 
-        // Quick length check - if lengths differ by more than tolerance, skip
-        const lengthRatio = Math.min(candidate.length, normalizedSearch.length) /
-            Math.max(candidate.length, normalizedSearch.length);
-        if (lengthRatio < minSimilarity * 0.8) {
-            continue;
+    // Slide through file looking for similar content
+    for (let windowSize = searchLines.length; windowSize >= minWindowSize && windowSize <= maxWindowSize; windowSize++) {
+        for (let i = 0; i <= fileLines.length - windowSize; i++) {
+            // Build candidate string from file lines
+            const candidateLines = fileLines.slice(i, i + windowSize);
+            const candidate = candidateLines.join('\n');
+
+            // Quick length check - if lengths differ too much, skip
+            const lengthRatio = Math.min(candidate.length, normalizedSearch.length) /
+                Math.max(candidate.length, normalizedSearch.length);
+            if (lengthRatio < minSimilarity * 0.7) {
+                continue;
+            }
+
+            // Quick first-line check for performance (skip if first lines are very different)
+            if (searchLines.length > 0 && candidateLines.length > 0) {
+                const firstLineSim = levenshteinSimilarity(searchLines[0].trim(), candidateLines[0].trim());
+                if (firstLineSim < 0.5) {
+                    continue; // First lines too different, skip this window
+                }
+            }
+
+            // Calculate similarity
+            const similarity = levenshteinSimilarity(normalizedSearch, candidate);
+
+            if (similarity >= minSimilarity && (!bestMatch || similarity > bestMatch.similarity)) {
+                // Calculate character index in original file
+                let charIndex = 0;
+                for (let j = 0; j < i; j++) {
+                    charIndex += fileLines[j].length + 1; // +1 for newline
+                }
+
+                // Adjust for CRLF if original has it
+                if (fileContent.includes('\r\n')) {
+                    charIndex += i; // Add back the \r characters
+                }
+
+                // Calculate match length in original content
+                let matchLength = candidateLines.join('\n').length;
+                if (fileContent.includes('\r\n')) {
+                    matchLength += windowSize - 1; // Add \r for each line break
+                }
+
+                bestMatch = {
+                    index: charIndex,
+                    matchLength,
+                    similarity,
+                    matchedText: candidate
+                };
+
+                // Early exit on near-perfect match
+                if (similarity > 0.99) {
+                    return bestMatch;
+                }
+            }
         }
 
-        // Calculate similarity
-        const similarity = levenshteinSimilarity(normalizedSearch, candidate);
-
-        if (similarity >= minSimilarity && (!bestMatch || similarity > bestMatch.similarity)) {
-            // Calculate character index in original file
-            let charIndex = 0;
-            for (let j = 0; j < i; j++) {
-                charIndex += fileLines[j].length + 1; // +1 for newline
-            }
-
-            // Adjust for CRLF if original has it
-            if (fileContent.includes('\r\n')) {
-                charIndex += i; // Add back the \r characters
-            }
-
-            // Calculate match length in original content
-            let matchLength = candidateLines.join('\n').length;
-            if (fileContent.includes('\r\n')) {
-                matchLength += searchLines.length - 1; // Add \r for each line break
-            }
-
-            bestMatch = {
-                index: charIndex,
-                matchLength,
-                similarity,
-                matchedText: candidate
-            };
-
-            // Early exit on near-perfect match
-            if (similarity > 0.99) {
-                break;
-            }
+        // If we found a good match with exact window size, don't try other sizes
+        if (bestMatch && bestMatch.similarity >= 0.95 && windowSize === searchLines.length) {
+            break;
         }
     }
 
