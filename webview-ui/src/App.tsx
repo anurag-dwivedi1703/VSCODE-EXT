@@ -223,11 +223,63 @@ function parseLogs(logs: string[], checkpoints: { id: string, message: string }[
             }
             systemGroup.details?.push(log);
         }
+        // ========== REFINEMENT MODE LOGS ==========
+        // Analyst/System responses (Refinement Mode)
+        else if (log.match(/^\*\*(Analyst|System)\*\*:/i) || log.startsWith('**Analyst Questions:**') || log.startsWith('**Draft PRD:**') || log.startsWith('**Critic Feedback:**') || log.startsWith('**Final PRD Ready**')) {
+            commitStep();
+            commitSystem();
+            // Create a step for Analyst/Refinement content
+            const text = log.replace(/^\*\*(Analyst|System)\*\*:\s*/i, '').trim();
+            currentStep = {
+                type: 'step',
+                content: 'Refinement',
+                title: log.startsWith('**Analyst Questions:**') ? '🎯 Analyst Questions' :
+                    log.startsWith('**Draft PRD:**') ? '📝 Draft PRD' :
+                        log.startsWith('**Critic Feedback:**') ? '🔍 Critic Feedback' :
+                            log.startsWith('**Final PRD Ready**') ? '✅ Final PRD' :
+                                '🧠 Analyst Response',
+                markdown: log,  // Keep the full markdown including the header
+                tools: [],
+                artifacts: [],
+                status: 'completed'
+            };
+        }
+        // Refinement State/System Messages (e.g., > [Refinement]:)
+        else if (log.startsWith('> [Refinement]') || log.startsWith('> [Context]:') || log.includes('[Refinement]')) {
+            commitStep();
+            if (!systemGroup) {
+                systemGroup = { type: 'system', content: 'Refinement Mode', details: [] };
+            }
+            systemGroup.details?.push(log);
+        }
+        // Generic markdown content - fallback for any unmatched content that looks like markdown
+        else if (log.trim().length > 0 && (log.includes('**') || log.startsWith('##') || log.startsWith('#') || log.startsWith('- ') || log.startsWith('1.'))) {
+            // This is likely markdown content that should be displayed
+            if (currentStep) {
+                // Append to existing step
+                currentStep.markdown = currentStep.markdown ? currentStep.markdown + '\n\n' + log : log;
+            } else {
+                // Create a new step for this markdown content
+                currentStep = {
+                    type: 'step',
+                    content: 'Content',
+                    title: '💬 Response',
+                    markdown: log,
+                    tools: [],
+                    artifacts: [],
+                    status: 'completed'
+                };
+            }
+        }
         else {
-            // Misc logs
+            // Misc logs still go to system group if active, or append to current step
             if (systemGroup) {
                 systemGroup.details?.push(log);
+            } else if (currentStep && log.trim()) {
+                // Append to current step's markdown if we have one
+                currentStep.markdown = currentStep.markdown ? currentStep.markdown + '\n' + log : log;
             }
+            // Otherwise truly drop empty/irrelevant lines
         }
     }
 
@@ -271,9 +323,9 @@ function App() {
         return Array.from(array, byte => byte.toString(16).padStart(2, '0')).join('');
     });
 
-    // Pending Approval State (for Agent Decides mode)
+    // Pending Approval State (for Agent Decides mode and Refinement Mode)
     const [pendingApproval, setPendingApproval] = useState<{
-        type: 'plan' | 'command';
+        type: 'plan' | 'command' | 'prd';
         content: string;
         taskId: string;
         riskReason?: string;
@@ -370,6 +422,15 @@ function App() {
             if (message.command === 'awaitingApproval') {
                 setPendingApproval({
                     type: 'plan',
+                    content: message.content,
+                    taskId: message.taskId
+                });
+                setRightPaneTab('context');
+            }
+            // Handle PRD review from Refinement Mode
+            if (message.command === 'prdReview') {
+                setPendingApproval({
+                    type: 'prd',
                     content: message.content,
                     taskId: message.taskId
                 });
@@ -1281,6 +1342,59 @@ function App() {
                                                 </button>
                                                 <button className="approve-btn" onClick={handleApproveReview}>
                                                     ✓ Approve & Continue
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ) : pendingApproval && pendingApproval.type === 'prd' ? (
+                                        /* Priority 2: PRD Review Pane for Refinement Mode */
+                                        <div className="review-pane prd-review">
+                                            <div className="review-header">
+                                                <span className="review-icon">📝</span>
+                                                <h3>Review Product Requirements Document</h3>
+                                            </div>
+                                            <div className="review-content markdown-body">
+                                                <ReactMarkdown>{pendingApproval.content}</ReactMarkdown>
+                                            </div>
+                                            <div className="review-comment-section">
+                                                <label className="comment-label">Request changes or refinements (optional):</label>
+                                                <textarea
+                                                    className="review-textarea"
+                                                    placeholder="e.g., 'Add authentication requirements' or 'Include database schemas'..."
+                                                    value={reviewComment}
+                                                    onChange={(e) => setReviewComment(e.target.value)}
+                                                />
+                                            </div>
+                                            <div className="review-actions">
+                                                <button className="decline-btn" onClick={() => {
+                                                    // Request changes - send feedback to refinement
+                                                    if (reviewComment.trim()) {
+                                                        vscode.postMessage({
+                                                            command: 'prdFeedback',
+                                                            taskId: pendingApproval.taskId,
+                                                            feedback: reviewComment
+                                                        });
+                                                    } else {
+                                                        vscode.postMessage({
+                                                            command: 'prdFeedback',
+                                                            taskId: pendingApproval.taskId,
+                                                            feedback: 'Please refine the PRD further with more details.'
+                                                        });
+                                                    }
+                                                    setPendingApproval(null);
+                                                    setReviewComment('');
+                                                }}>
+                                                    ✎ Request Changes
+                                                </button>
+                                                <button className="approve-btn" onClick={() => {
+                                                    // Approve PRD - transition to planning
+                                                    vscode.postMessage({
+                                                        command: 'prdApproved',
+                                                        taskId: pendingApproval.taskId
+                                                    });
+                                                    setPendingApproval(null);
+                                                    setReviewComment('');
+                                                }}>
+                                                    ✓ Approve & Continue to Planning
                                                 </button>
                                             </div>
                                         </div>

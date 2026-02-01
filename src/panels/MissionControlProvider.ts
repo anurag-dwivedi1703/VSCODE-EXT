@@ -127,6 +127,9 @@ export class MissionControlProvider {
                 case 'command':
                     command = 'commandApprovalRequired';
                     break;
+                case 'prd':
+                    command = 'prdReview';
+                    break;
                 default:
                     command = 'awaitingApproval';
             }
@@ -652,6 +655,13 @@ export class MissionControlProvider {
                         return;
                     case 'rejectConstitution':
                         this._taskRunner.rejectReview(message.taskId);
+                        return;
+                    // PRD Review Handlers (Refinement Mode)
+                    case 'prdApproved':
+                        this._taskRunner.approvePrd(message.taskId);
+                        return;
+                    case 'prdFeedback':
+                        this._taskRunner.requestPrdChanges(message.taskId, message.feedback);
                         return;
                     // Stop and Mode handlers
                     case 'stopTask':

@@ -54,7 +54,7 @@ interface AgentTask {
     fileEdits?: FileEdit[];
     // Pending approval state for Agent Decides mode
     awaitingApproval?: {
-        type: 'plan' | 'command' | 'constitution' | 'constitution-update' | 'constitution-drift';
+        type: 'plan' | 'command' | 'constitution' | 'constitution-update' | 'constitution-drift' | 'prd';
         content: string;
         riskReason?: string;
     };
@@ -77,7 +77,7 @@ export class TaskRunner {
     public readonly onNavigateBrowser = this._onNavigateBrowser.event;
 
     // Approval events for Agent Decides mode and constitution review
-    private _onAwaitingApproval = new vscode.EventEmitter<{ taskId: string, type: 'plan' | 'command' | 'constitution' | 'constitution-update' | 'constitution-drift', content: string, riskReason?: string }>();
+    private _onAwaitingApproval = new vscode.EventEmitter<{ taskId: string, type: 'plan' | 'command' | 'constitution' | 'constitution-update' | 'constitution-drift' | 'prd', content: string, riskReason?: string }>();
     public readonly onAwaitingApproval = this._onAwaitingApproval.event;
 
     private _onApprovalComplete = new vscode.EventEmitter<{ taskId: string }>();
@@ -192,6 +192,60 @@ export class TaskRunner {
         this.saveTask(task);
     }
 
+    public async approvePrd(taskId: string) {
+        const task = this.tasks.get(taskId);
+        if (!task) { return; }
+
+        console.log('[TaskRunner] User clicked Approve PRD via UI');
+        task.awaitingApproval = undefined; // Clear approval state
+        task.logs.push('> [Refinement]: User approved PRD via Review Pane. Transitioning to Planning Mode...');
+
+        // Get the PRD content from the refinement session
+        const refinementManager = getRefinementManager();
+        const sessionId = refinementManager.getSessionForTask(taskId);
+        let prdContent = '';
+        if (sessionId) {
+            prdContent = refinementManager.getSessionDraft(sessionId) ||
+                `User Request: ${task.displayPrompt || task.prompt}`;
+        }
+
+        this._onApprovalComplete.fire({ taskId });
+        this._onTaskUpdate.fire({ taskId, task }); // Update UI to remove review pane
+
+        await this.transitionFromRefinementToPlanning(taskId, prdContent);
+    }
+
+    public async requestPrdChanges(taskId: string, feedback: string) {
+        const task = this.tasks.get(taskId);
+        if (!task) { return; }
+
+        console.log('[TaskRunner] User requested PRD changes via UI');
+        task.awaitingApproval = undefined; // Clear approval state
+        task.logs.push(`> [Refinement]: User feedback: "${feedback}"`);
+        task.userMessages.push({ text: feedback, attachments: [] });
+
+        this._onApprovalComplete.fire({ taskId });
+        this._onTaskUpdate.fire({ taskId, task }); // Update UI to remove review pane
+
+        // Send feedback to refinement session
+        const refinementManager = getRefinementManager();
+        const sessionId = refinementManager.getSessionForTask(taskId);
+
+        if (sessionId) {
+            console.log(`[TaskRunner] Sending feedback to refinement session: ${sessionId}`);
+            task.logs.push('> [Refinement]: Processing your feedback...');
+            this._onTaskUpdate.fire({ taskId, task });
+
+            await refinementManager.handleUserMessage(sessionId, feedback);
+        } else {
+            console.error('[TaskRunner] No active refinement session found for task:', taskId);
+            task.logs.push('> [Error]: Refinement session not found.');
+            task.status = 'failed';
+            this._onTaskUpdate.fire({ taskId, task });
+        }
+        this.saveTask(task);
+    }
+
     constructor(private context: vscode.ExtensionContext) {
         // Initialize WorktreeManager with the first workspace folder
         if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
@@ -215,7 +269,7 @@ export class TaskRunner {
      */
     private async waitForApproval(
         taskId: string,
-        type: 'plan' | 'command' | 'constitution' | 'constitution-update' | 'constitution-drift',
+        type: 'plan' | 'command' | 'constitution' | 'constitution-update' | 'constitution-drift' | 'prd',
         content: string,
         riskReason?: string
     ): Promise<boolean> {
@@ -634,9 +688,191 @@ ${originalPrompt}`;
         this.processTask(taskId);
     }
 
+    /**
+     * Process a task in Refinement Mode using the RefinementManager.
+     * This starts a multi-turn clarification loop before transitioning to planning.
+     */
+    private async processRefinementTask(taskId: string): Promise<void> {
+        const task = this.tasks.get(taskId);
+        if (!task) { return; }
+
+        const config = vscode.workspace.getConfiguration('vibearchitect');
+        const modelId = task.model || 'gemini-3-pro-preview';
+
+        // Determine workspace for skeleton context
+        let workspaceRoot = task.worktreePath;
+        if (!workspaceRoot) {
+            if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+                workspaceRoot = vscode.workspace.workspaceFolders[0].uri.fsPath;
+            } else {
+                throw new Error("No workspace selected for refinement.");
+            }
+        }
+        task.worktreePath = workspaceRoot;
+
+        this.updateStatus(taskId, 'planning', 5, '🧠 Starting Refinement Mode...');
+        task.logs.push('\n**System**: 🧠 Entering Refinement Mode - clarifying requirements before planning...');
+        this._onTaskUpdate.fire({ taskId, task });
+
+        // Generate skeleton context for the AI (include subdirectories)
+        let skeletonContext = '';
+        try {
+            skeletonContext = skeletonizeDirectory(workspaceRoot, true);
+            task.logs.push(`> [Context]: Generated code skeleton (${skeletonContext.length} chars)`);
+        } catch (error) {
+            task.logs.push('> [Context]: Could not generate code skeleton, proceeding without.');
+        }
+
+        // Initialize AI client based on model selection (use already-imported clients)
+        const geminiApiKey = config.get<string>('geminiApiKey') || '';
+        const claudeApiKey = config.get<string>('claudeApiKey') || '';
+        const useCopilotForClaude = config.get<boolean>('useCopilotForClaude') || false;
+
+        let aiClient: GeminiClient | ClaudeClient | CopilotClaudeClient | CopilotGPTClient;
+        const isClaudeModel = modelId.startsWith('claude');
+        const isGPTModel = modelId.startsWith('gpt');
+
+        if (isClaudeModel) {
+            if (useCopilotForClaude) {
+                console.log('[TaskRunner] Initializing CopilotClaudeClient for Refinement Mode...');
+                aiClient = new CopilotClaudeClient();
+                const initialized = await aiClient.initialize();
+                if (!initialized) {
+                    task.logs.push('> [Error]: Failed to initialize Copilot Claude. Ensure GitHub Copilot is installed and you have an active subscription.');
+                    task.status = 'failed';
+                    this._onTaskUpdate.fire({ taskId, task });
+                    this.saveTask(task);
+                    return;
+                }
+                console.log('[TaskRunner] CopilotClaudeClient initialized successfully');
+            } else {
+                aiClient = new ClaudeClient(claudeApiKey, modelId);
+            }
+        } else if (isGPTModel) {
+            console.log('[TaskRunner] Initializing CopilotGPTClient for Refinement Mode...');
+            aiClient = new CopilotGPTClient();
+            const initialized = await aiClient.initialize();
+            if (!initialized) {
+                task.logs.push('> [Error]: Failed to initialize Copilot GPT. Ensure GitHub Copilot is installed and you have an active subscription.');
+                task.status = 'failed';
+                this._onTaskUpdate.fire({ taskId, task });
+                this.saveTask(task);
+                return;
+            }
+            console.log('[TaskRunner] CopilotGPTClient initialized successfully');
+        } else {
+            aiClient = new GeminiClient(geminiApiKey, modelId);
+        }
+
+        // Get refinement manager
+        const refinementManager = getRefinementManager();
+
+        // Generate a session ID we can use for event filtering
+        const sessionId = `refine-${taskId}-${Date.now()}`;
+
+        // CRITICAL: Subscribe to events BEFORE starting the session
+        // so we don't miss initial events
+        const eventDisposable = refinementManager.onEvent((event) => {
+            // Only process events for this task's session
+            if (event.sessionId.startsWith(`refine-${taskId}`)) {
+                console.log(`[TaskRunner] Refinement event: ${event.type}`, event.payload);
+
+                if (event.type === 'question') {
+                    // Display clarifying questions from the Analyst
+                    const questions = event.payload as any[];
+                    if (questions && questions.length > 0) {
+                        task.logs.push('\n**Analyst Questions:**');
+                        questions.forEach((q: any, i: number) => {
+                            task.logs.push(`${i + 1}. ${q.question}`);
+                        });
+                        task.logs.push('\n> Please reply with your answers to continue refinement.');
+                    }
+                } else if (event.type === 'draft-ready') {
+                    task.logs.push(`\n**Draft PRD:**\n${event.payload}`);
+                } else if (event.type === 'critique-ready') {
+                    task.logs.push(`\n**Critic Feedback:**\n${JSON.stringify(event.payload, null, 2)}`);
+                } else if (event.type === 'artifact-ready') {
+                    // Fire PRD review event to show in Context pane
+                    const artifact = event.payload as any;
+                    const prdContent = artifact?.rawMarkdown ||
+                        (typeof event.payload === 'string' ? event.payload : JSON.stringify(event.payload, null, 2));
+
+                    task.logs.push(`\n**Final PRD Ready** - Review in the CONTEXT pane and click "Approve" or "Request Changes".`);
+
+                    // Send to webview for review
+                    this._onAwaitingApproval.fire({
+                        taskId,
+                        type: 'prd',
+                        content: prdContent
+                    });
+                } else if (event.type === 'state-change') {
+                    task.logs.push(`> [Refinement]: State → ${event.payload}`);
+                } else if (event.type === 'error') {
+                    task.logs.push(`> [Refinement Error]: ${event.payload}`);
+                }
+
+                this._onTaskUpdate.fire({ taskId, task });
+                this.saveTask(task);
+            }
+        });
+
+        task.logs.push(`> [Refinement]: Starting session...`);
+        task.logs.push('\n---\n');
+        task.logs.push('**Analyst**: Analyzing your request to ask clarifying questions...');
+        this._onTaskUpdate.fire({ taskId, task });
+
+        try {
+            // Now start the session - events will be captured
+            const actualSessionId = await refinementManager.startSession(
+                taskId,
+                task.prompt,
+                aiClient,
+                skeletonContext
+            );
+
+            task.logs.push(`> [Refinement]: Session ${actualSessionId} started successfully`);
+            this._onTaskUpdate.fire({ taskId, task });
+            this.saveTask(task);
+
+            // The session is now running - user replies will come through replyToTask
+            // When approved, onRefinementComplete will fire and call transitionFromRefinementToPlanning
+            task.status = 'awaiting-approval';
+            task.awaitingApproval = {
+                type: 'plan',
+                content: 'Refinement session in progress. Reply to provide clarifications or type "approve" to approve the PRD.'
+            };
+            this._onTaskUpdate.fire({ taskId, task });
+            this.saveTask(task);
+
+        } catch (error: any) {
+            console.error('[TaskRunner] Refinement session failed:', error);
+            task.logs.push(`> [Error]: Refinement failed - ${error.message}`);
+            task.status = 'failed';
+            this._onTaskUpdate.fire({ taskId, task });
+            this.saveTask(task);
+            eventDisposable.dispose();
+        }
+    }
+
     private async processTask(taskId: string) {
         const task = this.tasks.get(taskId);
         if (!task) { return; }
+
+        // ========================================
+        // REFINEMENT MODE: Route to RefinementManager
+        // ========================================
+        if (task.mode === 'refinement') {
+            try {
+                await this.processRefinementTask(taskId);
+                return; // Refinement handles its own flow
+            } catch (error: any) {
+                task.status = 'failed';
+                task.logs.push(`> [Error]: Refinement failed - ${error.message}`);
+                this._onTaskUpdate.fire({ taskId, task });
+                this.saveTask(task);
+                return;
+            }
+        }
 
         try {
 
@@ -1790,6 +2026,58 @@ ${contextData}
             // Log with context notice
             const contextMsg = attachments.length > 0 ? ` (with ${attachments.length} attachments)` : '';
             this.updateStatus(taskId, task.status, task.progress, `**User**: ${message}${contextMsg}`);
+
+            // ========== REFINEMENT MODE REPLY HANDLING ==========
+            // If task is awaiting-approval AND was started in refinement mode, route to RefinementManager
+            if (task.status === 'awaiting-approval' && task.mode === 'refinement') {
+                console.log(`[TaskRunner] Routing reply to RefinementManager for task ${taskId}`);
+                const refinementManager = getRefinementManager();
+
+                // Check if 'approve' to finalize and transition to planning
+                const isApproval = message.toLowerCase().trim() === 'approve' ||
+                    message.toLowerCase().includes('approve the prd') ||
+                    message.toLowerCase().includes('looks good');
+
+                if (isApproval) {
+                    console.log('[TaskRunner] User approved refinement - transitioning to planning');
+                    task.logs.push('> [Refinement]: User approved PRD. Transitioning to Planning Mode...');
+
+                    // Get the PRD content from the refinement session
+                    const sessionId = refinementManager.getSessionForTask(taskId);
+                    let prdContent = '';
+                    if (sessionId) {
+                        prdContent = refinementManager.getSessionDraft(sessionId) ||
+                            `User Request: ${task.displayPrompt || task.prompt}`;
+                    }
+
+                    await this.transitionFromRefinementToPlanning(taskId, prdContent);
+                } else {
+                    // Send user's clarification to the refinement session
+                    try {
+                        // Use proper public method to get session ID for this task
+                        const sessionId = refinementManager.getSessionForTask(taskId);
+
+                        if (sessionId) {
+                            console.log(`[TaskRunner] Sending reply to refinement session: ${sessionId}`);
+                            task.logs.push('> [Refinement]: Processing your answers...');
+                            this._onTaskUpdate.fire({ taskId, task });
+
+                            await refinementManager.handleUserMessage(sessionId, message);
+                        } else {
+                            console.error('[TaskRunner] No active refinement session found for task:', taskId);
+                            task.logs.push('> [Error]: Refinement session not found. Please start a new task.');
+                            task.status = 'failed';
+                        }
+                    } catch (error: any) {
+                        console.error('[TaskRunner] Error handling refinement reply:', error);
+                        task.logs.push(`> [Error]: ${error.message}`);
+                    }
+                }
+
+                this._onTaskUpdate.fire({ taskId, task });
+                this.saveTask(task);
+                return;
+            }
 
             // If completed, resume!
             if (task.status === 'completed' || task.status === 'failed') {

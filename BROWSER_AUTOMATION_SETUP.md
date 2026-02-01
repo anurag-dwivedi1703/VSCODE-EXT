@@ -12,7 +12,7 @@ cd "$env:USERPROFILE\.vscode\extensions"
 cd (Get-ChildItem -Filter "*vibearchitect*" | Select-Object -First 1).FullName
 
 # Install dependencies
-npm install playwright-core pixelmatch pngjs
+npm install playwright pixelmatch pngjs
 
 # Restart VS Code
 ```

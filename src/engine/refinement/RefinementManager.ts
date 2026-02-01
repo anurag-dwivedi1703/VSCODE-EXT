@@ -160,6 +160,17 @@ export class RefinementManager {
     }
 
     /**
+     * Get the current draft/artifact from a session.
+     */
+    public getSessionDraft(sessionId: string): string | null {
+        const session = this._sessions.get(sessionId);
+        if (!session) return null;
+
+        const state = session.getStateObject();
+        return state.currentDraft || state.finalArtifact?.rawMarkdown || null;
+    }
+
+    /**
      * Get the session ID for a given task.
      */
     public getSessionForTask(taskId: string): string | null {

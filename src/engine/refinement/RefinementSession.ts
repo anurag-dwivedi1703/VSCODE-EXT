@@ -75,6 +75,18 @@ export class RefinementSession {
         return this._state.finalArtifact;
     }
 
+    get currentDraft(): string | undefined {
+        return this._state.currentDraft;
+    }
+
+
+    /**
+     * Get the full state object for external access.
+     */
+    getStateObject() {
+        return this._state;
+    }
+
     get conversationHistory(): RefinementTurn[] {
         return this._state.conversationHistory;
     }
@@ -109,22 +121,36 @@ export class RefinementSession {
             this._state.originalPrompt,
             skeletonContext
         );
+        console.log(`[RefinementSession] Analyst prompt length: ${analystPrompt.length} chars`);
 
         // Call the AI with Analyst persona
         const response = await this.callAI('analyst', analystPrompt);
+        console.log(`[RefinementSession] Analyst response:`, response.substring(0, 500));
 
         // Parse the response for questions or draft
         const turn = this.parseAnalystResponse(response);
+        console.log(`[RefinementSession] Parsed ${turn.metadata?.questions?.length || 0} questions`);
         this.addTurn('analyst', response, turn.metadata);
 
         // If questions were asked, wait for user
         if (turn.metadata?.questions && turn.metadata.questions.length > 0) {
             this.transitionTo('AWAITING_USER');
+            console.log(`[RefinementSession] Firing 'question' event with ${turn.metadata.questions.length} questions`);
             this._onEvent.fire({
                 type: 'question',
                 sessionId: this.sessionId,
                 payload: turn.metadata.questions
             });
+        } else {
+            // No questions found - the AI might have gone straight to a draft or given a generic response
+            // Fire the response as a draft anyway so the user can see it
+            console.log(`[RefinementSession] No questions parsed, firing response as draft`);
+            this._onEvent.fire({
+                type: 'draft-ready',
+                sessionId: this.sessionId,
+                payload: response
+            });
+            this.transitionTo('AWAITING_USER');
         }
 
         return turn;
@@ -224,8 +250,8 @@ export class RefinementSession {
             // Need more clarification
             this.transitionTo('AWAITING_USER');
 
-            // Generate questions based on critique issues
-            const questions = critique.issues
+            // Generate questions based on critique issues (null safety)
+            const questions = (critique.issues || [])
                 .filter(i => i.severity !== 'low')
                 .map((issue, idx) => ({
                     id: `crit-${idx}`,
@@ -333,11 +359,23 @@ export class RefinementSession {
             throw new Error('No AI session configured');
         }
 
-        // The AI session should already be configured with the persona's system prompt
-        // For now, we include the prompt directly
-        const result = await this._aiSession.sendMessage(prompt);
-        const response = await result.response;
-        return response.text();
+        try {
+            console.log(`[RefinementSession] Calling AI with persona: ${persona}`);
+            // The AI session should already be configured with the persona's system prompt
+            const result = await this._aiSession.sendMessage(prompt);
+            // response is an object, not a Promise
+            const text = result.response.text();
+            console.log(`[RefinementSession] AI response received (${text.length} chars)`);
+            return text;
+        } catch (error: any) {
+            console.error(`[RefinementSession] AI call failed:`, error);
+            this._onEvent.fire({
+                type: 'error',
+                sessionId: this.sessionId,
+                payload: `AI call failed: ${error.message}`
+            });
+            throw error;
+        }
     }
 
     private parseAnalystResponse(response: string): RefinementTurn {
@@ -388,25 +426,47 @@ export class RefinementSession {
 
     private parseCritiqueResponse(response: string): CritiqueResult {
         // Try to parse JSON from response
+        const defaultFallback: CritiqueResult = {
+            confidenceScore: 75,
+            passedValidation: true,
+            issues: [{
+                type: 'ambiguity',
+                severity: 'low',
+                description: 'Critique response was not in expected format'
+            }]
+        };
+
         try {
+            let parsed: any;
             const jsonMatch = response.match(/```json\n?([\s\S]*?)\n?```/);
             if (jsonMatch) {
-                return JSON.parse(jsonMatch[1]);
+                parsed = JSON.parse(jsonMatch[1]);
+            } else {
+                // Try direct JSON parse
+                parsed = JSON.parse(response);
             }
-            // Try direct JSON parse
-            return JSON.parse(response);
+
+            // Validate parsed JSON has required structure
+            if (typeof parsed.confidenceScore !== 'number') {
+                console.warn('[RefinementSession] Parsed critique missing confidenceScore, using fallback');
+                return defaultFallback;
+            }
+
+            // Ensure issues is an array
+            if (!Array.isArray(parsed.issues)) {
+                parsed.issues = [];
+            }
+
+            // Ensure passedValidation exists
+            if (typeof parsed.passedValidation !== 'boolean') {
+                parsed.passedValidation = parsed.confidenceScore >= 70;
+            }
+
+            return parsed as CritiqueResult;
         } catch {
             // Fallback: create a default critique
             console.warn('[RefinementSession] Failed to parse Critic JSON, using fallback');
-            return {
-                confidenceScore: 75,
-                passedValidation: true,
-                issues: [{
-                    type: 'ambiguity',
-                    severity: 'low',
-                    description: 'Critique response was not in expected format'
-                }]
-            };
+            return defaultFallback;
         }
     }
 
