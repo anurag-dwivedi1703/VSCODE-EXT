@@ -1,0 +1,24 @@
+/* TypewriterText Component Styles */
+
+.typewriter-text {
+    display: inline;
+}
+
+/* Blinking cursor animation */
+@keyframes cursor-blink {
+    0%, 50% { opacity: 1; }
+    51%, 100% { opacity: 0; }
+}
+
+.typewriter-cursor {
+    display: inline-block;
+    font-weight: bold;
+    color: var(--vscode-editorCursor-foreground, #00d9ff);
+    animation: cursor-blink 1s step-end infinite;
+    margin-left: 1px;
+}
+
+/* Smooth text appearance */
+.typewriter-text {
+    will-change: contents;
+}

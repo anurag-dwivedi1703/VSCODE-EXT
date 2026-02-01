@@ -12,6 +12,7 @@ import { ContextBudgetIndicator, BudgetStatus } from './components/ContextBudget
 import { PhaseApprovalModal, PhaseApprovalData } from './components/PhaseApprovalModal';
 import { BrowserSetupWizard } from './components/BrowserSetupWizard';
 import { SessionManagerUI } from './components/SessionManagerUI';
+import { TypewriterText } from './components/TypewriterText';
 
 // Mock Data
 const DEFAULT_WORKSPACES = [
@@ -81,8 +82,10 @@ function parseLogs(logs: string[], checkpoints: { id: string, message: string }[
         }
         // Turn Marker (Thinking...)
         else if (log.includes('Thinking...')) {
-            // If we have an existing step that is "Thinking...", maybe update it?
-            // Or usually "Thinking..." marks start of new turn.
+            // Mark previous step as completed before starting new turn
+            if (currentStep) {
+                currentStep.status = 'completed';
+            }
             commitStep();
             commitSystem();
 
@@ -102,24 +105,50 @@ function parseLogs(logs: string[], checkpoints: { id: string, message: string }[
             commitSystem();
             const text = log.replace(/^\*{0,2}\s*(Gemini|Claude)\s*\*{0,2}:\s*/i, '').trim();
 
-            if (!currentStep) {
-                // If text comes without "Thinking" (e.g. Planning mode reply), create step
+            // FIX: Create new bubble when agent sends a new substantial response
+            // after tool execution (not just appending everything together)
+            const shouldCreateNewBubble = currentStep && 
+                currentStep.markdown && 
+                currentStep.markdown.length > 50 && // Has substantial content already
+                currentStep.tools && 
+                currentStep.tools.length > 0 && // Has tool calls
+                currentStep.tools.some(t => t.result); // At least one tool has completed
+
+            if (!currentStep || shouldCreateNewBubble) {
+                // Commit previous step if exists
+                if (currentStep) {
+                    currentStep.status = 'completed';
+                    commitStep();
+                }
+                
+                // Create new step for this agent response
+                const cleanText = text.replace(/\*\*/g, '').trim();
+                let title = 'Response';
+                if (cleanText.length > 5) {
+                    let firstSentence = cleanText.split(/[.?!]/, 1)[0].trim().replace(/\n/g, ' ');
+                    if (firstSentence.length > 60) {
+                        firstSentence = firstSentence.substring(0, 60) + '...';
+                    }
+                    if (firstSentence.length > 0) {
+                        title = `💭 ${firstSentence}`;
+                    }
+                }
+                
                 currentStep = {
                     type: 'step',
                     content: 'Agent Reply',
-                    title: 'Response',
+                    title,
                     markdown: text,
                     tools: [],
                     artifacts: [],
                     status: 'running'
                 };
             } else {
-                // Append to existing step (e.g. Thinking -> Tools -> Response)
+                // Append to existing step (first response in a thinking turn)
                 if (currentStep.markdown) currentStep.markdown += '\n\n' + text;
                 else currentStep.markdown = text;
 
-                // FIX: Aggressively update title from first sentence if it's currently generic
-                // We rely on the fact that 'text' here uses the cleaned log content
+                // Update title from first sentence if it's currently generic
                 if (currentStep.title && currentStep.title.includes('Thinking')) {
                     const cleanText = text.replace(/\*\*/g, '').trim();
                     if (cleanText.length > 5) {
@@ -508,11 +537,31 @@ function App() {
     }, [expandedAgentId]);
 
     // Auto-scroll to bottom of logs - only if user is near bottom
+    // Uses smooth scrolling with a slight delay for better UX
+    const prevLogsLength = useRef(0);
+    
     useEffect(() => {
-        if (isUserNearBottom) {
-            logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        if (isUserNearBottom && scrollContainerRef.current) {
+            // Check if there's new content by comparing total logs length
+            const activeAgent = dynamicAgents.find(a => a.id === expandedAgentId);
+            const currentLogsLength = activeAgent?.logs?.length || 0;
+            
+            if (currentLogsLength > prevLogsLength.current) {
+                // Small delay to let new content render before scrolling
+                const timeoutId = setTimeout(() => {
+                    const container = scrollContainerRef.current;
+                    if (container) {
+                        container.scrollTo({
+                            top: container.scrollHeight,
+                            behavior: 'smooth'
+                        });
+                    }
+                }, 100);
+                prevLogsLength.current = currentLogsLength;
+                return () => clearTimeout(timeoutId);
+            }
         }
-    }, [dynamicAgents, isUserNearBottom]);
+    }, [dynamicAgents, isUserNearBottom, expandedAgentId]);
 
     const activeAgents = dynamicAgents;
     // State for New Agent Composer
@@ -982,16 +1031,29 @@ function App() {
                                                 );
                                             }
                                             if (group.type === 'step') {
+                                                const isRunning = group.status === 'running';
+                                                const statusClass = group.status || '';
                                                 return (
-                                                    <div key={i} className="msg-step-card">
+                                                    <div key={i} className={`msg-step-card ${statusClass}`}>
                                                         <div className="step-header">
-                                                            <div className="step-icon">🤖</div>
-                                                            <div className="step-title">{group.title}</div>
+                                                            <div className={`step-icon ${isRunning ? 'active' : ''}`}>🤖</div>
+                                                            <div className={`step-title ${isRunning ? 'thinking' : ''}`}>
+                                                                {group.title}
+                                                                {isRunning && <span className="loading-dots"></span>}
+                                                            </div>
                                                         </div>
                                                         <div className="step-body">
                                                             {group.markdown && (
-                                                                <div className="step-markdown markdown-body">
-                                                                    <ReactMarkdown>{group.markdown}</ReactMarkdown>
+                                                                <div className={`step-markdown markdown-body ${isRunning ? 'typing' : ''}`}>
+                                                                    {isRunning && group.markdown.length < 500 ? (
+                                                                        <TypewriterText 
+                                                                            text={group.markdown} 
+                                                                            speed={8}
+                                                                            isActive={isRunning}
+                                                                        />
+                                                                    ) : (
+                                                                        <ReactMarkdown>{group.markdown}</ReactMarkdown>
+                                                                    )}
                                                                 </div>
                                                             )}
 
@@ -1103,8 +1165,10 @@ function App() {
                                                                 <details className="step-updates">
                                                                     <summary>Progress Updates ({group.tools.length})</summary>
                                                                     <div className="step-updates-list">
-                                                                        {group.tools.map((tool, ti) => (
-                                                                            <div key={ti} className={`step-tool-item ${tool.name === 'write_file' ? 'file-edit' : ''}`}>
+                                                                        {group.tools.map((tool, ti) => {
+                                                                            const isExecuting = !tool.result && group.status === 'running' && ti === group.tools!.length - 1;
+                                                                            return (
+                                                                            <div key={ti} className={`step-tool-item ${tool.name === 'write_file' ? 'file-edit' : ''} ${isExecuting ? 'executing' : ''}`}>
                                                                                 <div className="tool-row">
                                                                                     <span className="tool-name">⚡ {tool.name}</span>
                                                                                     <div className="tool-actions">
@@ -1151,7 +1215,7 @@ function App() {
                                                                                 <div className="tool-args">{tool.call}</div>
                                                                                 {tool.result && <div className="tool-result-mini">{tool.result.substring(0, 100)}{tool.result.length > 100 ? '...' : ''}</div>}
                                                                             </div>
-                                                                        ))}
+                                                                        );})}
                                                                     </div>
                                                                 </details>
                                                             )}

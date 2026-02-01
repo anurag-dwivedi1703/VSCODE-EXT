@@ -472,10 +472,16 @@ export class TaskRunner {
     /**
      * Clear workspace .vibearchitect artifacts to prevent bleeding.
      * Called on mission complete and when starting a new mission via replyToTask.
+     * 
+     * CRITICAL: Also clears the 'current' symlink/folder contents to prevent
+     * the AI from finding old mission_summary.md files and thinking the mission is done.
      */
     private clearWorkspaceArtifacts(workspacePath: string): void {
         const artifactsDir = path.join(workspacePath, '.vibearchitect');
-        const filesToClear = ['task.md', 'implementation_plan.md', 'mission_summary.md'];
+        // CRITICAL: Include prd.md to prevent old refinement PRDs from bleeding into new missions
+        const filesToClear = ['task.md', 'implementation_plan.md', 'mission_summary.md', 'prd.md'];
+        
+        // Clear files in root .vibearchitect folder
         for (const file of filesToClear) {
             const filePath = path.join(artifactsDir, file);
             if (fs.existsSync(filePath)) {
@@ -485,6 +491,50 @@ export class TaskRunner {
                 } catch (err) {
                     console.warn(`[TaskRunner] Failed to clear ${file}:`, err);
                 }
+            }
+        }
+        
+        // CRITICAL: Clear the 'current' symlink/folder to prevent old artifacts bleeding
+        const currentPath = path.join(artifactsDir, 'current');
+        if (fs.existsSync(currentPath)) {
+            try {
+                const stats = fs.lstatSync(currentPath);
+                if (stats.isSymbolicLink()) {
+                    // It's a symlink - clear the contents of the target folder
+                    const targetPath = fs.realpathSync(currentPath);
+                    for (const file of filesToClear) {
+                        const targetFile = path.join(targetPath, file);
+                        if (fs.existsSync(targetFile)) {
+                            fs.unlinkSync(targetFile);
+                            console.log(`[TaskRunner] Cleared current/ artifact: ${file}`);
+                        }
+                    }
+                } else if (stats.isDirectory()) {
+                    // It's a junction or regular directory - clear its contents
+                    for (const file of filesToClear) {
+                        const targetFile = path.join(currentPath, file);
+                        if (fs.existsSync(targetFile)) {
+                            fs.unlinkSync(targetFile);
+                            console.log(`[TaskRunner] Cleared current/ artifact: ${file}`);
+                        }
+                    }
+                }
+                
+                // Also remove the symlink/junction itself to ensure clean slate
+                try {
+                    fs.unlinkSync(currentPath);
+                    console.log(`[TaskRunner] Removed current symlink/junction`);
+                } catch {
+                    // On Windows, junctions might need rmdir
+                    try {
+                        fs.rmdirSync(currentPath);
+                        console.log(`[TaskRunner] Removed current junction via rmdir`);
+                    } catch (e) {
+                        console.warn(`[TaskRunner] Could not remove current: ${e}`);
+                    }
+                }
+            } catch (err) {
+                console.warn(`[TaskRunner] Failed to clear current/ folder:`, err);
             }
         }
     }
@@ -504,7 +554,8 @@ export class TaskRunner {
 
         try {
             fs.mkdirSync(destDir, { recursive: true });
-            const files = ['task.md', 'implementation_plan.md', 'mission_summary.md'];
+            // Include prd.md in archive to preserve refinement output
+            const files = ['task.md', 'implementation_plan.md', 'mission_summary.md', 'prd.md'];
             let archivedCount = 0;
 
             for (const file of files) {
@@ -512,6 +563,25 @@ export class TaskRunner {
                 if (fs.existsSync(src)) {
                     fs.copyFileSync(src, path.join(destDir, file));
                     archivedCount++;
+                }
+            }
+            
+            // Also check the 'current' folder for artifacts
+            const currentDir = path.join(srcDir, 'current');
+            if (fs.existsSync(currentDir)) {
+                try {
+                    const stats = fs.lstatSync(currentDir);
+                    const targetDir = stats.isSymbolicLink() ? fs.realpathSync(currentDir) : currentDir;
+                    for (const file of files) {
+                        const src = path.join(targetDir, file);
+                        const dest = path.join(destDir, file);
+                        if (fs.existsSync(src) && !fs.existsSync(dest)) {
+                            fs.copyFileSync(src, dest);
+                            archivedCount++;
+                        }
+                    }
+                } catch (e) {
+                    console.warn('[TaskRunner] Could not archive from current/', e);
                 }
             }
 
@@ -1380,6 +1450,17 @@ ${contextData}
                - Your task.md and implementation_plan.md MUST implement the PRD requirements.
                - If no PRD exists (file not found), proceed to EXPLORE.
                
+            1b. **CHECK FOR EXISTING PLAN** (Phased Implementation):
+               - Check if '.vibearchitect/task.md' or '.vibearchitect/implementation_plan.md' exists.
+               - If they exist: This is a PHASED IMPLEMENTATION in progress - READ and CONTINUE from where it left off!
+               - Look for "Phase X" markers and checkboxes to determine current progress.
+               - Do NOT create new plans - continue the existing one.
+               
+            ⚠️ CRITICAL - IGNORE MISSION SUMMARIES ONLY:
+               - NEVER read 'mission_summary.md' - it means a PREVIOUS mission is done, not yours!
+               - If you find mission_summary.md, IGNORE it completely - start your own work
+               - However, DO use existing task.md and implementation_plan.md if they exist (phased work)
+               
             2. EXPLORE: Use list_files / read_file to understand the codebase.
             
             3. PLAN(Mandatory):
@@ -1429,6 +1510,10 @@ ${contextData}
                - ** Web Apps **: Call 'reload_browser()' to refresh the preview.
             5. FINISH (ONLY AFTER ALL WORK IS DONE):
                - Answer with "MISSION COMPLETE" at the end.
+               
+            ⚠️ CRITICAL - IGNORE MISSION SUMMARIES:
+               - NEVER read 'mission_summary.md' - it means a PREVIOUS mission is done!
+               - If you find mission_summary.md, IGNORE it and start your own work
                
             ⚠️ CRITICAL OUTPUT RULES:
                - NEVER say "MISSION COMPLETE" until ALL tasks are finished
@@ -1504,7 +1589,11 @@ ${contextData}
         }
 
         try {
-            const maxTurns = 100;
+            // Maximum turns for complex tasks in large workspaces
+            // Each turn = thinking + tool calls + response
+            // Complex features may need: file reading (20), writing (30), commands (10), debugging (30), verification (10)
+            // 200 turns provides headroom while preventing runaway tasks
+            const maxTurns = 200;
             for (let i = 0; i < maxTurns; i++) {
                 // If the user interrupted or we are just continuing
                 this.updateStatus(taskId, 'executing', task.progress, `Turn ${i + 1}: Thinking...`);
@@ -2344,7 +2433,10 @@ ${contextData}
                         msgLower.includes('build') || msgLower.includes('write');
                     const specifiesNewFile = /create\s+\w+\.\w+|make\s+\w+\.\w+|build\s+\w+|write\s+\w+\.\w+/i.test(message);
                     const refersToOldWork = msgLower.includes('continue') || msgLower.includes('the file') ||
-                        msgLower.includes('that file') || msgLower.includes('fix it');
+                        msgLower.includes('that file') || msgLower.includes('fix it') ||
+                        msgLower.includes('next phase') || msgLower.includes('phase 2') ||
+                        msgLower.includes('phase 3') || msgLower.includes('phase 4') ||
+                        msgLower.includes('proceed') || msgLower.includes('resume');
 
                     // Substantial work = code changes/creates (not just viewing or asking questions)
                     const isSubstantialWork = hasChangeCommand || hasCreateCommand;
@@ -2365,11 +2457,29 @@ ${contextData}
                     const effectiveMode = (isSubstantialWork && !isTrivial) ? 'planning' : (task.mode || 'planning');
                     const modeWorkflow = this.buildModeWorkflow(effectiveMode, isTrivial);
 
+                    // Check if the previous task was completed
+                    const wasCompleted = task.status === 'completed';
+                    
                     const contextSection = isNewMission
                         ? `⚠️ CRITICAL: IGNORE all previous task context. The user is starting a BRAND NEW mission. Do exactly what they ask in their new request. Do NOT reference or continue any previous work.`
                         : `IMPORTANT - PREVIOUS CONTEXT (what was done before):\n${previousContext}`;
 
-                    const systemPrompt = `You are ${isTrivial ? 'responding to a simple question' : (isNewMission ? 'starting a COMPLETELY NEW mission - forget all previous context' : 'continuing substantial work')}.
+                    // Add strong anti-echo instruction for completed missions
+                    const antiEchoInstruction = wasCompleted 
+                        ? `
+⚠️ CRITICAL - DO NOT REPEAT PREVIOUS OUTPUT:
+- The previous mission was ALREADY completed
+- Do NOT output "MISSION COMPLETE" again
+- Do NOT repeat verification results or summaries
+- Do NOT say "the mission is already complete" or similar
+- Focus ONLY on what the user is asking NOW
+- If they ask about the previous work, describe it briefly WITHOUT repeating the full summary
+`
+                        : '';
+
+                    const systemPrompt = `You are ${isTrivial ? 'responding to a simple question' : (isNewMission ? 'starting a COMPLETELY NEW mission - forget all previous context' : 'continuing work on an existing mission')}.
+                    
+                    ${antiEchoInstruction}
                     
                     USER'S ${isNewMission ? 'NEW MISSION (IGNORE ALL PREVIOUS WORK)' : 'REQUEST'}: ${enrichedMessage}
                     
@@ -2650,9 +2760,29 @@ ${contextData}
         let lastToolCall = '';
 
         for (const log of task.logs) {
+            // CRITICAL: Skip any logs containing mission complete or summary content
+            // This prevents the AI from echoing back previous mission completions
+            const logLower = log.toLowerCase();
+            if (logLower.includes('mission complete') || 
+                logLower.includes('mission summary') ||
+                logLower.includes('verification results') ||
+                logLower.includes('all features have been tested') ||
+                logLower.includes('the mission is already complete') ||
+                logLower.includes('the mission was already completed')) {
+                continue; // Skip this log entry entirely
+            }
+
             // Extract AI (Claude/Gemini) responses
             if (log.startsWith('**Claude**:') || log.startsWith('** Claude **:')) {
                 const aiResponse = log.replace(/\*\*\s*Claude\s*\*\*:/g, '').trim();
+                
+                // CRITICAL: Skip mission completion responses
+                if (aiResponse.toLowerCase().includes('mission complete') ||
+                    aiResponse.toLowerCase().includes('verification results') ||
+                    aiResponse.toLowerCase().includes('all tests passed')) {
+                    continue;
+                }
+                
                 // Truncate long responses to avoid token bloat
                 const truncated = aiResponse.length > 500
                     ? aiResponse.substring(0, 500) + '... [truncated]'
@@ -2662,6 +2792,14 @@ ${contextData}
                 }
             } else if (log.startsWith('**Gemini**:') || log.startsWith('** Gemini **:')) {
                 const aiResponse = log.replace(/\*\*\s*Gemini\s*\*\*:/g, '').trim();
+                
+                // CRITICAL: Skip mission completion responses
+                if (aiResponse.toLowerCase().includes('mission complete') ||
+                    aiResponse.toLowerCase().includes('verification results') ||
+                    aiResponse.toLowerCase().includes('all tests passed')) {
+                    continue;
+                }
+                
                 const truncated = aiResponse.length > 500
                     ? aiResponse.substring(0, 500) + '... [truncated]'
                     : aiResponse;
@@ -2838,7 +2976,13 @@ CORE WORKFLOW (FAST MODE):
 5. FINISH (ONLY WHEN 100% DONE):
    - Answer with "MISSION COMPLETE" at the end.
 
-⚠️ CRITICAL: Do NOT say "MISSION COMPLETE" or write summaries until ALL work is finished. Each response should focus on the current task only.
+⚠️ CRITICAL - IGNORE MISSION SUMMARIES:
+   - NEVER read 'mission_summary.md' - it means a PREVIOUS mission is done!
+   - If you find mission_summary.md, IGNORE it and do your own work
+
+⚠️ CRITICAL OUTPUT RULES:
+   - Do NOT say "MISSION COMPLETE" or write summaries until ALL work is finished
+   - Each response should focus on the current task only
             `.trim();
         }
 
@@ -2851,6 +2995,17 @@ CORE WORKFLOW (PLANNING MODE):
    - This is the APPROVED specification from refinement mode - you MUST implement it exactly.
    - Your task.md and implementation_plan.md MUST implement the PRD requirements.
    - If no PRD exists (file not found), proceed to EXPLORE.
+
+1b. **CHECK FOR EXISTING PLAN** (Phased Implementation):
+   - Check if '.vibearchitect/task.md' or '.vibearchitect/implementation_plan.md' exists.
+   - If they exist: This is a PHASED IMPLEMENTATION in progress - READ and CONTINUE!
+   - Look for "Phase X" markers and checkboxes to determine current progress.
+   - Do NOT create new plans - continue the existing one.
+
+⚠️ CRITICAL - IGNORE MISSION SUMMARIES ONLY:
+   - NEVER read 'mission_summary.md' - it means a PREVIOUS mission is done, not yours!
+   - If you find mission_summary.md, IGNORE it completely
+   - However, DO use existing task.md and implementation_plan.md if present (phased work)
 
 2. EXPLORE: Use list_files / read_file to understand the codebase.
 
