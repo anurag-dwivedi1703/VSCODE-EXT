@@ -699,7 +699,7 @@ TIP: You can add line hints for faster matching:
         if (!this.browserService) {
             return 'Error: Browser service not initialized. Task ID required.';
         }
-        return await this.browserService.launchBrowser(recordVideo);
+        return await this.browserService.launchBrowser({ recordVideo });
     }
 
     /**
@@ -709,7 +709,12 @@ TIP: You can add line hints for faster matching:
         if (!this.browserService) {
             return 'Error: Browser service not initialized.';
         }
-        return await this.browserService.navigateTo(url);
+        const result = await this.browserService.navigateTo(url);
+        if (result.success) {
+            return `Navigated to: ${result.url}` + (result.authRequired ? ' (authentication was required)' : '');
+        } else {
+            return `Navigation failed: ${result.error || 'Unknown error'}`;
+        }
     }
 
     /**

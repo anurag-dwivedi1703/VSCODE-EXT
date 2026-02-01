@@ -1,13 +1,24 @@
 {
     "name": "vibearchitect",
     "displayName": "VibeArchitect Agent Manager",
-    "description": "VibeArchitect - AI Agent Manager Extension",
+    "description": "Manage autonomous AI agents that complete coding missions end-to-end. Assign tasks, agents execute autonomously, you review results. Features Mission Control dashboard, multi-model support (Claude, GPT-5, Gemini), and automated browser testing.",
     "version": "0.0.1",
     "engines": {
         "vscode": "^1.85.0"
     },
     "categories": [
+        "Machine Learning",
+        "Programming Languages",
         "Other"
+    ],
+    "keywords": [
+        "ai agents",
+        "autonomous",
+        "agent manager",
+        "claude",
+        "gpt",
+        "automation",
+        "mission control"
     ],
     "activationEvents": [
         "onCommand:vibearchitect.openMissionControl"
@@ -18,6 +29,14 @@
             {
                 "command": "vibearchitect.openMissionControl",
                 "title": "VibeArchitect: Open Mission Control"
+            },
+            {
+                "command": "vibearchitect.installBrowserDependencies",
+                "title": "VibeArchitect: Install Browser Automation Dependencies"
+            },
+            {
+                "command": "vibearchitect.checkBrowserDependencies",
+                "title": "VibeArchitect: Check Browser Dependencies Status"
             }
         ],
         "configuration": {

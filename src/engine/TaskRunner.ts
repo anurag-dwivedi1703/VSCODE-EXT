@@ -1400,7 +1400,7 @@ ${contextData}
                - If verification fails, note it but CONTINUE to FINISH.
                - IMPORTANT: Verification failure should NOT block mission completion.
                
-            7. FINISH (ALWAYS REQUIRED):
+            7. FINISH (ONLY AFTER ALL WORK IS DONE):
                - Create ".vibearchitect/mission_summary.md", REGARDLESS of verification outcome.
                - Include:
                    - Summary of changes made
@@ -1409,6 +1409,13 @@ ${contextData}
                    - Any known issues or warnings
                    - Instructions for user to verify manually if needed
                - Answer with "MISSION COMPLETE" only after creating this file.
+               
+            ⚠️ CRITICAL OUTPUT RULES:
+               - NEVER say "MISSION COMPLETE" until ALL tasks are finished
+               - NEVER output a "Mission Summary" or summary section mid-work
+               - Do NOT write conclusions or wrap-ups until step 7
+               - Each turn should focus on the CURRENT task, not summarize the mission
+               - Only ONE final "MISSION COMPLETE" at the very end
             `;
             } else {
                 // FAST MODE
@@ -1418,10 +1425,16 @@ ${contextData}
             2. NO PLANNING DOCS: Do NOT create '.vibearchitect/task.md' or '.vibearchitect/implementation_plan.md' unless explicitly asked.
             3. EXPLORE(optional): Only if needed to locate files.
             4. VERIFY(MANDATORY):
-            - Run the code or start the server.
-                - ** Web Apps **: Call 'reload_browser()' to refresh the preview.
-            5. FINISH:
-                - Answer with "MISSION COMPLETE" at the end.
+               - Run the code or start the server.
+               - ** Web Apps **: Call 'reload_browser()' to refresh the preview.
+            5. FINISH (ONLY AFTER ALL WORK IS DONE):
+               - Answer with "MISSION COMPLETE" at the end.
+               
+            ⚠️ CRITICAL OUTPUT RULES:
+               - NEVER say "MISSION COMPLETE" until ALL tasks are finished
+               - NEVER output summaries or conclusions mid-work
+               - Each turn should describe what you're DOING, not summarize
+               - Only ONE final "MISSION COMPLETE" at the very end
             `;
             }
 
@@ -2822,8 +2835,10 @@ CORE WORKFLOW (FAST MODE):
      b) Call 'browser_verify_ui("page-name", "description of expected UI")' for AI-powered verification
      c) If FAIL: Fix the issues and call browser_verify_ui AGAIN
    - Never say "verified" unless browser_verify_ui returned PASS
-5. FINISH:
+5. FINISH (ONLY WHEN 100% DONE):
    - Answer with "MISSION COMPLETE" at the end.
+
+⚠️ CRITICAL: Do NOT say "MISSION COMPLETE" or write summaries until ALL work is finished. Each response should focus on the current task only.
             `.trim();
         }
 
@@ -2860,11 +2875,17 @@ CORE WORKFLOW (PLANNING MODE):
    - If PRD exists: Verify against PRD's acceptance criteria.
    - CRITICAL: browser_verify_ui() provides actual AI verification. Never say "verified" unless you got PASS.
 
-7. FINISH:
+7. FINISH (ONLY WHEN 100% DONE):
    - Create ".vibearchitect/mission_summary.md".
    - Write a detailed summary of changes and verification results.
    - If PRD was used: List which PRD requirements were implemented.
    - Answer with "MISSION COMPLETE" only after creating this file.
+
+⚠️ CRITICAL OUTPUT RULES:
+   - NEVER say "MISSION COMPLETE" until ALL tasks are finished
+   - NEVER output "Mission Summary" or wrap-up text mid-work
+   - Each response should describe current work, NOT summarize the whole mission
+   - Summary and "MISSION COMPLETE" appear ONLY ONCE at the very end
         `.trim();
     }
 }

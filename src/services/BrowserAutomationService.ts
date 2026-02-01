@@ -1,203 +1,28 @@
+/**
+ * BrowserAutomationService - Controls browser instances for automated UI testing
+ * 
+ * This module provides robust browser automation with:
+ * - Smart browser detection and automatic Chromium download
+ * - Selective session management (auth cookies separated from UI cache)
+ * - Intelligent page load validation with retry logic
+ * - Health monitoring and zombie process cleanup
+ * 
+ * NOTE: Dependencies (playwright-core) are loaded dynamically
+ * 
+ * @module BrowserAutomationService
+ */
+
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import * as cp from 'child_process';
+import { getBrowserManager, BrowserInfo, LaunchOptions } from './BrowserManager';
+import { getSessionStorageManager, SavedSession } from './SessionStorageManager';
+import { createPageLoadValidator, PageLoadValidator, NavigateOptions, PageLoadResult, WaitStrategy } from './PageLoadValidator';
 import { AuthSessionManager } from './AuthSessionManager';
 
-// Dynamic imports for optional dependencies - loaded on demand
-let playwrightModule: any = null;
-let playwrightAvailable: boolean | null = null;
-let installationInProgress: boolean = false;
-
-/**
- * Get the extension's installation directory
- */
-function getExtensionDir(): string {
-    // Try to find the extension directory from vscode.extensions
-    const ext = vscode.extensions.getExtension('undefined_publisher.vibearchitect');
-    if (ext) {
-        return ext.extensionPath;
-    }
-    // Fallback: use __dirname to find the extension root
-    // __dirname is typically in dist/, so go up one level
-    return path.resolve(__dirname, '..');
-}
-
-/**
- * Install playwright-core in the extension directory
- */
-async function installPlaywrightCore(): Promise<boolean> {
-    if (installationInProgress) {
-        vscode.window.showInformationMessage('Installation already in progress...');
-        return false;
-    }
-
-    const extensionDir = getExtensionDir();
-
-    return new Promise((resolve) => {
-        installationInProgress = true;
-
-        vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: "Installing browser automation dependencies...",
-            cancellable: false
-        }, async (progress) => {
-            progress.report({ message: 'Running npm install playwright-core...' });
-
-            return new Promise<void>((resolveProgress) => {
-                const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-                const child = cp.spawn(npmCmd, ['install', 'playwright-core', '--save'], {
-                    cwd: extensionDir,
-                    shell: true
-                });
-
-                let _stdout = '';
-                let stderr = '';
-
-                child.stdout?.on('data', (data) => {
-                    _stdout += data.toString();
-                });
-
-                child.stderr?.on('data', (data) => {
-                    stderr += data.toString();
-                });
-
-                child.on('close', (code) => {
-                    installationInProgress = false;
-
-                    if (code === 0) {
-                        vscode.window.showInformationMessage(
-                            'Browser automation installed successfully! Please reload the window.',
-                            'Reload Window'
-                        ).then((selection) => {
-                            if (selection === 'Reload Window') {
-                                vscode.commands.executeCommand('workbench.action.reloadWindow');
-                            }
-                        });
-                        resolve(true);
-                    } else {
-                        console.error('[BrowserAutomation] npm install failed:', stderr);
-                        vscode.window.showErrorMessage(
-                            `Failed to install browser automation: ${stderr || 'Unknown error'}. ` +
-                            `Try manually: cd "${extensionDir}" && npm install playwright-core`
-                        );
-                        resolve(false);
-                    }
-                    resolveProgress();
-                });
-
-                child.on('error', (err) => {
-                    installationInProgress = false;
-                    console.error('[BrowserAutomation] npm spawn error:', err);
-                    vscode.window.showErrorMessage(`Failed to run npm: ${err.message}`);
-                    resolve(false);
-                    resolveProgress();
-                });
-            });
-        });
-    });
-}
-
-/**
- * Prompt user to install playwright-core (non-blocking - fires and forgets)
- */
-function triggerInstallPrompt(): void {
-    // Show as information message with action button - don't await
-    vscode.window.showWarningMessage(
-        '🌐 Browser automation requires playwright-core to be installed.',
-        'Install Now',
-        'Dismiss'
-    ).then(async (choice) => {
-        if (choice === 'Install Now') {
-            const success = await installPlaywrightCore();
-            if (success) {
-                vscode.window.showInformationMessage(
-                    '✅ playwright-core installed! Reload VS Code to use browser automation.',
-                    'Reload Now'
-                ).then((action) => {
-                    if (action === 'Reload Now') {
-                        vscode.commands.executeCommand('workbench.action.reloadWindow');
-                    }
-                });
-            }
-        }
-    });
-}
-
-async function getPlaywright(): Promise<any> {
-    if (playwrightModule) {
-        return playwrightModule;
-    }
-
-    try {
-        // Try dynamic import
-        const pw = await import('playwright-core');
-
-        // Debug: Log what we got
-        console.log('[BrowserAutomation] playwright-core loaded, keys:', Object.keys(pw));
-
-        // Handle different module structures
-        // ESM: default export or named exports
-        // CommonJS: direct exports
-        if (pw.chromium) {
-            playwrightModule = pw.chromium;
-        } else if (pw.default?.chromium) {
-            playwrightModule = pw.default.chromium;
-        } else {
-            // Log available properties for debugging
-            console.error('[BrowserAutomation] Unexpected module structure:', JSON.stringify(Object.keys(pw)));
-            throw new Error(`playwright-core loaded but chromium not found. Module keys: ${Object.keys(pw).join(', ')}`);
-        }
-
-        if (!playwrightModule || typeof playwrightModule.launch !== 'function') {
-            throw new Error('playwright-core.chromium.launch is not a function');
-        }
-
-        playwrightAvailable = true;
-        console.log('[BrowserAutomation] Successfully loaded playwright-core');
-        return playwrightModule;
-
-    } catch (error: any) {
-        playwrightAvailable = false;
-        console.error('[BrowserAutomation] Failed to load playwright-core:', error.message);
-
-        // Check if it's a "module not found" error
-        if (error.message.includes('Cannot find module') || error.code === 'MODULE_NOT_FOUND') {
-            // Trigger non-blocking install prompt (user will see VS Code notification)
-            triggerInstallPrompt();
-
-            // Return immediately with instructions (this message will show in Mission Control)
-            throw new Error(
-                '⚠️ BROWSER AUTOMATION NOT INSTALLED\n\n' +
-                '👉 A notification has appeared in VS Code (bottom-right).\n' +
-                '   Click "Install Now" to automatically install playwright-core.\n\n' +
-                '📦 Manual alternative: Run this in the extension folder:\n' +
-                '   npm install playwright-core\n\n' +
-                '🔄 After installing, reload VS Code window and try again.'
-            );
-        }
-
-        // Other error - provide detailed info
-        throw new Error(`Browser automation error: ${error.message}`);
-    }
-}
-
-/**
- * Check if playwright is available without throwing
- */
-export async function isPlaywrightAvailable(): Promise<boolean> {
-    if (playwrightAvailable !== null) {
-        return playwrightAvailable;
-    }
-    try {
-        const pw = await import('playwright-core');
-        playwrightAvailable = !!(pw.chromium || pw.default?.chromium);
-        return playwrightAvailable;
-    } catch {
-        playwrightAvailable = false;
-        return false;
-    }
-}
+// ============================================
+// TYPES
+// ============================================
 
 export interface ScreenshotResult {
     path: string;
@@ -218,27 +43,54 @@ export interface BrowserTestResult {
     domSnapshot?: string;
 }
 
+export interface BrowserLaunchOptions {
+    /** Show browser window (default: true) */
+    headless?: boolean;
+    /** Record video of session */
+    recordVideo?: boolean;
+    /** Load saved session for domain */
+    sessionDomain?: string;
+    /** Start with fresh session (no cookies/cache) */
+    freshSession?: boolean;
+    /** Disable cache completely */
+    disableCache?: boolean;
+    /** Custom viewport size */
+    viewport?: { width: number; height: number };
+    /** Slow down operations by X ms */
+    slowMo?: number;
+}
+
+export interface NavigationResult {
+    success: boolean;
+    url: string;
+    loadTime: number;
+    retryCount: number;
+    error?: string;
+    authRequired?: boolean;
+    screenshotPath?: string;
+}
+
+// ============================================
+// BROWSER AUTOMATION SERVICE CLASS
+// ============================================
+
 /**
- * BrowserAutomationService - Controls browser instances for automated UI testing
- * 
- * Features:
- * - Launch/close Chrome browser via Playwright
- * - Navigate to URLs
- * - Take screenshots
- * - Record video sessions (MP4 format)
- * - Interact with page elements (click, type)
- * - Capture DOM snapshots for AI analysis
- * 
- * NOTE: Dependencies are loaded dynamically to prevent extension activation failure
+ * BrowserAutomationService - Main class for browser automation
  */
 export class BrowserAutomationService {
     private browser: any = null;
     private context: any = null;
     private page: any = null;
+    private pageValidator: PageLoadValidator | null = null;
     private isRecording: boolean = false;
     private recordingStartTime: number = 0;
     private currentRecordingPath: string = '';
-    private authManager: AuthSessionManager;
+    private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+    private currentBrowserInfo: BrowserInfo | null = null;
+
+    private readonly browserManager = getBrowserManager();
+    private readonly sessionManager = getSessionStorageManager();
+    private readonly authManager: AuthSessionManager;
 
     constructor(
         private readonly taskId: string,
@@ -247,19 +99,21 @@ export class BrowserAutomationService {
         this.authManager = AuthSessionManager.getInstance();
     }
 
+    // ============================================
+    // RECORDINGS DIRECTORY
+    // ============================================
+
     /**
-     * Get the recordings directory path based on user settings or default
+     * Get the recordings directory path
      */
     private getRecordingsDir(): string {
         const config = vscode.workspace.getConfiguration('vibearchitect');
         const customPath = config.get<string>('browserRecordingsPath');
 
         if (customPath && customPath.trim() !== '') {
-            // Use custom path with taskId subfolder
             return path.join(customPath, this.taskId);
         }
 
-        // Default: workspace/.vibearchitect/recordings/[taskId]
         return path.join(this.workspacePath, '.vibearchitect', 'recordings', this.taskId);
     }
 
@@ -274,153 +128,337 @@ export class BrowserAutomationService {
         return dir;
     }
 
+    // ============================================
+    // BROWSER LAUNCH
+    // ============================================
+
     /**
-     * Launch a new browser instance with persistent session support
+     * Launch browser with smart configuration
      */
-    async launchBrowser(recordVideo: boolean = false): Promise<string> {
+    async launchBrowser(options: BrowserLaunchOptions = {}): Promise<string> {
         try {
             if (this.browser) {
-                return 'Browser already running.';
+                return 'Browser already running. Close it first or use the existing instance.';
             }
 
-            // Dynamically load playwright
-            const pw = await getPlaywright();
+            const {
+                headless = false,
+                recordVideo = false,
+                sessionDomain,
+                freshSession = false,
+                disableCache = false,
+                viewport = { width: 1280, height: 720 },
+                slowMo
+            } = options;
 
-            // Find Chrome/Chromium executable
-            const executablePath = await this.findChromePath(pw);
-            if (!executablePath) {
-                return 'Error: Chrome/Chromium not found. Please install Chrome or run "npm run install-browsers".';
+            // Check if playwright is available
+            const isAvailable = await this.browserManager.isPlaywrightAvailable();
+            if (!isAvailable) {
+                return this.getPlaywrightInstallMessage();
             }
 
-            this.browser = await pw.launch({
-                headless: false, // Show browser for visual verification
-                executablePath: executablePath,
-                args: ['--no-sandbox', '--disable-setuid-sandbox']
-            });
-
-            const contextOptions: any = {
-                viewport: { width: 1280, height: 720 }
+            // Launch browser using BrowserManager
+            const launchOptions: LaunchOptions = {
+                headless,
+                slowMo,
+                timeout: 30000,
+                args: disableCache ? ['--disk-cache-size=0'] : undefined
             };
 
-            // Configure video recording if requested
+            let launchResult;
+            try {
+                launchResult = await this.browserManager.launchBrowser(launchOptions);
+            } catch (launchError: any) {
+                console.error('[BrowserAutomation] Launch error:', launchError);
+                return `Failed to launch browser: ${launchError.message}`;
+            }
+            
+            if (!launchResult) {
+                return 'Failed to launch browser. Please run the browser setup wizard.';
+            }
+
+            if (!launchResult.browser) {
+                return 'Browser launch returned null browser object. Please check browser setup.';
+            }
+
+            this.browser = launchResult.browser;
+            this.currentBrowserInfo = launchResult.browserInfo;
+
+            // Build context options
+            const contextOptions: any = {
+                viewport,
+                ignoreHTTPSErrors: true,
+                bypassCSP: true // Helps with some problematic pages
+            };
+
+            // Configure video recording
             if (recordVideo) {
                 const recordingsDir = this.ensureRecordingsDir();
                 this.currentRecordingPath = recordingsDir;
                 contextOptions.recordVideo = {
                     dir: recordingsDir,
-                    size: { width: 1280, height: 720 }
+                    size: viewport
                 };
                 this.isRecording = true;
                 this.recordingStartTime = Date.now();
             }
 
-            // Try to load persistent session state if available
-            if (this.authManager.hasSavedSession()) {
-                try {
-                    const storageStatePath = path.join(this.authManager.getProfilePath(), 'storage-state.json');
-                    contextOptions.storageState = storageStatePath;
-                    console.log('[BrowserAutomationService] Loading saved session state');
-                } catch (error) {
-                    console.log('[BrowserAutomationService] Could not load saved session, starting fresh');
+            // Load session if requested (and not fresh session)
+            if (!freshSession && sessionDomain) {
+                const session = this.sessionManager.getSessionForDomain(sessionDomain);
+                if (session) {
+                    const sessionState = await this.sessionManager.loadSession(session.id);
+                    if (sessionState) {
+                        contextOptions.storageState = sessionState;
+                        console.log(`[BrowserAutomation] Loaded session for ${sessionDomain}`);
+                    }
                 }
             }
 
+            // Create context and page
             this.context = await this.browser.newContext(contextOptions);
             this.page = await this.context.newPage();
 
-            return recordVideo
-                ? `Browser launched with video recording. Recording to: ${this.currentRecordingPath}`
-                : 'Browser launched successfully with session persistence.';
+            // Create page validator
+            this.pageValidator = createPageLoadValidator(this.page, this.context);
+
+            // Start health monitoring
+            this.heartbeatInterval = this.browserManager.startHeartbeat(this.browser, 10000);
+
+            // Build success message
+            let message = `✅ Browser launched: ${this.currentBrowserInfo.name}`;
+            if (this.currentBrowserInfo.version) {
+                message += ` (v${this.currentBrowserInfo.version})`;
+            }
+            if (recordVideo) {
+                message += `\n📹 Recording to: ${this.currentRecordingPath}`;
+            }
+            if (!freshSession && sessionDomain) {
+                message += `\n🔐 Session loaded for: ${sessionDomain}`;
+            }
+            if (freshSession) {
+                message += `\n🆕 Fresh session (no cached data)`;
+            }
+
+            return message;
+
         } catch (error: any) {
-            return `Error launching browser: ${error.message}`;
+            console.error('[BrowserAutomation] Launch failed:', error);
+            return `❌ Failed to launch browser: ${error.message}`;
         }
     }
 
     /**
-     * Find Chrome executable path on the system
+     * Get playwright installation instructions
      */
-    private async findChromePath(pw: any): Promise<string | undefined> {
-        const possiblePaths = [
-            // Windows
-            'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-            'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-            process.env.LOCALAPPDATA + '\\Google\\Chrome\\Application\\chrome.exe',
-            // macOS
-            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-            // Linux
-            '/usr/bin/google-chrome',
-            '/usr/bin/chromium-browser',
-            '/usr/bin/chromium'
-        ];
+    private getPlaywrightInstallMessage(): string {
+        return `⚠️ BROWSER AUTOMATION NOT AVAILABLE
 
-        for (const chromePath of possiblePaths) {
-            if (chromePath && fs.existsSync(chromePath)) {
-                return chromePath;
-            }
-        }
+playwright-core is required but not installed.
 
-        // Try to find via Playwright's bundled browser
-        try {
-            const browsers = pw.executablePath();
-            if (fs.existsSync(browsers)) {
-                return browsers;
-            }
-        } catch {
-            // Playwright browser not installed
-        }
+👉 Quick fix:
+   1. Open VS Code terminal
+   2. Navigate to extension folder
+   3. Run: npm install playwright-core
 
-        return undefined;
+📦 Or use the setup wizard:
+   Command Palette → "VibeArchitect: Browser Setup"
+
+🔄 After installing, reload VS Code and try again.`;
     }
 
+    // ============================================
+    // NAVIGATION
+    // ============================================
+
     /**
-     * Navigate to a URL with SSO/Okta authentication handling
+     * Navigate to URL with smart waiting and retry
      */
-    async navigateTo(url: string): Promise<string> {
-        if (!this.page) {
-            return 'Error: Browser not launched. Call launchBrowser() first.';
+    async navigateTo(
+        url: string,
+        options: {
+            bypassCache?: boolean;
+            waitForSelector?: string;
+            timeout?: number;
+        } = {}
+    ): Promise<NavigationResult> {
+        if (!this.page || !this.pageValidator) {
+            return {
+                success: false,
+                url: url,
+                loadTime: 0,
+                retryCount: 0,
+                error: 'Browser not launched. Call launchBrowser() first.'
+            };
         }
 
-        try {
-            await this.page.goto(url, { waitUntil: 'networkidle' });
+        const { bypassCache = false, waitForSelector, timeout = 30000 } = options;
 
-            // Check if we landed on a login page (Okta, SSO, etc.)
+        try {
+            // Build wait strategy
+            const waitStrategy: WaitStrategy = {
+                waitForDom: true,
+                networkQuietMs: 500,
+                waitForJsIdle: true,
+                timeout,
+                waitForSelectors: waitForSelector ? [waitForSelector] : undefined
+            };
+
+            // Navigate with validation
+            const navOptions: NavigateOptions = {
+                url,
+                waitStrategy,
+                bypassCache,
+                screenshotOnFailure: true,
+                screenshotDir: this.getRecordingsDir(),
+                retryConfig: {
+                    maxRetries: 3,
+                    initialDelay: 1000,
+                    maxDelay: 5000,
+                    backoffMultiplier: 2,
+                    strategies: ['refresh', 'hard-refresh', 'clear-cache']
+                }
+            };
+
+            const result = await this.pageValidator.navigateWithValidation(navOptions);
+
+            // Check if we landed on a login page
             const currentUrl = this.page.url();
             if (this.authManager.isLoginPage(currentUrl)) {
-                console.log(`[BrowserAutomationService] Login page detected: ${currentUrl}`);
+                console.log(`[BrowserAutomation] Login page detected: ${currentUrl}`);
 
-                // Show VS Code popup to notify user
+                // Prompt user for authentication
                 const authResult = await this.authManager.promptUserForAuth(currentUrl);
 
                 if (authResult === 'completed') {
-                    // Wait a moment for any redirects to complete
+                    // Wait for redirect
                     await this.page.waitForTimeout(2000);
+                    
+                    // Save session for future use (filtered for auth only)
+                    await this.saveCurrentSession(new URL(url).hostname);
 
-                    // Save the session for future use
-                    if (this.context) {
-                        await this.authManager.saveContextState(this.context);
-                    }
-
-                    const newUrl = this.page.url();
-                    return `Authentication completed. Now at: ${newUrl}`;
-                } else if (authResult === 'cancelled') {
-                    return `Authentication cancelled by user. Still on login page: ${currentUrl}`;
+                    return {
+                        success: true,
+                        url: this.page.url(),
+                        loadTime: result.loadTime,
+                        retryCount: result.retryCount,
+                        authRequired: true
+                    };
                 } else {
-                    return `Authentication timed out. Still on login page: ${currentUrl}`;
+                    return {
+                        success: false,
+                        url: currentUrl,
+                        loadTime: result.loadTime,
+                        retryCount: result.retryCount,
+                        error: `Authentication ${authResult}. Still on login page.`,
+                        authRequired: true
+                    };
                 }
             }
 
-            return `Navigated to: ${url}`;
+            return {
+                success: result.success,
+                url: result.finalUrl,
+                loadTime: result.loadTime,
+                retryCount: result.retryCount,
+                error: result.error,
+                screenshotPath: result.failureScreenshot
+            };
+
         } catch (error: any) {
-            return `Error navigating to ${url}: ${error.message}`;
+            return {
+                success: false,
+                url: url,
+                loadTime: 0,
+                retryCount: 0,
+                error: error.message
+            };
         }
     }
+
+    /**
+     * Navigate with cache bypass (for debugging stale cache issues)
+     */
+    async navigateFresh(url: string): Promise<NavigationResult> {
+        return this.navigateTo(url, { bypassCache: true });
+    }
+
+    // ============================================
+    // SESSION MANAGEMENT
+    // ============================================
+
+    /**
+     * Save current session (filtered for auth cookies only)
+     */
+    async saveCurrentSession(domain: string): Promise<string> {
+        if (!this.context) {
+            return 'Error: Browser not launched.';
+        }
+
+        try {
+            const session = await this.sessionManager.saveSession(
+                this.context,
+                `${domain} session`,
+                domain,
+                true // Filter auth only
+            );
+
+            return `✅ Session saved: ${session.cookieCount} auth cookies for ${domain}`;
+        } catch (error: any) {
+            return `Error saving session: ${error.message}`;
+        }
+    }
+
+    /**
+     * Clear current session and start fresh
+     */
+    async clearSession(): Promise<string> {
+        if (!this.context) {
+            return 'Error: Browser not launched.';
+        }
+
+        try {
+            await this.context.clearCookies();
+            
+            // Also clear localStorage (runs in browser context)
+            if (this.page) {
+                await this.page.evaluate(`
+                    localStorage.clear();
+                    sessionStorage.clear();
+                `);
+            }
+
+            return '✅ Session cleared. Browser is now in fresh state.';
+        } catch (error: any) {
+            return `Error clearing session: ${error.message}`;
+        }
+    }
+
+    /**
+     * List all saved sessions
+     */
+    listSavedSessions(): SavedSession[] {
+        return this.sessionManager.getAllSessions();
+    }
+
+    /**
+     * Delete saved sessions for a domain
+     */
+    deleteSavedSessions(domain: string): string {
+        const count = this.sessionManager.deleteSessionsForDomain(domain);
+        return `Deleted ${count} session(s) for ${domain}`;
+    }
+
+    // ============================================
+    // SCREENSHOT & RECORDING
+    // ============================================
 
     /**
      * Take a screenshot
      */
     async takeScreenshot(name?: string): Promise<ScreenshotResult | string> {
         if (!this.page) {
-            return 'Error: Browser not launched. Call launchBrowser() first.';
+            return 'Error: Browser not launched.';
         }
 
         try {
@@ -436,84 +474,102 @@ export class BrowserAutomationService {
 
             return {
                 path: screenshotPath,
-                timestamp: timestamp
+                timestamp
             };
         } catch (error: any) {
             return `Error taking screenshot: ${error.message}`;
         }
     }
 
+    // ============================================
+    // PAGE INTERACTIONS
+    // ============================================
+
     /**
-     * Click on an element
+     * Click on an element with retry
      */
-    async click(selector: string): Promise<string> {
+    async click(selector: string, options: { timeout?: number; force?: boolean } = {}): Promise<string> {
         if (!this.page) {
-            return 'Error: Browser not launched. Call launchBrowser() first.';
+            return 'Error: Browser not launched.';
         }
 
+        const { timeout = 5000, force = false } = options;
+
         try {
-            await this.page.click(selector, { timeout: 5000 });
-            return `Clicked on: ${selector}`;
+            await this.page.click(selector, { timeout, force });
+            return `✅ Clicked: ${selector}`;
         } catch (error: any) {
-            return `Error clicking on ${selector}: ${error.message}`;
+            // Try with force if normal click failed
+            if (!force) {
+                try {
+                    await this.page.click(selector, { timeout, force: true });
+                    return `✅ Clicked (forced): ${selector}`;
+                } catch {
+                    // Fall through to error
+                }
+            }
+            return `❌ Click failed on ${selector}: ${error.message}`;
         }
     }
 
     /**
      * Type text into an element
      */
-    async type(selector: string, text: string): Promise<string> {
+    async type(selector: string, text: string, options: { clear?: boolean } = {}): Promise<string> {
         if (!this.page) {
-            return 'Error: Browser not launched. Call launchBrowser() first.';
+            return 'Error: Browser not launched.';
         }
 
         try {
-            await this.page.fill(selector, text);
-            return `Typed "${text}" into: ${selector}`;
+            if (options.clear) {
+                await this.page.fill(selector, text);
+            } else {
+                await this.page.type(selector, text);
+            }
+            return `✅ Typed into ${selector}`;
         } catch (error: any) {
-            return `Error typing into ${selector}: ${error.message}`;
+            return `❌ Type failed: ${error.message}`;
         }
     }
 
     /**
-     * Wait for an element to appear
+     * Wait for element
      */
     async waitForSelector(selector: string, timeout: number = 5000): Promise<string> {
         if (!this.page) {
-            return 'Error: Browser not launched. Call launchBrowser() first.';
+            return 'Error: Browser not launched.';
         }
 
         try {
-            await this.page.waitForSelector(selector, { timeout });
-            return `Element found: ${selector}`;
+            await this.page.waitForSelector(selector, { timeout, state: 'visible' });
+            return `✅ Found: ${selector}`;
         } catch (error: any) {
-            return `Error waiting for ${selector}: ${error.message}`;
+            return `❌ Not found: ${selector} (${error.message})`;
         }
     }
 
     /**
-     * Get the current page's DOM content
+     * Get page content (HTML)
      */
     async getPageContent(): Promise<string> {
         if (!this.page) {
-            return 'Error: Browser not launched. Call launchBrowser() first.';
+            return 'Error: Browser not launched.';
         }
 
         try {
             const content = await this.page.content();
-            // Truncate if too long for AI context
             const maxLength = 50000;
             if (content.length > maxLength) {
                 return content.substring(0, maxLength) + '\n... [TRUNCATED]';
             }
             return content;
         } catch (error: any) {
-            return `Error getting page content: ${error.message}`;
+            return `Error: ${error.message}`;
         }
     }
 
     /**
-     * Get current page URL
+     * Get current URL
      */
     async getCurrentUrl(): Promise<string> {
         if (!this.page) {
@@ -533,7 +589,7 @@ export class BrowserAutomationService {
     }
 
     /**
-     * Evaluate JavaScript in the page context
+     * Evaluate JavaScript
      */
     async evaluate(script: string): Promise<string> {
         if (!this.page) {
@@ -544,95 +600,196 @@ export class BrowserAutomationService {
             const result = await this.page.evaluate(script);
             return JSON.stringify(result, null, 2);
         } catch (error: any) {
-            return `Error evaluating script: ${error.message}`;
+            return `Error: ${error.message}`;
         }
     }
 
     /**
-     * Reload the current page
+     * Reload page
      */
-    async reload(): Promise<string> {
+    async reload(bypassCache: boolean = false): Promise<string> {
         if (!this.page) {
             return 'Error: Browser not launched.';
         }
 
         try {
-            await this.page.reload({ waitUntil: 'networkidle' });
-            return 'Page reloaded successfully.';
+            if (bypassCache) {
+                // Clear cache and reload (runs in browser context)
+                await this.page.evaluate(`
+                    if ('caches' in window) {
+                        caches.keys().then(function(names) { 
+                            names.forEach(function(name) { caches.delete(name); });
+                        });
+                    }
+                `);
+            }
+            
+            await this.page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+            return bypassCache ? '✅ Hard reload completed' : '✅ Page reloaded';
         } catch (error: any) {
-            return `Error reloading page: ${error.message}`;
+            return `Error: ${error.message}`;
         }
     }
 
+    // ============================================
+    // BROWSER LIFECYCLE
+    // ============================================
+
     /**
-     * Stop recording and close the browser
+     * Close browser
      */
     async closeBrowser(): Promise<RecordingResult | string> {
         try {
             let recordingResult: RecordingResult | undefined;
 
-            if (this.context && this.isRecording) {
-                // Close page first to finalize video
-                if (this.page) {
-                    await this.page.close();
-                }
+            // Stop heartbeat
+            if (this.heartbeatInterval) {
+                clearInterval(this.heartbeatInterval);
+                this.heartbeatInterval = null;
+            }
 
-                // Get the video path
+            // Handle recording
+            if (this.context && this.isRecording && this.page) {
+                await this.page.close();
+                
                 const video = this.page?.video();
                 if (video) {
                     const videoPath = await video.path();
-                    const duration = Date.now() - this.recordingStartTime;
-
-                    // Convert webm to mp4 if needed (Playwright records in webm by default)
-                    // For now, we'll return the webm path - ffmpeg conversion could be added later
                     recordingResult = {
                         path: videoPath,
-                        duration: duration,
+                        duration: Date.now() - this.recordingStartTime,
                         timestamp: this.recordingStartTime
                     };
                 }
             }
 
-            // Save session state before closing (for authenticated sessions)
+            // Save session before closing
             if (this.context) {
                 try {
-                    await this.authManager.saveContextState(this.context);
-                    console.log('[BrowserAutomationService] Session state saved before closing');
-                } catch (error) {
-                    // Non-critical - continue closing
+                    const currentUrl = this.page?.url();
+                    if (currentUrl) {
+                        const domain = new URL(currentUrl).hostname;
+                        await this.sessionManager.saveSession(this.context, `Auto-save ${domain}`, domain, true);
+                    }
+                } catch {
+                    // Non-critical
                 }
                 await this.context.close();
             }
+
             if (this.browser) {
                 await this.browser.close();
             }
 
+            // Reset state
             this.page = null;
+            this.pageValidator = null;
             this.context = null;
             this.browser = null;
+            this.currentBrowserInfo = null;
             this.isRecording = false;
             this.recordingStartTime = 0;
 
             if (recordingResult) {
                 return recordingResult;
             }
-            return 'Browser closed successfully.';
+            return '✅ Browser closed';
+
         } catch (error: any) {
             return `Error closing browser: ${error.message}`;
         }
     }
 
     /**
-     * Check if browser is currently running
+     * Check if browser is running
      */
     isRunning(): boolean {
         return this.browser !== null && this.page !== null;
     }
 
     /**
-     * Check if currently recording
+     * Check if recording
      */
     isRecordingVideo(): boolean {
         return this.isRecording;
     }
+
+    /**
+     * Get current browser info
+     */
+    getBrowserInfo(): BrowserInfo | null {
+        return this.currentBrowserInfo;
+    }
+
+    // ============================================
+    // SETUP & DIAGNOSTICS
+    // ============================================
+
+    /**
+     * Run browser setup wizard
+     */
+    async runSetup(): Promise<string> {
+        const browser = await this.browserManager.runSetupWizard();
+        
+        if (browser) {
+            return `✅ Browser configured: ${browser.name}\nPath: ${browser.executablePath}`;
+        }
+        
+        return '❌ Browser setup cancelled or failed.';
+    }
+
+    /**
+     * Get browser health status
+     */
+    async getHealthStatus(): Promise<string> {
+        if (!this.browser) {
+            return 'Browser not running.';
+        }
+
+        const health = await this.browserManager.checkBrowserHealth(this.browser);
+        
+        if (health.isAlive) {
+            return `✅ Browser healthy (PID: ${health.pid})`;
+        } else {
+            return '❌ Browser is unresponsive or crashed.';
+        }
+    }
+
+    /**
+     * Check session health
+     */
+    async checkSessionHealth(domain: string): Promise<string> {
+        const session = this.sessionManager.getSessionForDomain(domain);
+        
+        if (!session) {
+            return `No saved session found for ${domain}`;
+        }
+
+        const health = await this.sessionManager.analyzeSessionHealth(session.id);
+        
+        let message = `Session: ${session.name}\n`;
+        message += `Valid cookies: ${health.validCookies}\n`;
+        message += `Expired cookies: ${health.expiredCookies}\n`;
+        message += `Status: ${health.isValid ? '✅ Valid' : '⚠️ May need re-authentication'}\n`;
+        
+        if (health.recommendations.length > 0) {
+            message += `\nRecommendations:\n`;
+            health.recommendations.forEach(r => {
+                message += `  - ${r}\n`;
+            });
+        }
+
+        return message;
+    }
+}
+
+// ============================================
+// UTILITY FUNCTIONS
+// ============================================
+
+/**
+ * Check if playwright is available
+ */
+export async function isPlaywrightAvailable(): Promise<boolean> {
+    return getBrowserManager().isPlaywrightAvailable();
 }

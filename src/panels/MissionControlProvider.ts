@@ -802,10 +802,244 @@ export class MissionControlProvider {
                         }
                         return;
                     }
+
+                    // ========== Browser Automation Handlers ==========
+                    case 'detectBrowsers':
+                        this._handleDetectBrowsers();
+                        return;
+                    case 'downloadChromium':
+                        this._handleDownloadChromium();
+                        return;
+                    case 'selectBrowser':
+                        this._handleSelectBrowser(message.executablePath);
+                        return;
+                    case 'checkBrowserDependencies':
+                        this._handleCheckDependencies();
+                        return;
+                    case 'installBrowserDependencies':
+                        this._handleInstallDependencies();
+                        return;
+                    case 'loadSessions':
+                        this._handleLoadSessions();
+                        return;
+                    case 'checkSessionHealth':
+                        this._handleCheckSessionHealth(message.sessionId);
+                        return;
+                    case 'deleteSession':
+                        this._handleDeleteSession(message.sessionId);
+                        return;
+                    case 'clearAllSessions':
+                        this._handleClearAllSessions();
+                        return;
+                    case 'clearExpiredSessions':
+                        this._handleClearExpiredSessions();
+                        return;
+                    case 'useSession':
+                        this._handleUseSession(message.sessionId);
+                        return;
                 }
             },
             undefined,
             this._disposables
         );
+    }
+
+    // ========== Browser Automation Helper Methods ==========
+
+    private async _handleDetectBrowsers(): Promise<void> {
+        try {
+            const { getBrowserManager } = await import('../services/BrowserManager');
+            const browserManager = getBrowserManager();
+            const browsers = await browserManager.detectBrowsers();
+            this.safePostMessage({
+                type: 'browsersDetected',
+                browsers
+            });
+        } catch (error: any) {
+            this.safePostMessage({
+                type: 'browserDownloadError',
+                error: error.message
+            });
+        }
+    }
+
+    private async _handleDownloadChromium(): Promise<void> {
+        try {
+            const { getBrowserManager } = await import('../services/BrowserManager');
+            const browserManager = getBrowserManager();
+            
+            this.safePostMessage({ type: 'browserDownloadStarted' });
+            
+            const browser = await browserManager.downloadChromium();
+            
+            if (browser) {
+                this.safePostMessage({
+                    type: 'browserDownloadComplete',
+                    browser
+                });
+            } else {
+                this.safePostMessage({
+                    type: 'browserDownloadError',
+                    error: 'Download failed or was cancelled'
+                });
+            }
+        } catch (error: any) {
+            this.safePostMessage({
+                type: 'browserDownloadError',
+                error: error.message
+            });
+        }
+    }
+
+    private async _handleSelectBrowser(executablePath: string): Promise<void> {
+        try {
+            const { getBrowserManager } = await import('../services/BrowserManager');
+            const browserManager = getBrowserManager();
+            browserManager.setCustomBrowserPath(executablePath);
+            
+            this.safePostMessage({
+                type: 'browserSelected',
+                browser: { executablePath }
+            });
+            
+            vscode.window.showInformationMessage(`Browser configured: ${executablePath}`);
+        } catch (error: any) {
+            vscode.window.showErrorMessage(`Failed to set browser: ${error.message}`);
+        }
+    }
+
+    private async _handleLoadSessions(): Promise<void> {
+        try {
+            const { getSessionStorageManager } = await import('../services/SessionStorageManager');
+            const sessionManager = getSessionStorageManager();
+            const sessions = sessionManager.getAllSessions();
+            this.safePostMessage({
+                type: 'sessionsLoaded',
+                sessions
+            });
+        } catch (error: any) {
+            console.error('[MissionControl] Failed to load sessions:', error);
+            this.safePostMessage({
+                type: 'sessionsLoaded',
+                sessions: []
+            });
+        }
+    }
+
+    private async _handleCheckSessionHealth(sessionId: string): Promise<void> {
+        try {
+            const { getSessionStorageManager } = await import('../services/SessionStorageManager');
+            const sessionManager = getSessionStorageManager();
+            const health = await sessionManager.analyzeSessionHealth(sessionId);
+            this.safePostMessage({
+                type: 'sessionHealthResult',
+                health
+            });
+        } catch (error: any) {
+            this.safePostMessage({
+                type: 'sessionHealthResult',
+                health: {
+                    isValid: false,
+                    expiredCookies: 0,
+                    validCookies: 0,
+                    recommendations: [`Error checking health: ${error.message}`]
+                }
+            });
+        }
+    }
+
+    private async _handleDeleteSession(sessionId: string): Promise<void> {
+        try {
+            const { getSessionStorageManager } = await import('../services/SessionStorageManager');
+            const sessionManager = getSessionStorageManager();
+            sessionManager.deleteSession(sessionId);
+            this.safePostMessage({
+                type: 'sessionDeleted',
+                sessionId
+            });
+        } catch (error: any) {
+            vscode.window.showErrorMessage(`Failed to delete session: ${error.message}`);
+        }
+    }
+
+    private async _handleClearAllSessions(): Promise<void> {
+        try {
+            const { getSessionStorageManager } = await import('../services/SessionStorageManager');
+            const sessionManager = getSessionStorageManager();
+            const sessions = sessionManager.getAllSessions();
+            for (const session of sessions) {
+                sessionManager.deleteSession(session.id);
+            }
+            this.safePostMessage({ type: 'allSessionsCleared' });
+            vscode.window.showInformationMessage('All sessions cleared');
+        } catch (error: any) {
+            vscode.window.showErrorMessage(`Failed to clear sessions: ${error.message}`);
+        }
+    }
+
+    private async _handleClearExpiredSessions(): Promise<void> {
+        try {
+            const { getSessionStorageManager } = await import('../services/SessionStorageManager');
+            const sessionManager = getSessionStorageManager();
+            const count = sessionManager.clearExpiredSessions();
+            vscode.window.showInformationMessage(`Cleared ${count} expired session(s)`);
+            // Reload sessions
+            this._handleLoadSessions();
+        } catch (error: any) {
+            vscode.window.showErrorMessage(`Failed to clear expired sessions: ${error.message}`);
+        }
+    }
+
+    private async _handleUseSession(sessionId: string): Promise<void> {
+        // This would be used to signal that a session should be loaded
+        // The actual loading happens in BrowserAutomationService
+        vscode.window.showInformationMessage(`Session ${sessionId} selected. It will be used for the next browser automation.`);
+    }
+
+    private async _handleCheckDependencies(): Promise<void> {
+        try {
+            const { getBrowserDependencyInstaller } = await import('../services/BrowserDependencyInstaller');
+            const installer = getBrowserDependencyInstaller();
+            const dependencies = await installer.checkDependencies();
+            this.safePostMessage({
+                type: 'dependenciesChecked',
+                dependencies
+            });
+        } catch (error: any) {
+            console.error('[MissionControl] Failed to check dependencies:', error);
+            this.safePostMessage({
+                type: 'dependenciesChecked',
+                dependencies: []
+            });
+        }
+    }
+
+    private async _handleInstallDependencies(): Promise<void> {
+        try {
+            this.safePostMessage({ type: 'dependenciesInstalling' });
+            
+            const { getBrowserDependencyInstaller } = await import('../services/BrowserDependencyInstaller');
+            const installer = getBrowserDependencyInstaller();
+            installer.setExtensionPath(this._context.extensionPath);
+            
+            const result = await installer.installDependencies();
+            
+            // Re-check dependencies after install
+            const dependencies = await installer.checkDependencies();
+            
+            this.safePostMessage({
+                type: 'dependenciesInstalled',
+                success: result.success,
+                dependencies
+            });
+        } catch (error: any) {
+            console.error('[MissionControl] Failed to install dependencies:', error);
+            vscode.window.showErrorMessage(`Failed to install dependencies: ${error.message}`);
+            this.safePostMessage({
+                type: 'dependenciesInstalled',
+                success: false,
+                dependencies: []
+            });
+        }
     }
 }

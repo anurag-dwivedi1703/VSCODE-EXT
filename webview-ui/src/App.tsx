@@ -10,6 +10,8 @@ import { ConstitutionReviewModal } from './components/ConstitutionReviewModal';
 import { PhaseProgress, PhaseInfo } from './components/PhaseProgress';
 import { ContextBudgetIndicator, BudgetStatus } from './components/ContextBudgetIndicator';
 import { PhaseApprovalModal, PhaseApprovalData } from './components/PhaseApprovalModal';
+import { BrowserSetupWizard } from './components/BrowserSetupWizard';
+import { SessionManagerUI } from './components/SessionManagerUI';
 
 // Mock Data
 const DEFAULT_WORKSPACES = [
@@ -361,6 +363,10 @@ function App() {
 
     // Phase Approval Modal State
     const [phaseApprovalData, setPhaseApprovalData] = useState<(PhaseApprovalData & { taskId: string }) | null>(null);
+
+    // Browser Setup & Session Manager State
+    const [showBrowserSetup, setShowBrowserSetup] = useState(false);
+    const [showSessionManager, setShowSessionManager] = useState(false);
 
     // Auto-scroll logic - Smart scroll that respects user's scroll position
     const logsEndRef = useRef<HTMLDivElement>(null);
@@ -773,12 +779,48 @@ function App() {
                 />
             )}
 
+            {/* Browser Setup Wizard */}
+            {showBrowserSetup && (
+                <BrowserSetupWizard
+                    onClose={() => setShowBrowserSetup(false)}
+                    onBrowserSelected={(browser) => {
+                        console.log('Browser selected:', browser);
+                    }}
+                />
+            )}
+
+            {/* Session Manager UI */}
+            {showSessionManager && (
+                <SessionManagerUI
+                    onClose={() => setShowSessionManager(false)}
+                    onSessionSelected={(session) => {
+                        console.log('Session selected:', session);
+                    }}
+                />
+            )}
+
             <ResizableLayout
                 left={
                     /* LEFT PANE: WORKSPACE & MISSIONS */
                     <aside className="pane-sidebar">
                         <div className="pane-header">
                             <span className="title">VIBEARCHITECT v1.4</span>
+                            <div className="header-tools">
+                                <button 
+                                    className="icon-btn-small" 
+                                    onClick={() => setShowBrowserSetup(true)} 
+                                    title="Browser Setup"
+                                >
+                                    🌐
+                                </button>
+                                <button 
+                                    className="icon-btn-small" 
+                                    onClick={() => setShowSessionManager(true)} 
+                                    title="Session Manager"
+                                >
+                                    🔐
+                                </button>
+                            </div>
                         </div>
 
                         <div className="sub-header">

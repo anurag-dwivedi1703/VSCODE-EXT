@@ -132,6 +132,7 @@
     height: 40px;
     display: flex;
     align-items: center;
+    justify-content: space-between;
     padding: 0 15px;
     background-color: #367c2b;
     color: white;
@@ -146,6 +147,26 @@
     /* Allow header to shrink */
     flex-shrink: 0;
     /* But keep height fixed */
+}
+
+.header-tools {
+    display: flex;
+    gap: 4px;
+}
+
+.header-tools .icon-btn-small {
+    background: rgba(255, 255, 255, 0.15);
+    border: none;
+    color: white;
+    padding: 4px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: background 0.15s ease;
+}
+
+.header-tools .icon-btn-small:hover {
+    background: rgba(255, 255, 255, 0.3);
 }
 
 .pane-header>* {
