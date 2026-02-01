@@ -19,7 +19,7 @@ import { SpecManager, SpecPhase } from './SpecManager';
 import { ContextHarvester } from '../services/ContextHarvester';
 import { getRefinementManager } from './refinement';
 import { DiffAggregator } from '../utils/DiffAggregator';
-import { TokenBudget, truncateFileIntelligently } from '../utils/TokenBudget';
+import { TokenManager } from '../utils/TokenManager';
 import { MissionFolderManager } from '../utils/MissionFolderManager';
 import { getAttachmentProcessor, Attachment } from '../services/AttachmentProcessor';
 
@@ -32,7 +32,7 @@ interface TaskContext {
     copilotClaude?: CopilotClaudeClient;
     copilotGPT?: CopilotGPTClient;  // GPT-5-mini via Copilot
     diffAggregator?: DiffAggregator;  // Aggregates multiple diffs to same file
-    tokenBudget?: TokenBudget;  // Tracks context window usage
+    tokenManager?: TokenManager;  // Unified token budget management
 }
 
 interface FileEdit {
@@ -371,8 +371,19 @@ export class TaskRunner {
     /**
      * Intelligently truncate tool results before sending to AI to prevent token limit issues.
      * Special handling for compile errors: summarizes first errors, shows total count.
+     * 
+     * @param toolName - Name of the tool that produced the result
+     * @param result - The raw tool result
+     * @param tokenManager - Optional TokenManager for model-aware truncation
+     * @param maxChars - Maximum characters (default 8000, ~2K tokens)
      */
-    private truncateToolResult(toolName: string, result: string, maxChars: number = 8000): string {
+    private truncateToolResult(toolName: string, result: string, tokenManager?: TokenManager, maxChars: number = 8000): string {
+        // Use TokenManager if available for smarter truncation
+        if (tokenManager) {
+            return tokenManager.truncateToolResult(toolName, result, maxChars);
+        }
+        
+        // Fallback to inline implementation
         if (result.length <= maxChars) {
             return result;
         }
@@ -999,10 +1010,15 @@ ${originalPrompt}`;
                 }
             );
 
+            // Initialize TokenManager with model-aware limits
+            // Will be updated with actual VS Code LM API limits when AI client is initialized
+            const tokenManager = TokenManager.fromModelId(task.model || 'default');
+            
             const taskContext: TaskContext = {
                 shadowRepo,
                 revertManager,
-                diffAggregator
+                diffAggregator,
+                tokenManager
             };
             this.taskContexts.set(taskId, taskContext);
 
@@ -1639,18 +1655,26 @@ ${contextData}
                                     const filePath = args.path as string;
                                     let content = await tools.readFile(filePath);
                                     
-                                    // Token-aware truncation for large files
-                                    // VS Code Copilot models typically have 128K-200K token limits
-                                    // Reserve ~60K tokens for context + response
-                                    const MAX_FILE_CHARS = 100000; // ~25K tokens at 4 chars/token
+                                    // Token-aware truncation using unified TokenManager
+                                    // Gets model-specific limits from VS Code LM API or fallbacks
+                                    const taskContext = this.taskContexts.get(taskId);
+                                    const tokenMgr = taskContext?.tokenManager;
+                                    
+                                    // Calculate max chars based on mode and available tokens
+                                    // For planning/fast, allow up to 25% of available tokens for a single file
+                                    const mode = task.mode === 'fast' ? 'fast' : 'planning';
+                                    const availableTokens = tokenMgr?.getAvailableTokens(mode) ?? 30000;
+                                    const maxFileTokens = Math.floor(availableTokens * 0.25);
+                                    const MAX_FILE_CHARS = Math.max(20000, maxFileTokens * 4); // Min 20K chars
                                     
                                     if (!content.startsWith('Error') && content.length > MAX_FILE_CHARS) {
                                         // Use intelligent truncation that preserves important parts
                                         const originalLength = content.length;
-                                        content = truncateFileIntelligently(content, MAX_FILE_CHARS, filePath);
+                                        content = tokenMgr?.truncateFile(content, MAX_FILE_CHARS, filePath) 
+                                            ?? content.slice(0, MAX_FILE_CHARS);
                                         const truncatedLength = content.length;
                                         
-                                        task.logs.push(`[TokenBudget] Truncated ${filePath}: ${Math.round(originalLength/1000)}KB → ${Math.round(truncatedLength/1000)}KB`);
+                                        task.logs.push(`[TokenManager] Truncated ${filePath}: ${Math.round(originalLength/1000)}KB → ${Math.round(truncatedLength/1000)}KB`);
                                         content += `\n\n[FILE TRUNCATED: Original ${Math.round(originalLength/1000)}KB. Use apply_diff for edits - do NOT use write_file on truncated content.]`;
                                     }
                                     
@@ -1928,7 +1952,9 @@ ${contextData}
 
                         // CRITICAL: Truncate tool result BEFORE sending to AI to prevent token limit issues
                         // This is especially important for compile errors which can be 50,000+ chars
-                        const truncatedForAI = this.truncateToolResult(fnName, toolResult);
+                        // Use TokenManager for model-aware truncation limits
+                        const taskCtx = this.taskContexts.get(taskId);
+                        const truncatedForAI = this.truncateToolResult(fnName, toolResult, taskCtx?.tokenManager);
 
                         toolParts.push({
                             functionResponse: {

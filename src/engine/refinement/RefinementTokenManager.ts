@@ -12,17 +12,40 @@
 // Token estimation: ~4 chars per token for English text
 const CHARS_PER_TOKEN = 4;
 
-// Default token limits for different models
+/**
+ * Fallback token limits for different models.
+ * 
+ * IMPORTANT: When using VS Code LM API (Copilot), the API provides 
+ * model.maxInputTokens which should be preferred over these fallbacks.
+ * These are CONSERVATIVE estimates for when the API doesn't provide limits.
+ * 
+ * Note: Copilot-provided models typically report 128K limits regardless
+ * of the underlying model's actual capacity.
+ */
 const MODEL_TOKEN_LIMITS: Record<string, number> = {
+    // Copilot-provided models (conservative - VS Code LM API may report higher)
     'gpt-4': 128000,
     'gpt-4o': 128000,
     'gpt-4o-mini': 128000,
+    'gpt-5': 128000,
+    'claude': 128000,        // Copilot Claude - conservative
+    'claude-3': 128000,
+    'claude-opus': 128000,
+    'claude-sonnet': 128000,
+    'gemini': 128000,        // Copilot Gemini - conservative
+    'gemini-flash': 128000,
+    'gemini-pro': 128000,
+    
+    // Direct API models (if used outside Copilot)
     'claude-3-5-sonnet': 200000,
     'claude-3-opus': 200000,
     'claude-sonnet-4': 200000,
+    'claude-opus-4': 200000,
     'gemini-2.0-flash': 1000000,
     'gemini-1.5-pro': 2000000,
-    'default': 32000  // Conservative default for unknown models
+    
+    // Default fallback - very conservative
+    'default': 32000
 };
 
 // Reserve tokens for response generation

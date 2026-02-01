@@ -178,14 +178,35 @@ export function parseSearchReplaceBlocks(
 }
 
 /**
- * Find search content in file, handling CRLF/LF differences
- * Returns the start index in the ORIGINAL content, or -1 if not found
+ * Normalize whitespace for comparison
+ * - Converts tabs to spaces
+ * - Trims trailing whitespace
+ * - Normalizes line endings to LF
  */
-export function findSearchBlock(fileContent: string, searchContent: string): { index: number; matchLength: number } | null {
+export function normalizeForComparison(text: string): string {
+    return text
+        .replace(/\r\n/g, '\n')
+        .replace(/\t/g, '  ')
+        .split('\n')
+        .map(line => line.trimEnd())
+        .join('\n');
+}
+
+/**
+ * Find search content in file, handling CRLF/LF differences and whitespace variations
+ * Returns the start index in the ORIGINAL content, or -1 if not found
+ * 
+ * Matching strategies (in order):
+ * 1. Exact match
+ * 2. CRLF/LF normalized match
+ * 3. Whitespace-normalized match (tabs, trailing spaces)
+ * 4. Line-by-line trimmed comparison
+ */
+export function findSearchBlock(fileContent: string, searchContent: string): { index: number; matchLength: number; strategy: string } | null {
     // Strategy 1: Try exact match first (fastest)
     const index = fileContent.indexOf(searchContent);
     if (index !== -1) {
-        return { index, matchLength: searchContent.length };
+        return { index, matchLength: searchContent.length, strategy: 'exact' };
     }
 
     // Strategy 2: Normalize BOTH to LF and find match
@@ -198,10 +219,23 @@ export function findSearchBlock(fileContent: string, searchContent: string): { i
         // Count how many \r characters are before this position in original
         const originalIndex = convertNormalizedIndexToOriginal(fileContent, normalizedIndex);
         const matchLength = findMatchLengthInOriginal(fileContent, originalIndex, normalizedSearch);
-        return { index: originalIndex, matchLength };
+        return { index: originalIndex, matchLength, strategy: 'crlf-normalized' };
     }
 
-    // Strategy 3: Line-by-line comparison with whitespace trimming
+    // Strategy 3: Full whitespace normalization (tabs + trailing spaces)
+    const wsNormalizedFile = normalizeForComparison(fileContent);
+    const wsNormalizedSearch = normalizeForComparison(searchContent);
+
+    const wsIndex = wsNormalizedFile.indexOf(wsNormalizedSearch);
+    if (wsIndex !== -1) {
+        // Map back to original position
+        const result = mapNormalizedIndexToOriginal(fileContent, wsNormalizedFile, wsIndex, wsNormalizedSearch.length);
+        if (result) {
+            return { ...result, strategy: 'whitespace-normalized' };
+        }
+    }
+
+    // Strategy 4: Line-by-line comparison with whitespace trimming
     const fileLines = fileContent.split(/\r?\n/);
     const searchLines = normalizedSearch.split('\n');
 
@@ -228,11 +262,147 @@ export function findSearchBlock(fileContent: string, searchContent: string): { i
                     matchLen += fileContent.includes('\r\n') ? 2 : 1;
                 }
             }
+            return { index: charIndex, matchLength: matchLen, strategy: 'line-trimmed' };
+        }
+    }
+
+    // Strategy 5: Indentation-normalized (handles different base indentation)
+    const result = findWithIndentationNormalization(fileContent, searchContent);
+    if (result) {
+        return { ...result, strategy: 'indent-normalized' };
+    }
+
+    return null;
+}
+
+/**
+ * Map an index from normalized content back to original content
+ */
+function mapNormalizedIndexToOriginal(
+    original: string,
+    normalized: string,
+    normalizedIndex: number,
+    normalizedLength: number
+): { index: number; matchLength: number } | null {
+    // Find the line number in normalized content
+    const normalizedLines = normalized.split('\n');
+    const originalLines = original.replace(/\r\n/g, '\n').split('\n');
+
+    let charCount = 0;
+    let startLine = 0;
+    for (let i = 0; i < normalizedLines.length; i++) {
+        if (charCount + normalizedLines[i].length >= normalizedIndex) {
+            startLine = i;
+            break;
+        }
+        charCount += normalizedLines[i].length + 1;
+    }
+
+    // Count lines in the match
+    charCount = 0;
+    let endLine = startLine;
+    for (let i = 0; i < normalizedLines.length; i++) {
+        if (charCount >= normalizedIndex + normalizedLength) {
+            endLine = Math.max(startLine, i - 1);
+            break;
+        }
+        charCount += normalizedLines[i].length + 1;
+        endLine = i;
+    }
+
+    // Calculate original position
+    if (startLine < originalLines.length && endLine < originalLines.length) {
+        let originalStart = 0;
+        for (let i = 0; i < startLine; i++) {
+            originalStart += originalLines[i].length + (original.includes('\r\n') ? 2 : 1);
+        }
+
+        let originalEnd = originalStart;
+        for (let i = startLine; i <= endLine; i++) {
+            originalEnd += originalLines[i].length + (original.includes('\r\n') ? 2 : 1);
+        }
+        originalEnd -= (original.includes('\r\n') ? 2 : 1);
+
+        return { index: originalStart, matchLength: originalEnd - originalStart };
+    }
+
+    return null;
+}
+
+/**
+ * Find match with indentation normalization
+ * Handles cases where search and file have different base indentation
+ */
+function findWithIndentationNormalization(
+    fileContent: string,
+    searchContent: string
+): { index: number; matchLength: number } | null {
+    const fileLines = fileContent.replace(/\r\n/g, '\n').split('\n');
+    const searchLines = searchContent.replace(/\r\n/g, '\n').split('\n');
+
+    // Get the minimum indentation of search content
+    const searchMinIndent = getMinIndent(searchLines);
+
+    // Try to find a match by adjusting indentation
+    for (let i = 0; i <= fileLines.length - searchLines.length; i++) {
+        const fileMinIndent = getMinIndent(fileLines.slice(i, i + searchLines.length));
+        const indentDiff = fileMinIndent - searchMinIndent;
+
+        let matches = true;
+        for (let j = 0; j < searchLines.length; j++) {
+            const searchLine = searchLines[j].replace(/\t/g, '  ');
+            const fileLine = fileLines[i + j].replace(/\t/g, '  ');
+
+            // Adjust search line indentation
+            let adjustedSearch: string;
+            if (searchLine.trim() === '') {
+                adjustedSearch = '';
+            } else if (indentDiff >= 0) {
+                adjustedSearch = ' '.repeat(indentDiff) + searchLine;
+            } else {
+                // Remove indentation from search line
+                const searchIndent = searchLine.match(/^\s*/)?.[0].length || 0;
+                const removeCount = Math.min(searchIndent, -indentDiff);
+                adjustedSearch = searchLine.slice(removeCount);
+            }
+
+            if (fileLine.trimEnd() !== adjustedSearch.trimEnd()) {
+                matches = false;
+                break;
+            }
+        }
+
+        if (matches) {
+            // Calculate position
+            let charIndex = 0;
+            for (let k = 0; k < i; k++) {
+                charIndex += fileLines[k].length + (fileContent.includes('\r\n') ? 2 : 1);
+            }
+            let matchLen = 0;
+            for (let k = 0; k < searchLines.length; k++) {
+                matchLen += fileLines[i + k].length;
+                if (k < searchLines.length - 1) {
+                    matchLen += fileContent.includes('\r\n') ? 2 : 1;
+                }
+            }
             return { index: charIndex, matchLength: matchLen };
         }
     }
 
     return null;
+}
+
+/**
+ * Get minimum indentation of non-empty lines
+ */
+function getMinIndent(lines: string[]): number {
+    let minIndent = Infinity;
+    for (const line of lines) {
+        if (line.trim() === '') continue;
+        const indent = line.replace(/\t/g, '  ').match(/^\s*/)?.[0].length || 0;
+        minIndent = Math.min(minIndent, indent);
+    }
+    return minIndent === Infinity ? 0 : minIndent;
 }
 
 /**
