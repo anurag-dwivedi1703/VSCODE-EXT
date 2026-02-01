@@ -942,6 +942,7 @@
 .composer-textarea {
     width: 100%;
     min-height: 140px;
+    max-height: 400px;
     background: transparent;
     border: none;
     color: var(--vscode-input-foreground);
@@ -951,6 +952,7 @@
     resize: none;
     outline: none;
     padding: 15px;
+    overflow-y: auto;
 }
 
 .composer-textarea::placeholder {
@@ -964,6 +966,128 @@
     padding: 10px;
     border-top: 1px solid var(--vscode-widget-border);
     /* Subtle separator */
+}
+
+/* Composer Input Row with Buttons */
+.composer-input-row {
+    display: flex;
+    gap: 8px;
+    padding: 8px;
+    align-items: flex-start;
+}
+
+.composer-input-row .composer-textarea {
+    flex: 1;
+    min-height: 100px;
+    max-height: 400px;
+    padding: 12px;
+    border: none;
+    background: transparent;
+    overflow-y: auto;
+}
+
+/* Attachment and Context Buttons */
+.icon-btn-attachment,
+.icon-btn-context {
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    border: 1px solid var(--vscode-input-border);
+    background: var(--vscode-button-secondaryBackground);
+    color: var(--vscode-button-secondaryForeground);
+    font-size: 16px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+    flex-shrink: 0;
+}
+
+.icon-btn-attachment:hover,
+.icon-btn-context:hover {
+    background: var(--vscode-button-secondaryHoverBackground);
+    border-color: var(--brand-primary);
+}
+
+/* Composer Attachments Container */
+.composer-attachments {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 12px;
+    padding-bottom: 0;
+    border-bottom: 1px solid var(--vscode-widget-border);
+}
+
+/* Attachment Chip */
+.attachment-chip {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    background: var(--vscode-badge-background);
+    border-radius: 6px;
+    font-size: 12px;
+    max-width: 180px;
+    position: relative;
+}
+
+.attachment-chip.image {
+    padding-left: 6px;
+}
+
+.attachment-chip .attachment-thumbnail {
+    width: 32px;
+    height: 32px;
+    object-fit: cover;
+    border-radius: 4px;
+    border: 1px solid var(--vscode-widget-border);
+}
+
+.attachment-chip .attachment-icon {
+    font-size: 14px;
+}
+
+.attachment-chip .attachment-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--vscode-badge-foreground);
+}
+
+.attachment-chip .attachment-remove {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: none;
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--vscode-badge-foreground);
+    font-size: 12px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0.7;
+    transition: all 0.2s ease;
+    margin-left: 4px;
+}
+
+.attachment-chip .attachment-remove:hover {
+    opacity: 1;
+    background: rgba(255, 100, 100, 0.3);
+}
+
+/* Image attachment special styling */
+.attachment-chip.image {
+    background: linear-gradient(135deg, rgba(100, 150, 255, 0.15), rgba(100, 150, 255, 0.05));
+    border: 1px solid rgba(100, 150, 255, 0.3);
+}
+
+/* Document attachment special styling */
+.attachment-chip.document {
+    background: linear-gradient(135deg, rgba(255, 200, 100, 0.15), rgba(255, 200, 100, 0.05));
+    border: 1px solid rgba(255, 200, 100, 0.3);
 }
 
 /* Primary Button */

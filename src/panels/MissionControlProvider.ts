@@ -7,6 +7,7 @@ import {
     createTaskRunnerPhaseIntegration,
     PhaseExecutionInfo
 } from '../services/TaskRunnerPhaseIntegration';
+import { getAttachmentProcessor, Attachment, ProcessedAttachment } from '../services/AttachmentProcessor';
 
 interface WorkspaceInfo {
     id: string;
@@ -378,6 +379,47 @@ export class MissionControlProvider {
     }
 
     /**
+     * Start a task with attachment processing
+     * Processes images (via vision) and documents (via text extraction) to enrich the prompt
+     */
+    private async _startTaskWithAttachments(
+        text: string,
+        workspacePath: string,
+        mode: 'planning' | 'fast' | 'refinement',
+        model: string,
+        chatId: string,
+        attachments: Attachment[]
+    ): Promise<void> {
+        let enrichedPrompt = text;
+
+        // Process attachments if any
+        if (attachments && attachments.length > 0) {
+            try {
+                console.log(`[MissionControl] Processing ${attachments.length} attachments...`);
+                
+                const processor = getAttachmentProcessor();
+                const processed = await processor.processAttachments(attachments);
+                const contextString = processor.generateContextString(processed);
+
+                if (contextString) {
+                    enrichedPrompt = text + contextString;
+                    console.log(`[MissionControl] Enriched prompt with ${processed.length} attachment analyses`);
+                }
+            } catch (error: any) {
+                console.error('[MissionControl] Attachment processing failed:', error);
+                // Continue with original prompt
+            }
+        }
+
+        // Use phase-aware task start if enabled
+        if (this._phasedExecutionEnabled) {
+            await this._startTaskWithPhaseAnalysis(enrichedPrompt, workspacePath, mode, model, chatId);
+        } else {
+            this._taskRunner.startTask(enrichedPrompt, workspacePath, mode, model, chatId, text);
+        }
+    }
+
+    /**
      * Safely post a message to the webview, ignoring if disposed
      */
     private safePostMessage(message: any) {
@@ -455,14 +497,12 @@ export class MissionControlProvider {
                         const mode = message.mode;
                         const model = message.model;
                         const chatId = message.chatId;  // Chat-specific ID for mission folder isolation
-                        console.log(`[MissionControl] Starting task in workspace: ${workspacePath} [${mode}] [${model}] [chatId: ${chatId || 'auto'}]`);
+                        const attachments = message.attachments as Attachment[] || [];
+                        
+                        console.log(`[MissionControl] Starting task in workspace: ${workspacePath} [${mode}] [${model}] [chatId: ${chatId || 'auto'}] [attachments: ${attachments.length}]`);
 
-                        // Use phase-aware task start if enabled
-                        if (this._phasedExecutionEnabled) {
-                            this._startTaskWithPhaseAnalysis(text, workspacePath, mode, model, chatId);
-                        } else {
-                            this._taskRunner.startTask(text, workspacePath, mode, model, chatId);
-                        }
+                        // Process attachments if any (images via vision, documents via text extraction)
+                        this._startTaskWithAttachments(text, workspacePath, mode, model, chatId, attachments);
                         return;
                     }
                     case 'hello':
@@ -517,6 +557,68 @@ export class MissionControlProvider {
                                 this.safePostMessage({
                                     command: 'contextSelected',
                                     paths: uris.map(u => u.fsPath)
+                                });
+                            }
+                        });
+                        return;
+                    case 'selectComposerContext':
+                        // Select files for Start Mission composer (supports images and documents)
+                        vscode.window.showOpenDialog({
+                            canSelectFiles: true,
+                            canSelectFolders: false,
+                            canSelectMany: true,
+                            openLabel: 'Attach Files',
+                            filters: {
+                                'Images': ['png', 'jpg', 'jpeg', 'gif', 'webp'],
+                                'Documents': ['pdf', 'txt', 'md', 'doc', 'docx'],
+                                'All Files': ['*']
+                            }
+                        }).then(async uris => {
+                            if (uris && uris.length > 0) {
+                                const files = await Promise.all(uris.map(async uri => {
+                                    const filePath = uri.fsPath;
+                                    const fileName = path.basename(filePath);
+                                    const ext = path.extname(filePath).toLowerCase();
+                                    
+                                    // Determine file type
+                                    const isImage = ['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(ext);
+                                    const mimeTypes: Record<string, string> = {
+                                        '.png': 'image/png',
+                                        '.jpg': 'image/jpeg',
+                                        '.jpeg': 'image/jpeg',
+                                        '.gif': 'image/gif',
+                                        '.webp': 'image/webp',
+                                        '.pdf': 'application/pdf',
+                                        '.txt': 'text/plain',
+                                        '.md': 'text/markdown',
+                                        '.doc': 'application/msword',
+                                        '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                                    };
+                                    
+                                    const fileType = mimeTypes[ext] || 'application/octet-stream';
+                                    
+                                    // For images, read and convert to base64 data URL
+                                    let content: string | undefined;
+                                    if (isImage) {
+                                        try {
+                                            const data = fs.readFileSync(filePath);
+                                            content = `data:${fileType};base64,${data.toString('base64')}`;
+                                        } catch (e) {
+                                            console.error(`Failed to read image: ${filePath}`, e);
+                                        }
+                                    }
+                                    
+                                    return {
+                                        path: filePath,
+                                        name: fileName,
+                                        type: fileType,
+                                        content
+                                    };
+                                }));
+                                
+                                this.safePostMessage({
+                                    command: 'composerContextSelected',
+                                    files
                                 });
                             }
                         });

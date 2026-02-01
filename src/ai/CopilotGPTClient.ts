@@ -54,12 +54,13 @@ export class CopilotGPTClient {
         }
     }
 
-    public startSession(systemPrompt: string, _thinkingLevel: 'low' | 'high' = 'high'): ISession {
+    public startSession(systemPrompt: string, _thinkingLevel: 'low' | 'high' = 'high', includeToolInstructions: boolean = true): ISession {
         const messages: vscode.LanguageModelChatMessage[] = [];
         const model = this.model;
 
         // Inject tool call format instructions since vscode.lm doesn't support native function calling
-        const toolCallInstructions = `
+        // Only include if caller wants tool support (NOT for Refinement Mode)
+        const toolCallInstructions = includeToolInstructions ? `
 
 CRITICAL - TOOL CALL FORMAT:
 Since you're running through VS Code's Language Model API, you MUST output tool calls in this EXACT format:
@@ -144,11 +145,15 @@ Other Available Tools (these USE \`\`\`tool_call format):
 \`\`\`
 
 REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JSON format
-`;
+` : '';  // End of toolCallInstructions ternary
 
 
         // Add system context as first user message (vscode.lm may not support system role)
-        messages.push(vscode.LanguageModelChatMessage.User(`[SYSTEM CONTEXT]\n${systemPrompt}\n${toolCallInstructions}\n[END SYSTEM CONTEXT]`));
+        // Only append tool instructions if they're enabled
+        const systemContext = toolCallInstructions 
+            ? `[SYSTEM CONTEXT]\n${systemPrompt}\n${toolCallInstructions}\n[END SYSTEM CONTEXT]`
+            : `[SYSTEM CONTEXT]\n${systemPrompt}\n\nIMPORTANT: You are in analysis/refinement mode. Do NOT use tools like list_files, read_file, or write_file. Only provide text responses - questions, analysis, or structured documents.\n[END SYSTEM CONTEXT]`;
+        messages.push(vscode.LanguageModelChatMessage.User(systemContext));
 
         return {
             sendMessage: async (prompt: string | any[]) => {

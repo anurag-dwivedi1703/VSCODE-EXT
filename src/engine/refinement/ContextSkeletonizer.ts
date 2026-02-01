@@ -13,6 +13,50 @@ import * as path from 'path';
 const SUPPORTED_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.py', '.java', '.cs'];
 
 /**
+ * Directories to exclude from skeletonization.
+ */
+const EXCLUDED_DIRECTORIES = new Set([
+    'node_modules',
+    '.git',
+    'dist',
+    'build',
+    'out',
+    '.next',
+    '.nuxt',
+    'coverage',
+    'vendor',
+    'tmp',
+    'temp',
+    '.cache',
+    '.vscode',
+    '.idea',
+    '__pycache__',
+    '.pytest_cache',
+    'venv',
+    'env',
+    '.env',
+    '.vibearchitect',
+    '.antigravity',
+    '.specify',
+    'test',
+    'tests',
+    '__tests__',
+    'spec',
+    'specs'
+]);
+
+/**
+ * Files to exclude from skeletonization.
+ */
+const EXCLUDED_FILES = new Set([
+    'package-lock.json',
+    'yarn.lock',
+    'pnpm-lock.yaml',
+    '.DS_Store',
+    'Thumbs.db'
+]);
+
+/**
  * Extract skeleton (signatures only) from TypeScript/JavaScript code.
  */
 function skeletonizeTypeScript(content: string, filePath: string): string {
@@ -203,9 +247,53 @@ export function skeletonizeFiles(filePaths: string[]): string {
 }
 
 /**
- * Generate skeleton context from a directory (non-recursive, top-level only).
+ * Check if a directory should be excluded from skeletonization.
  */
-export function skeletonizeDirectory(dirPath: string, includeSubdirs: boolean = false): string {
+function isExcludedDirectory(dirName: string): boolean {
+    return EXCLUDED_DIRECTORIES.has(dirName.toLowerCase());
+}
+
+/**
+ * Check if a file should be excluded from skeletonization.
+ */
+function isExcludedFile(fileName: string): boolean {
+    const lowerName = fileName.toLowerCase();
+    
+    // Check explicit exclusions
+    if (EXCLUDED_FILES.has(fileName)) {
+        return true;
+    }
+    
+    // Exclude minified files
+    if (lowerName.endsWith('.min.js') || lowerName.endsWith('.min.css')) {
+        return true;
+    }
+    
+    // Exclude map files
+    if (lowerName.endsWith('.map')) {
+        return true;
+    }
+    
+    // Exclude lock files
+    if (lowerName.includes('lock')) {
+        return true;
+    }
+    
+    return false;
+}
+
+/**
+ * Generate skeleton context from a directory.
+ * 
+ * @param dirPath - Directory path to skeletonize
+ * @param includeSubdirs - Whether to recursively process subdirectories
+ * @param skipExclusions - If true, process all directories (for targeted use)
+ */
+export function skeletonizeDirectory(
+    dirPath: string, 
+    includeSubdirs: boolean = false,
+    skipExclusions: boolean = false
+): string {
     const skeletons: string[] = [];
 
     try {
@@ -215,13 +303,23 @@ export function skeletonizeDirectory(dirPath: string, includeSubdirs: boolean = 
             const fullPath = path.join(dirPath, entry.name);
 
             if (entry.isFile()) {
+                // Skip excluded files
+                if (!skipExclusions && isExcludedFile(entry.name)) {
+                    continue;
+                }
+                
                 const skeleton = skeletonizeFile(fullPath);
                 if (skeleton) {
                     skeletons.push(skeleton);
                 }
             } else if (entry.isDirectory() && includeSubdirs) {
+                // Skip excluded directories
+                if (!skipExclusions && isExcludedDirectory(entry.name)) {
+                    continue;
+                }
+                
                 // Recursive call for subdirectories
-                const subSkeleton = skeletonizeDirectory(fullPath, true);
+                const subSkeleton = skeletonizeDirectory(fullPath, true, skipExclusions);
                 if (subSkeleton) {
                     skeletons.push(`## ${entry.name}/\n${subSkeleton}`);
                 }

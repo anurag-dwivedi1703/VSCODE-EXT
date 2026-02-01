@@ -2,6 +2,12 @@
  * RefinementSession.ts
  * Implements the state machine for a single refinement session.
  * Manages transitions between Analyst, Critic, and Refiner agents.
+ * 
+ * Token-Efficient Design:
+ * - Uses RefinementTokenManager to track and limit token usage
+ * - Automatically summarizes conversation history when approaching limits
+ * - Truncates context intelligently to preserve key information
+ * - Supports multi-turn PRD generation for complex features
  */
 
 import * as vscode from 'vscode';
@@ -19,9 +25,13 @@ import {
     getPersonaPrompt,
     generateAnalystInitialPrompt,
     generateCriticPrompt,
-    generateRefinerPrompt
+    generateRefinerPrompt,
+    generateTokenEfficientAnalystPrompt,
+    generateTokenEfficientCriticPrompt,
+    generateTokenEfficientRefinerPrompt
 } from './RefinementPrompts';
 import { ISession } from '../../ai/GeminiClient';
+import { RefinementTokenManager, createTokenAwareSkeleton } from './RefinementTokenManager';
 
 /**
  * Confidence threshold below which more clarifying questions are triggered.
@@ -38,10 +48,18 @@ const MAX_ITERATIONS = 5;
  */
 const AI_CALL_TIMEOUT_MS = 300000; // 5 minutes
 
+/**
+ * Token utilization threshold to trigger summarization (80%)
+ */
+const TOKEN_WARNING_THRESHOLD = 0.8;
+
 export class RefinementSession {
     private _state: RefinementSessionState;
     private _aiSession: ISession | null = null;
     private _iterationCount = 0;
+    private _tokenManager: RefinementTokenManager;
+    private _modelId: string = 'default';
+    private _skeletonContext: string = '';
 
     // Event emitter for UI updates
     private _onEvent = new vscode.EventEmitter<RefinementEvent>();
@@ -50,7 +68,8 @@ export class RefinementSession {
     constructor(
         sessionId: string,
         taskId: string,
-        originalPrompt: string
+        originalPrompt: string,
+        modelId: string = 'default'
     ) {
         this._state = {
             sessionId,
@@ -62,6 +81,8 @@ export class RefinementSession {
             createdAt: Date.now(),
             updatedAt: Date.now()
         };
+        this._modelId = modelId;
+        this._tokenManager = new RefinementTokenManager(modelId);
     }
 
     // ========================================
@@ -110,6 +131,8 @@ export class RefinementSession {
     /**
      * Start the refinement process with the initial prompt.
      * Transitions: IDLE -> DRAFTING
+     * 
+     * Token-efficient: Truncates skeleton context if needed.
      */
     public async start(skeletonContext: string): Promise<RefinementTurn> {
         if (this._state.state !== 'IDLE') {
@@ -121,49 +144,97 @@ export class RefinementSession {
         // Add the user's original prompt to history
         this.addTurn('user', this._state.originalPrompt);
 
-        // Generate the Analyst's initial prompt
-        const analystPrompt = generateAnalystInitialPrompt(
-            this._state.originalPrompt,
-            skeletonContext
+        // Extract keywords for context relevance
+        const keywords = this._tokenManager.extractKeywords(this._state.originalPrompt);
+        
+        // Get available tokens for analyst stage
+        const availableTokens = this._tokenManager.getAvailableTokensForStage('analyst');
+        
+        // Create token-aware skeleton context
+        const truncatedSkeleton = createTokenAwareSkeleton(
+            skeletonContext,
+            availableTokens,
+            keywords
         );
-        console.log(`[RefinementSession] Analyst prompt length: ${analystPrompt.length} chars`);
+        this._skeletonContext = truncatedSkeleton;
+        
+        const skeletonTokens = this._tokenManager.estimateTokens(truncatedSkeleton);
+        const originalTokens = this._tokenManager.estimateTokens(skeletonContext);
+        
+        if (skeletonTokens < originalTokens) {
+            console.log(`[RefinementSession] Skeleton truncated: ${originalTokens} -> ${skeletonTokens} tokens`);
+            this._onEvent.fire({
+                type: 'progress',
+                sessionId: this.sessionId,
+                payload: `Context optimized: ${originalTokens} -> ${skeletonTokens} tokens for efficiency`
+            });
+        }
+
+        // Generate the Analyst's initial prompt (use token-efficient version for large contexts)
+        const analystPrompt = skeletonTokens > 5000
+            ? generateTokenEfficientAnalystPrompt(this._state.originalPrompt, truncatedSkeleton)
+            : generateAnalystInitialPrompt(this._state.originalPrompt, truncatedSkeleton);
+        
+        console.log(`[RefinementSession] Analyst prompt length: ${analystPrompt.length} chars (~${this._tokenManager.estimateTokens(analystPrompt)} tokens)`);
 
         // Call the AI with Analyst persona
         const response = await this.callAI('analyst', analystPrompt);
         console.log(`[RefinementSession] Analyst response:`, response.substring(0, 500));
 
+        // Track token usage
+        this._tokenManager.addConversationTokens(
+            this._tokenManager.estimateTokens(analystPrompt) + 
+            this._tokenManager.estimateTokens(response)
+        );
+        this.logTokenUsage();
+
         // Parse the response for questions or draft
         const turn = this.parseAnalystResponse(response);
-        console.log(`[RefinementSession] Parsed ${turn.metadata?.questions?.length || 0} questions`);
+        const questionCount = turn.metadata?.questions?.length || 0;
+        const hasDraft = turn.metadata?.hasDraft || false;
+        console.log(`[RefinementSession] Parsed ${questionCount} questions, hasDraft: ${hasDraft}`);
         this.addTurn('analyst', response, turn.metadata);
 
-        // If questions were asked, wait for user
-        if (turn.metadata?.questions && turn.metadata.questions.length > 0) {
-            this.transitionTo('AWAITING_USER');
-            console.log(`[RefinementSession] Firing 'question' event with ${turn.metadata.questions.length} questions`);
-            this._onEvent.fire({
-                type: 'question',
-                sessionId: this.sessionId,
-                payload: turn.metadata.questions
-            });
-        } else {
-            // No questions found - the AI might have gone straight to a draft or given a generic response
-            // Fire the response as a draft anyway so the user can see it
-            console.log(`[RefinementSession] No questions parsed, firing response as draft`);
-            this._onEvent.fire({
-                type: 'draft-ready',
-                sessionId: this.sessionId,
-                payload: response
-            });
-            this.transitionTo('AWAITING_USER');
-        }
+        // ALWAYS fire a single 'analyst-response' event with the FULL response
+        // The UI should display this as ONE bubble, not separate pieces
+        this.transitionTo('AWAITING_USER');
+        console.log(`[RefinementSession] Firing 'analyst-response' event`);
+        this._onEvent.fire({
+            type: 'analyst-response',
+            sessionId: this.sessionId,
+            payload: {
+                content: response,
+                hasQuestions: questionCount > 0,
+                hasDraft: hasDraft,
+                questionCount: questionCount
+            }
+        });
 
         return turn;
     }
 
     /**
+     * Log current token usage for debugging.
+     */
+    private logTokenUsage(): void {
+        const budget = this._tokenManager.getBudgetInfo();
+        console.log(`[RefinementSession] Token usage: ${budget.usedTokens}/${budget.maxTokens} (${budget.utilizationPercent}%)`);
+        
+        if (budget.utilizationPercent > TOKEN_WARNING_THRESHOLD * 100) {
+            console.warn(`[RefinementSession] Warning: Token usage at ${budget.utilizationPercent}%`);
+            this._onEvent.fire({
+                type: 'progress',
+                sessionId: this.sessionId,
+                payload: `Token usage: ${budget.utilizationPercent}% - summarizing conversation for efficiency`
+            });
+        }
+    }
+
+    /**
      * Handle user's response to clarifying questions.
      * Transitions: AWAITING_USER -> DRAFTING or CRITIQUING
+     * 
+     * Token-efficient: Summarizes conversation if approaching limits.
      */
     public async handleUserResponse(response: string): Promise<RefinementTurn> {
         if (this._state.state !== 'AWAITING_USER') {
@@ -186,12 +257,29 @@ export class RefinementSession {
             return this.forceRefine();
         }
 
+        // Check token budget and summarize if needed
+        const budget = this._tokenManager.getBudgetInfo();
+        if (budget.utilizationPercent > TOKEN_WARNING_THRESHOLD * 100) {
+            this.summarizeConversationHistory();
+        }
+
         // Continue with Analyst to incorporate the answer
         this.transitionTo('DRAFTING');
 
-        const prompt = `The user has provided the following clarification:\n\n"${response}"\n\nIncorporate this into your requirements draft. If you have enough information, produce a complete PRD draft. Otherwise, ask follow-up questions.`;
+        // Use concise prompt for token efficiency
+        const prompt = `User clarification: "${response}"
+
+Incorporate this into your requirements. If sufficient info, produce a PRD draft. Otherwise, ask 2-3 focused follow-up questions.`;
 
         const aiResponse = await this.callAI('analyst', prompt);
+        
+        // Track token usage
+        this._tokenManager.addConversationTokens(
+            this._tokenManager.estimateTokens(prompt) + 
+            this._tokenManager.estimateTokens(aiResponse)
+        );
+        this.logTokenUsage();
+        
         const turn = this.parseAnalystResponse(aiResponse);
         this.addTurn('analyst', aiResponse, turn.metadata);
 
@@ -200,22 +288,57 @@ export class RefinementSession {
             return this.triggerCritique();
         }
 
-        // If more questions, wait for user
-        if (turn.metadata?.questions && turn.metadata.questions.length > 0) {
-            this.transitionTo('AWAITING_USER');
-            this._onEvent.fire({
-                type: 'question',
-                sessionId: this.sessionId,
-                payload: turn.metadata.questions
-            });
-        }
+        // Fire a single 'analyst-response' event with the full response
+        const questionCount = turn.metadata?.questions?.length || 0;
+        const hasDraft = turn.metadata?.hasDraft || false;
+        this.transitionTo('AWAITING_USER');
+        this._onEvent.fire({
+            type: 'analyst-response',
+            sessionId: this.sessionId,
+            payload: {
+                content: aiResponse,
+                hasQuestions: questionCount > 0,
+                hasDraft: hasDraft,
+                questionCount: questionCount
+            }
+        });
 
         return turn;
     }
 
     /**
+     * Summarize older conversation turns to reduce token usage.
+     */
+    private summarizeConversationHistory(): void {
+        const originalTurns = this._state.conversationHistory;
+        const summarized = this._tokenManager.summarizeConversation(
+            originalTurns.map(t => ({ role: t.role, content: t.content })),
+            3  // Keep last 3 turns verbatim
+        );
+
+        if (summarized.length < originalTurns.length) {
+            console.log(`[RefinementSession] Conversation summarized: ${originalTurns.length} -> ${summarized.length} turns`);
+            
+            // Replace conversation history with summarized version
+            this._state.conversationHistory = summarized.map((s, i) => ({
+                role: s.role as RefinementTurn['role'],
+                content: s.content,
+                timestamp: originalTurns[i]?.timestamp || Date.now()
+            }));
+
+            this._onEvent.fire({
+                type: 'progress',
+                sessionId: this.sessionId,
+                payload: 'Conversation history summarized for token efficiency'
+            });
+        }
+    }
+
+    /**
      * Trigger the Critic to review the current draft.
      * Transitions: DRAFTING -> CRITIQUING
+     * 
+     * Token-efficient: Uses minimal context for critique.
      */
     public async triggerCritique(): Promise<RefinementTurn> {
         if (!this._state.currentDraft) {
@@ -224,10 +347,27 @@ export class RefinementSession {
 
         this.transitionTo('CRITIQUING');
 
-        const prompt = generateCriticPrompt(
-            this._state.currentDraft,
-            '' // Skeleton context - will be injected by manager
-        );
+        // Check token budget and decide on prompt strategy
+        const budget = this._tokenManager.getBudgetInfo();
+        const draftTokens = this._tokenManager.estimateTokens(this._state.currentDraft);
+        
+        // Use token-efficient prompt if budget is constrained
+        const useEfficientPrompt = budget.utilizationPercent > 50 || draftTokens > 3000;
+        
+        // Truncate draft if it's very large
+        let draftForCritique = this._state.currentDraft;
+        if (draftTokens > 4000) {
+            const maxDraftTokens = this._tokenManager.getAvailableTokensForStage('critic');
+            const result = this._tokenManager.truncateContext(this._state.currentDraft, maxDraftTokens);
+            draftForCritique = result.content;
+            if (result.wasTruncated) {
+                console.log(`[RefinementSession] Draft truncated for critique: ${draftTokens} -> ${result.truncatedTokens} tokens`);
+            }
+        }
+
+        const prompt = useEfficientPrompt
+            ? generateTokenEfficientCriticPrompt(draftForCritique)
+            : generateCriticPrompt(draftForCritique, this._skeletonContext);
 
         this._onEvent.fire({
             type: 'progress',
@@ -236,9 +376,14 @@ export class RefinementSession {
         });
 
         const response = await this.callAI('critic', prompt);
-        // #region debug instrumentation
-        fetch('http://127.0.0.1:7242/ingest/2339ffe5-68e3-436b-9b87-c502b12becf6', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'RefinementSession.ts:triggerCritique', message: 'critic raw response', data: { responseLength: response?.length ?? 0, responseStart: (response || '').slice(0, 300), responseEnd: (response || '').slice(-150), hypothesisId: 'H5' }, timestamp: Date.now(), sessionId: 'debug-session' }) }).catch(() => {});
-        // #endregion
+        
+        // Track token usage
+        this._tokenManager.addConversationTokens(
+            this._tokenManager.estimateTokens(prompt) + 
+            this._tokenManager.estimateTokens(response)
+        );
+        this.logTokenUsage();
+        
         const critique = this.parseCritiqueResponse(response);
         this._state.latestCritique = critique;
 
@@ -264,12 +409,13 @@ export class RefinementSession {
             // Need more clarification
             this.transitionTo('AWAITING_USER');
 
-            // Generate questions based on critique issues (null safety)
+            // Generate questions based on critique issues (null safety) - limit to top 3
             const questions = (critique.issues || [])
                 .filter(i => i.severity !== 'low')
+                .slice(0, 3)  // Limit questions to avoid overwhelming user
                 .map((issue, idx) => ({
                     id: `crit-${idx}`,
-                    question: `The Critic found an issue: ${issue.description}. ${issue.suggestion || 'Please clarify.'}`,
+                    question: `Issue: ${issue.description}. ${issue.suggestion || 'Please clarify.'}`,
                     category: 'requirement' as const
                 }));
 
@@ -286,21 +432,70 @@ export class RefinementSession {
     /**
      * Trigger the Refiner to produce the final PRD.
      * Transitions: CRITIQUING -> REFINING -> AWAITING_USER (for approval)
+     * 
+     * Token-efficient: Uses chunked generation for complex features if needed.
      */
     public async triggerRefine(): Promise<RefinementTurn> {
         this.transitionTo('REFINING');
 
-        const clarificationsText = this._state.clarifications
-            .map(c => `- ${c.response}`)
-            .join('\n');
+        // Summarize clarifications to reduce tokens
+        const clarificationsText = this._state.clarifications.length > 5
+            ? this.summarizeClarifications()
+            : this._state.clarifications.map(c => `- ${c.response}`).join('\n');
 
-        const prompt = generateRefinerPrompt(
-            this._state.currentDraft || '',
-            JSON.stringify(this._state.latestCritique, null, 2),
-            clarificationsText
+        // Check if we need chunked generation
+        const budget = this._tokenManager.getBudgetInfo();
+        const draftTokens = this._tokenManager.estimateTokens(this._state.currentDraft || '');
+        const critiqueTokens = this._tokenManager.estimateTokens(JSON.stringify(this._state.latestCritique));
+        
+        const needsChunking = this._tokenManager.needsChunkedGeneration(
+            draftTokens + critiqueTokens,
+            5000  // Estimated PRD output tokens
         );
 
-        const response = await this.callAI('refiner', prompt);
+        let response: string;
+        
+        if (needsChunking && budget.utilizationPercent > 60) {
+            // Use chunked generation for very large/complex features
+            console.log(`[RefinementSession] Using chunked PRD generation due to token constraints`);
+            this._onEvent.fire({
+                type: 'progress',
+                sessionId: this.sessionId,
+                payload: 'Generating PRD in sections for token efficiency...'
+            });
+            response = await this.generateChunkedPrd(clarificationsText);
+        } else {
+            // Standard single-call generation
+            const useEfficientPrompt = budget.utilizationPercent > 50;
+            
+            // Truncate draft if needed
+            let draftForRefiner = this._state.currentDraft || '';
+            if (draftTokens > 3000) {
+                const result = this._tokenManager.truncateContext(
+                    draftForRefiner,
+                    this._tokenManager.getAvailableTokensForStage('refiner')
+                );
+                draftForRefiner = result.content;
+            }
+
+            // Summarize critique to key issues only
+            const critiqueSummary = this.summarizeCritique();
+
+            const prompt = useEfficientPrompt
+                ? generateTokenEfficientRefinerPrompt(draftForRefiner, critiqueSummary, clarificationsText)
+                : generateRefinerPrompt(draftForRefiner, critiqueSummary, clarificationsText);
+
+            response = await this.callAI('refiner', prompt);
+            
+            // Track token usage
+            this._tokenManager.addConversationTokens(
+                this._tokenManager.estimateTokens(prompt) + 
+                this._tokenManager.estimateTokens(response)
+            );
+        }
+        
+        this.logTokenUsage();
+        
         const artifact = this.parseRefinedArtifact(response);
         this._state.finalArtifact = artifact;
 
@@ -322,6 +517,105 @@ export class RefinementSession {
         });
 
         return turn;
+    }
+
+    /**
+     * Generate PRD in chunks for very large/complex features.
+     */
+    private async generateChunkedPrd(clarificationsText: string): Promise<string> {
+        const sections = this._tokenManager.getPrdSections();
+        const prdParts: string[] = [];
+        
+        for (let i = 0; i < sections.length; i++) {
+            const section = sections[i];
+            const previousSections = prdParts.join('\n\n');
+            
+            this._onEvent.fire({
+                type: 'progress',
+                sessionId: this.sessionId,
+                payload: `Generating PRD section ${i + 1}/${sections.length}: ${section.replace('_', ' ')}`
+            });
+
+            const sectionPrompt = this._tokenManager.getChunkedPrompt(section, previousSections);
+            const contextPrompt = `
+Draft context (summarized): ${this._state.currentDraft?.slice(0, 1000) || 'Not available'}...
+
+User clarifications: ${clarificationsText}
+
+${sectionPrompt}`;
+
+            const sectionResponse = await this.callAI('refiner', contextPrompt);
+            prdParts.push(sectionResponse);
+            
+            // Track tokens
+            this._tokenManager.addConversationTokens(
+                this._tokenManager.estimateTokens(contextPrompt) + 
+                this._tokenManager.estimateTokens(sectionResponse)
+            );
+        }
+
+        // Combine all sections into final PRD
+        return this.combinePrdSections(prdParts);
+    }
+
+    /**
+     * Combine chunked PRD sections into a cohesive document.
+     */
+    private combinePrdSections(parts: string[]): string {
+        const [problemStatement, funcReqs, nonFuncReqs, techPlan, acceptanceCriteria] = parts;
+        
+        return `# Product Requirement Document
+
+## Problem Statement
+${problemStatement || 'Not specified'}
+
+## Functional Requirements
+${funcReqs || 'Not specified'}
+
+## Non-Functional Requirements
+${nonFuncReqs || 'Not specified'}
+
+## Technical Implementation Plan
+${techPlan || 'Not specified'}
+
+## Acceptance Criteria
+${acceptanceCriteria || 'Not specified'}
+`;
+    }
+
+    /**
+     * Summarize clarifications to reduce token usage.
+     */
+    private summarizeClarifications(): string {
+        const clarifications = this._state.clarifications;
+        if (clarifications.length <= 3) {
+            return clarifications.map(c => `- ${c.response}`).join('\n');
+        }
+
+        // Group and summarize older clarifications
+        const recent = clarifications.slice(-3);
+        const older = clarifications.slice(0, -3);
+        
+        const olderSummary = older.map(c => c.response.slice(0, 100)).join('; ');
+        const recentList = recent.map(c => `- ${c.response}`).join('\n');
+        
+        return `Previous clarifications (summary): ${olderSummary}\n\nRecent clarifications:\n${recentList}`;
+    }
+
+    /**
+     * Summarize critique to key issues only.
+     */
+    private summarizeCritique(): string {
+        const critique = this._state.latestCritique;
+        if (!critique) return 'No critique available';
+
+        const highPriorityIssues = (critique.issues || [])
+            .filter(i => i.severity === 'high' || i.severity === 'medium')
+            .slice(0, 5)
+            .map(i => `- [${i.severity}] ${i.description}`)
+            .join('\n');
+
+        return `Confidence: ${critique.confidenceScore}%\nKey issues:\n${highPriorityIssues || 'None'}`;
     }
 
     /**
@@ -410,14 +704,12 @@ export class RefinementSession {
 
         if (hasDraft) {
             this._state.currentDraft = response;
-            this._onEvent.fire({
-                type: 'draft-ready',
-                sessionId: this.sessionId,
-                payload: response
-            });
+            // NOTE: Do NOT fire event here - let the calling code decide what to display
+            // to avoid duplicate bubbles in the UI
         }
 
         // Extract questions (look for numbered list or question marks)
+        // This is for state tracking, NOT for separate display
         const questions: ClarifyingQuestion[] = [];
         const lines = response.split('\n');
         let questionIndex = 0;
@@ -444,7 +736,7 @@ export class RefinementSession {
             role: 'analyst',
             content: response,
             timestamp: Date.now(),
-            metadata: questions.length > 0 ? { questions } : undefined
+            metadata: questions.length > 0 ? { questions, hasDraft } : (hasDraft ? { hasDraft } : undefined)
         };
     }
 

@@ -31,7 +31,10 @@ export const ANALYST_SYSTEM_PROMPT = `You are an expert Technical Product Manage
    - **Relationship Mapping**: Clarify how entities relate to each other
    - **Recursive Pruning**: If any attribute is undefined, generate a specific question
 
-4. **CONTEXT AWARE**: You have access to the current codebase summary. If the user asks for a feature that duplicates existing functionality, point it out.
+4. **CONTEXT AWARE**: You have access to a codebase skeleton (signatures, exports, class/function names) below. This shows the project structure without full implementations.
+   - If you need MORE details about a specific file's implementation, ASK THE USER to provide it.
+   - DO NOT attempt to use tools like read_file or list_files - you are in analysis mode, not execution mode.
+   - If the user asks for a feature that duplicates existing functionality, point it out.
 
 5. **STRUCTURED OUTPUT**: When drafting requirements, use this format:
    - Problem Statement
@@ -199,17 +202,20 @@ export function generateAnalystInitialPrompt(userPrompt: string, skeletonContext
 ${userPrompt}
 
 ## Codebase Context (Skeleton)
-The following shows the structure of relevant existing code (signatures only, no implementation details):
+The following shows the structure of relevant existing code (class/function signatures, exports, imports - NO implementations):
 
 \`\`\`
 ${skeletonContext}
 \`\`\`
 
+**IMPORTANT**: This skeleton shows WHAT exists, not HOW it's implemented. If you need to understand the implementation details of a specific file or function to properly analyze the user's request, ASK THE USER to provide that file's content as part of your clarifying questions.
+
 ## Your Task
-1. Analyze the user's request in the context of this codebase.
-2. Identify any ambiguities, missing information, or potential conflicts.
+1. Analyze the user's request in the context of this codebase structure.
+2. Identify any ambiguities, missing information, or potential conflicts with existing code.
 3. Generate clarifying questions using Maieutic Prompting.
-4. If enough information exists, draft an initial PRD.
+4. If you need more context about specific files, include that in your questions (e.g., "Could you share the implementation of AuthService.ts so I can understand the current authentication flow?")
+5. If enough information exists, draft an initial PRD.
 
 Begin by asking the most critical clarifying questions.`;
 }
@@ -260,4 +266,95 @@ ${userClarifications}
 5. Include a Mermaid diagram if the feature involves complex flow.
 
 Produce the final PRD now.`;
+}
+
+// ========================================
+// Token-Efficient Prompts
+// ========================================
+// These prompts are optimized for reduced token usage while
+// maintaining effectiveness. Use when token budget is constrained.
+
+/**
+ * Token-efficient Analyst prompt for large workspaces.
+ * ~50% shorter than standard prompt.
+ */
+export function generateTokenEfficientAnalystPrompt(userPrompt: string, skeletonContext: string): string {
+    return `## Request
+${userPrompt}
+
+## Codebase (signatures only, no implementations)
+\`\`\`
+${skeletonContext}
+\`\`\`
+
+NOTE: If you need implementation details of specific files to properly analyze, ask the user to provide them.
+
+## Task
+1. Identify ambiguities or missing info in the request
+2. Ask 2-4 focused clarifying questions (prioritize security/core functionality)
+3. If you need specific file contents, include that ask in your questions
+4. If sufficient info, draft a concise PRD with:
+   - Problem Statement (2-3 sentences)
+   - Functional Requirements (numbered list)
+   - Non-Functional Requirements (bullet points)
+
+Be concise. Ask critical questions first.`;
+}
+
+/**
+ * Token-efficient Critic prompt.
+ * Focuses on essential validation without verbose explanations.
+ */
+export function generateTokenEfficientCriticPrompt(draftPRD: string): string {
+    return `## PRD to Review
+${draftPRD}
+
+## Validate Against
+1. Security (auth, injection, data exposure)
+2. Completeness (edge cases, error handling)
+3. Feasibility (tech stack alignment)
+4. Clarity (unambiguous requirements)
+
+## Output (JSON only)
+\`\`\`json
+{
+  "confidenceScore": <0-100>,
+  "passedValidation": <boolean>,
+  "issues": [
+    {"type": "<ambiguity|security|omission|performance>", "severity": "<low|medium|high>", "description": "<brief>"}
+  ]
+}
+\`\`\`
+
+Be concise. Only list significant issues.`;
+}
+
+/**
+ * Token-efficient Refiner prompt.
+ * Produces structured PRD without verbose prose.
+ */
+export function generateTokenEfficientRefinerPrompt(
+    draftPRD: string,
+    critiqueSummary: string,
+    userClarifications: string
+): string {
+    return `## Draft PRD
+${draftPRD}
+
+## Issues to Address
+${critiqueSummary}
+
+## User Clarifications
+${userClarifications}
+
+## Task
+Produce final PRD with these sections (be concise):
+
+1. **Problem Statement** - 2-3 sentences
+2. **Functional Requirements** - Numbered list
+3. **Non-Functional Requirements** - Bullet points
+4. **Technical Plan** - Files to create/modify
+5. **Acceptance Criteria** - Gherkin format (3-5 scenarios max)
+
+Address all listed issues. No verbose explanations.`;
 }

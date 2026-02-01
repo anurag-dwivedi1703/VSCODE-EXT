@@ -2,6 +2,11 @@
  * RefinementManager.ts
  * Orchestrates refinement sessions and provides the main entry point for Refinement Mode.
  * Decouples refinement logic from TaskRunner and MissionControlProvider.
+ * 
+ * Smart Context Building:
+ * - Uses SmartContextBuilder to intelligently scan relevant files
+ * - Provides full content for highly relevant files, skeleton for structure
+ * - Eliminates need for mid-session tool calls or user-provided file contents
  */
 
 import * as vscode from 'vscode';
@@ -12,6 +17,8 @@ import { GeminiClient, ISession } from '../../ai/GeminiClient';
 import { ClaudeClient } from '../../ai/ClaudeClient';
 import { CopilotClaudeClient } from '../../ai/CopilotClaudeClient';
 import { CopilotGPTClient } from '../../ai/CopilotGPTClient';
+import { SmartContextBuilder, SmartContext } from './SmartContextBuilder';
+import { RefinementTokenManager } from './RefinementTokenManager';
 
 /**
  * AI Client type union for flexibility.
@@ -21,6 +28,7 @@ type AIClient = GeminiClient | ClaudeClient | CopilotClaudeClient | CopilotGPTCl
 export class RefinementManager {
     private _sessions: Map<string, RefinementSession> = new Map();
     private _aiClients: Map<string, AIClient> = new Map();
+    private _smartContextBuilder: SmartContextBuilder;
 
     // Event forwarding from sessions
     private _onEvent = new vscode.EventEmitter<RefinementEvent>();
@@ -34,7 +42,8 @@ export class RefinementManager {
     public readonly onRefinementComplete = this._onRefinementComplete.event;
 
     constructor() {
-        console.log('[RefinementManager] Initialized');
+        this._smartContextBuilder = new SmartContextBuilder();
+        console.log('[RefinementManager] Initialized with SmartContextBuilder');
     }
 
     // ========================================
@@ -42,23 +51,89 @@ export class RefinementManager {
     // ========================================
 
     /**
+     * Start a new refinement session with SMART context building.
+     * This is the preferred method - it automatically scans relevant files.
+     * 
+     * IMPORTANT: Only searches within the specified workspaceRoot.
+     * 
+     * @param taskId The task/mission ID
+     * @param userPrompt The user's original prompt
+     * @param aiClient The AI client to use for LLM calls
+     * @param workspaceRoot The workspace root to search for files (REQUIRED)
+     * @param modelId Optional model identifier for token budget calculation
+     * @returns The session ID
+     */
+    public async startSessionWithSmartContext(
+        taskId: string,
+        userPrompt: string,
+        aiClient: AIClient,
+        workspaceRoot: string,
+        modelId?: string
+    ): Promise<string> {
+        // Validate workspace root
+        if (!workspaceRoot) {
+            throw new Error('workspaceRoot is required for smart context building');
+        }
+
+        // Detect model ID from client if not provided
+        const effectiveModelId = modelId || this.detectModelId(aiClient);
+        
+        // Calculate token budget for context based on model
+        const tokenManager = new RefinementTokenManager(effectiveModelId);
+        const tokenBudget = tokenManager.getAvailableTokensForStage('analyst');
+        
+        // Fire progress event for UI feedback
+        this._onEvent.fire({
+            type: 'progress',
+            sessionId: taskId,
+            payload: `Scanning workspace for relevant files: ${workspaceRoot}`
+        });
+        
+        console.log(`[RefinementManager] Building smart context for workspace: ${workspaceRoot}`);
+        console.log(`[RefinementManager] Prompt: "${userPrompt.slice(0, 100)}..."`);
+        
+        // CRITICAL: Set the workspace root on the builder BEFORE building context
+        this._smartContextBuilder.setWorkspaceRoot(workspaceRoot);
+        
+        // Build smart context using SmartContextBuilder (will only search within workspaceRoot)
+        const smartContext = await this._smartContextBuilder.buildContext(userPrompt, tokenBudget, workspaceRoot);
+        
+        console.log(`[RefinementManager] Smart context built: ${smartContext.fullContentFiles} full files, ${smartContext.skeletonFiles} skeleton files, ~${smartContext.estimatedTokens} tokens`);
+        
+        // Fire progress event with results
+        this._onEvent.fire({
+            type: 'progress',
+            sessionId: taskId,
+            payload: `Found ${smartContext.fullContentFiles} relevant files (${smartContext.keywords.slice(0, 5).join(', ')})`
+        });
+        
+        // Now start the session with the smart context
+        return this.startSession(taskId, userPrompt, aiClient, smartContext.content, modelId);
+    }
+
+    /**
      * Start a new refinement session for a task.
      * @param taskId The task/mission ID
      * @param userPrompt The user's original prompt
      * @param aiClient The AI client to use for LLM calls
-     * @param skeletonContext The codebase skeleton context
+     * @param skeletonContext The codebase skeleton context (or smart context)
+     * @param modelId Optional model identifier for token budget calculation
      * @returns The session ID
      */
     public async startSession(
         taskId: string,
         userPrompt: string,
         aiClient: AIClient,
-        skeletonContext: string
+        skeletonContext: string,
+        modelId?: string
     ): Promise<string> {
         const sessionId = `refine-${taskId}-${Date.now()}`;
 
-        // Create the session
-        const session = new RefinementSession(sessionId, taskId, userPrompt);
+        // Detect model ID from client if not provided
+        const effectiveModelId = modelId || this.detectModelId(aiClient);
+
+        // Create the session with model ID for token budget awareness
+        const session = new RefinementSession(sessionId, taskId, userPrompt, effectiveModelId);
 
         // Subscribe to session events and forward them
         session.onEvent((event) => {
@@ -66,8 +141,9 @@ export class RefinementManager {
         });
 
         // Create an AI session with Analyst persona for initial interaction
+        // IMPORTANT: Pass false for includeToolInstructions to prevent AI from using tools in Refinement Mode
         const analystPrompt = getPersonaPrompt('analyst');
-        const aiSession = aiClient.startSession(analystPrompt, 'high');
+        const aiSession = aiClient.startSession(analystPrompt, 'high', false);
         session.setAISession(aiSession);
 
         // Store the session
@@ -246,6 +322,26 @@ export class RefinementManager {
         this._sessions.delete(sessionId);
         this._aiClients.delete(sessionId);
         console.log(`[RefinementManager] Cleaned up session ${sessionId}`);
+    }
+
+    /**
+     * Detect model ID from AI client for token budget calculation.
+     */
+    private detectModelId(client: AIClient): string {
+        // Check for model identifier based on client type
+        if (client instanceof CopilotClaudeClient) {
+            return 'claude-sonnet-4';
+        }
+        if (client instanceof CopilotGPTClient) {
+            return 'gpt-4o';
+        }
+        if (client instanceof ClaudeClient) {
+            return 'claude-3-5-sonnet';
+        }
+        if (client instanceof GeminiClient) {
+            return 'gemini-2.0-flash';
+        }
+        return 'default';
     }
 
     /**

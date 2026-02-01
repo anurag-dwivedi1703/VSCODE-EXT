@@ -85,6 +85,7 @@ export interface RefinementTurn {
         questions?: ClarifyingQuestion[];
         critique?: CritiqueResult;
         artifact?: RefinementArtifact;
+        hasDraft?: boolean;  // True if analyst response contains a draft PRD
     };
 }
 
@@ -120,7 +121,7 @@ export interface ProjectAxiom {
  * Event emitted by RefinementSession for UI updates.
  */
 export interface RefinementEvent {
-    type: 'state-change' | 'question' | 'draft-ready' | 'critique-ready' | 'artifact-ready' | 'error' | 'progress';
+    type: 'state-change' | 'question' | 'draft-ready' | 'critique-ready' | 'artifact-ready' | 'error' | 'progress' | 'analyst-response';
     sessionId: string;
     payload: unknown;
 }

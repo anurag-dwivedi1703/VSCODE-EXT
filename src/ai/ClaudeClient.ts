@@ -10,7 +10,7 @@ export class ClaudeClient {
         this.modelName = modelName;
     }
 
-    public startSession(systemPrompt: string, _thinkingLevel: 'low' | 'high' = 'high'): ISession {
+    public startSession(systemPrompt: string, _thinkingLevel: 'low' | 'high' = 'high', includeToolInstructions: boolean = true): ISession {
         // Store full conversation history for multi-turn (includes tool_use blocks)
         const messages: Anthropic.MessageParam[] = [];
 
@@ -18,8 +18,13 @@ export class ClaudeClient {
         // Array of { name, id } from last assistant response
         let lastToolUses: { name: string; id: string }[] = [];
 
-        // Define tools for Claude
-        const tools: Anthropic.Tool[] = [
+        // For refinement mode (includeToolInstructions=false), add instruction to not use tools
+        const effectivePrompt = includeToolInstructions 
+            ? systemPrompt
+            : `${systemPrompt}\n\nIMPORTANT: You are in analysis/refinement mode. Do NOT use any tools. Only provide text responses - questions, analysis, or structured documents.`;
+
+        // Define tools for Claude (only if tool instructions are enabled)
+        const tools: Anthropic.Tool[] = includeToolInstructions ? [
             {
                 name: "read_file",
                 description: "Read the contents of a file",
@@ -197,7 +202,7 @@ export class ClaudeClient {
                     required: []
                 }
             }
-        ];
+        ] : [];  // Empty tools array when in refinement mode
 
         return {
             sendMessage: async (prompt: string | any[]) => {
@@ -241,7 +246,7 @@ export class ClaudeClient {
                     const requestParams: Anthropic.MessageCreateParamsNonStreaming = {
                         model: this.modelName,
                         max_tokens: 16000,
-                        system: systemPrompt,
+                        system: effectivePrompt,
                         tools,
                         messages
                     };

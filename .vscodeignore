@@ -1,23 +1,65 @@
+# VS Code / Development
 .vscode/**
 .vscode-test/**
+.cursor/**
+.git/**
+.gitignore
+.eslintrc.json
+webpack.config.js
+tsconfig.json
+vsc-extension-quickstart.md
+
+# Source (compiled to dist/)
 src/**
+test/**
+
+# Node modules
 node_modules/**
+
+# Webview source (compiled to webview-ui/dist/)
 webview-ui/node_modules/**
 webview-ui/src/**
 webview-ui/package.json
 webview-ui/package-lock.json
 webview-ui/tsconfig.json
 webview-ui/vite.config.ts
+webview-ui/vite.config.js
 webview-ui/index.html
 webview-ui/build.js
-test/**
+
+# Temporary / Test folders
 temp-demo-app/**
 temp_verification/**
+out/**
+
+# Mission artifacts (generated during use, not part of extension)
+.vibearchitect/**
+.antigravity/**
+.specify/**
+_local_work/**
+task.md
+implementation_plan.md
+mission_summary.md
+spec-kit.md
+
+# Documentation (development docs, not needed for extension)
+ARCHITECTURE.md
+BROWSER_AUTOMATION_SETUP.md
+Project-Overview.md
+Refinement Mode - Research.md
+SETUP_GUIDE.md
+TOKEN_LIMIT_STRATEGIES_2_3.md
+
+# Development scripts
+setup.bat
+
+# Build artifacts / Maps
 **/*.map
-.git/**
-.gitignore
-webpack.config.js
-tsconfig.json
-.eslintrc.json
-vsc-extension-quickstart.md
 **/*.log
+**/*.jsonl
+
+# Keep only these:
+# - package.json (manifest)
+# - README.md (extension description)
+# - dist/ (compiled extension code)
+# - webview-ui/dist/ (compiled webview)

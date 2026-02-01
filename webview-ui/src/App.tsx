@@ -406,6 +406,18 @@ function App() {
             if (message.command === 'contextSelected') {
                 setContextFiles(prev => [...prev, ...message.paths]);
             }
+            // Handle composer context selection (for Start Mission attachments)
+            if (message.command === 'composerContextSelected') {
+                const newAttachments = message.files.map((f: { path: string; name: string; type: string; content?: string }) => ({
+                    name: f.name,
+                    type: f.type.startsWith('image') ? 'image' as const : 
+                          (f.type.includes('pdf') || f.type.includes('text') || f.type.includes('word')) ? 'document' as const : 'file' as const,
+                    path: f.path,
+                    mimeType: f.type,
+                    dataUrl: f.content  // For images, backend sends base64 content
+                }));
+                setComposerAttachments(prev => [...prev, ...newAttachments]);
+            }
             if (message.command === 'reloadBrowser') {
                 setRightPaneTab('browser');
                 setBrowserReloadTrigger(Date.now());
@@ -499,9 +511,20 @@ function App() {
     const activeAgents = dynamicAgents;
     // State for New Agent Composer
     const [composerMode, setComposerMode] = useState<'planning' | 'fast' | 'refinement'>('planning');
-    const [composerModel, setComposerModel] = useState<string>('gemini-3-pro-preview');
+    const [composerModel, setComposerModel] = useState<string>('claude-opus-4-5-20251101');
     // Track if refinement mode has been used in this chat (prevents reuse in replyToTask)
     const [refinementUsed, setRefinementUsed] = useState(false);
+    
+    // Attachment state for Start Mission composer
+    const [composerAttachments, setComposerAttachments] = useState<Array<{
+        name: string;
+        type: 'image' | 'document' | 'file';
+        path?: string;       // For workspace files
+        dataUrl?: string;    // For uploaded files (base64)
+        mimeType?: string;
+        size?: number;
+    }>>([]);
+    const composerFileInputRef = useRef<HTMLInputElement>(null);
 
     const handleStartTask = (prompt: string) => {
         if (!prompt.trim()) return;
@@ -520,9 +543,50 @@ function App() {
             mode: composerMode,
             model: composerModel,
             agentMode: agentMode,  // Include global agent mode
-            chatId: chatId         // Include chat ID for mission folder isolation
+            chatId: chatId,        // Include chat ID for mission folder isolation
+            attachments: composerAttachments  // Include attachments (images, docs)
         });
-        // Optional: Reset composer or switch view
+        
+        // Clear attachments after sending
+        setComposerAttachments([]);
+    };
+
+    // Handle file upload for composer attachments
+    const handleComposerFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+        const files = event.target.files;
+        if (!files || files.length === 0) return;
+
+        Array.from(files).forEach(file => {
+            const reader = new FileReader();
+            reader.onload = () => {
+                const dataUrl = reader.result as string;
+                const isImage = file.type.startsWith('image/');
+                const isDocument = ['application/pdf', 'text/plain', 'text/markdown', 
+                    'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'].includes(file.type);
+                
+                setComposerAttachments(prev => [...prev, {
+                    name: file.name,
+                    type: isImage ? 'image' : (isDocument ? 'document' : 'file'),
+                    dataUrl,
+                    mimeType: file.type,
+                    size: file.size
+                }]);
+            };
+            reader.readAsDataURL(file);
+        });
+
+        // Reset input so same file can be selected again
+        event.target.value = '';
+    };
+
+    // Handle workspace file selection for composer
+    const handleComposerContextSelect = () => {
+        vscode.postMessage({ command: 'selectComposerContext' });
+    };
+
+    // Remove attachment from composer
+    const removeComposerAttachment = (index: number) => {
+        setComposerAttachments(prev => prev.filter((_, i) => i !== index));
     };
 
     const handleAddWorkspace = () => {
@@ -1153,15 +1217,13 @@ function App() {
                                         </button>
                                         <select
                                             className="model-dropdown"
-                                            value={activeAgent.model || 'gemini-3-pro-preview'}
+                                            value={activeAgent.model || 'claude-opus-4-5-20251101'}
                                             onChange={(e) => vscode.postMessage({
                                                 command: 'changeModel',
                                                 taskId: activeAgent.id,
                                                 model: e.target.value
                                             })}
                                         >
-                                            <option value="gemini-3-pro-preview">Gemini 3 Pro</option>
-                                            <option value="gemini-3-flash-preview">Gemini 3 Flash</option>
                                             <option value="claude-opus-4-5-20251101">Claude Opus 4.5</option>
                                             <option value="claude-sonnet-4-5-20251101">Claude Sonnet 4.5</option>
                                             <option value="gpt-5-mini">GPT-5-mini (Copilot)</option>
@@ -1264,8 +1326,6 @@ function App() {
                                             value={composerModel}
                                             onChange={(e) => setComposerModel(e.target.value)}
                                         >
-                                            <option value="gemini-3-pro-preview">Gemini 3 Pro (Reasoning)</option>
-                                            <option value="gemini-3-flash-preview">Gemini 3 Flash (Speed)</option>
                                             <option value="claude-opus-4-5-20251101">Claude Opus 4.5 (Thinking)</option>
                                             <option value="claude-sonnet-4-5-20251101">Claude Sonnet 4.5 (Fast)</option>
                                             <option value="gpt-5-mini">GPT-5-mini (Vision)</option>
@@ -1274,16 +1334,80 @@ function App() {
                                 </div>
 
                                 <div className="composer-input-area">
-                                    <textarea
-                                        className="composer-textarea"
-                                        placeholder="Describe your task..."
-                                        onKeyDown={(e) => {
-                                            if (e.key === 'Enter' && !e.shiftKey) {
-                                                e.preventDefault();
-                                                handleStartTask((e.target as HTMLTextAreaElement).value);
-                                            }
-                                        }}
-                                    />
+                                    {/* Attachment Preview */}
+                                    {composerAttachments.length > 0 && (
+                                        <div className="composer-attachments">
+                                            {composerAttachments.map((attachment, idx) => (
+                                                <div key={idx} className={`attachment-chip ${attachment.type}`}>
+                                                    {attachment.type === 'image' && attachment.dataUrl && (
+                                                        <img 
+                                                            src={attachment.dataUrl} 
+                                                            alt={attachment.name}
+                                                            className="attachment-thumbnail"
+                                                        />
+                                                    )}
+                                                    {attachment.type !== 'image' && (
+                                                        <span className="attachment-icon">
+                                                            {attachment.type === 'document' ? '📄' : '📎'}
+                                                        </span>
+                                                    )}
+                                                    <span className="attachment-name" title={attachment.name}>
+                                                        {attachment.name.length > 20 
+                                                            ? attachment.name.substring(0, 17) + '...' 
+                                                            : attachment.name}
+                                                    </span>
+                                                    <button 
+                                                        className="attachment-remove"
+                                                        onClick={() => removeComposerAttachment(idx)}
+                                                        title="Remove attachment"
+                                                    >
+                                                        ×
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                    
+                                    <div className="composer-input-row">
+                                        {/* Hidden file input */}
+                                        <input
+                                            type="file"
+                                            ref={composerFileInputRef}
+                                            style={{ display: 'none' }}
+                                            multiple
+                                            accept="image/*,.pdf,.txt,.md,.doc,.docx"
+                                            onChange={handleComposerFileUpload}
+                                        />
+                                        
+                                        {/* Attachment button */}
+                                        <button 
+                                            className="icon-btn-attachment"
+                                            onClick={() => composerFileInputRef.current?.click()}
+                                            title="Attach image or document (UI mockups, specs, etc.)"
+                                        >
+                                            📎
+                                        </button>
+                                        
+                                        {/* Context button for workspace files */}
+                                        <button 
+                                            className="icon-btn-context"
+                                            onClick={handleComposerContextSelect}
+                                            title="Add workspace files as context"
+                                        >
+                                            +
+                                        </button>
+                                        
+                                        <textarea
+                                            className="composer-textarea"
+                                            placeholder="Describe your task... (Enter to start, Shift+Enter for new line)"
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter' && !e.shiftKey) {
+                                                    e.preventDefault();
+                                                    handleStartTask((e.target as HTMLTextAreaElement).value);
+                                                }
+                                            }}
+                                        />
+                                    </div>
                                     <div className="composer-actions">
                                         <button className="primary-btn" onClick={(e) => {
                                             const textarea = (e.target as HTMLElement).closest('.composer-input-area')?.querySelector('textarea');

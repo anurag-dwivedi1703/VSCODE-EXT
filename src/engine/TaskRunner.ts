@@ -17,10 +17,11 @@ import { FileLockManager } from '../services/FileLockManager';
 import { detectSecrets, detectPII } from '../ai/SecurityInstructions';
 import { SpecManager, SpecPhase } from './SpecManager';
 import { ContextHarvester } from '../services/ContextHarvester';
-import { getRefinementManager, skeletonizeDirectory } from './refinement';
+import { getRefinementManager } from './refinement';
 import { DiffAggregator } from '../utils/DiffAggregator';
 import { TokenBudget, truncateFileIntelligently } from '../utils/TokenBudget';
 import { MissionFolderManager } from '../utils/MissionFolderManager';
+import { getAttachmentProcessor, Attachment } from '../services/AttachmentProcessor';
 
 interface TaskContext {
     shadowRepo: ShadowRepository;
@@ -753,17 +754,12 @@ ${originalPrompt}`;
         task.worktreePath = workspaceRoot;
 
         this.updateStatus(taskId, 'planning', 5, '🧠 Starting Refinement Mode...');
-        task.logs.push('\n**System**: 🧠 Entering Refinement Mode - clarifying requirements before planning...');
+        task.logs.push('\n**System**: 🧠 Entering Refinement Mode - scanning relevant files and clarifying requirements...');
         this._onTaskUpdate.fire({ taskId, task });
 
-        // Generate skeleton context for the AI (include subdirectories)
-        let skeletonContext = '';
-        try {
-            skeletonContext = skeletonizeDirectory(workspaceRoot, true);
-            task.logs.push(`> [Context]: Generated code skeleton (${skeletonContext.length} chars)`);
-        } catch (error) {
-            task.logs.push('> [Context]: Could not generate code skeleton, proceeding without.');
-        }
+        // NOTE: We no longer generate skeleton context here.
+        // SmartContextBuilder will automatically scan relevant files based on user's prompt.
+        // This provides full content for highly relevant files + skeleton for structure.
 
         // Initialize AI client based on model selection (use already-imported clients)
         const geminiApiKey = config.get<string>('geminiApiKey') || '';
@@ -819,17 +815,30 @@ ${originalPrompt}`;
             if (event.sessionId.startsWith(`refine-${taskId}`)) {
                 console.log(`[TaskRunner] Refinement event: ${event.type}`, event.payload);
 
-                if (event.type === 'question') {
-                    // Display clarifying questions from the Analyst
+                if (event.type === 'analyst-response') {
+                    // Display the FULL analyst response as ONE unified message
+                    // This includes analysis, questions, and any draft - all in one bubble
+                    const payload = event.payload as { content: string; hasQuestions: boolean; hasDraft: boolean; questionCount: number };
+                    task.logs.push(`\n**Analyst Response:**\n${payload.content}`);
+                    
+                    // Add a subtle prompt based on what was found
+                    if (payload.hasQuestions) {
+                        task.logs.push(`\n> Please answer the questions above to continue refinement.`);
+                    } else if (payload.hasDraft) {
+                        task.logs.push(`\n> Review the draft above and provide feedback or approval.`);
+                    }
+                } else if (event.type === 'question') {
+                    // Legacy: Still handle 'question' events from critic stage
                     const questions = event.payload as any[];
                     if (questions && questions.length > 0) {
-                        task.logs.push('\n**Analyst Questions:**');
+                        task.logs.push('\n**Clarifying Questions:**');
                         questions.forEach((q: any, i: number) => {
-                            task.logs.push(`${i + 1}. ${q.question}`);
+                            task.logs.push(`${i + 1}. ${q.question || q}`);
                         });
                         task.logs.push('\n> Please reply with your answers to continue refinement.');
                     }
                 } else if (event.type === 'draft-ready') {
+                    // Only show if not already shown as part of analyst-response
                     task.logs.push(`\n**Draft PRD:**\n${event.payload}`);
                 } else if (event.type === 'critique-ready') {
                     task.logs.push(`\n**Critic Feedback:**\n${JSON.stringify(event.payload, null, 2)}`);
@@ -866,15 +875,22 @@ ${originalPrompt}`;
         this._onTaskUpdate.fire({ taskId, task });
 
         try {
-            // Now start the session - events will be captured
-            const actualSessionId = await refinementManager.startSession(
+            // Now start the session with SMART context building
+            // SmartContextBuilder will:
+            // 1. Extract keywords from user's prompt
+            // 2. Search for relevant files using VS Code APIs (ONLY in workspaceRoot)
+            // 3. Provide full content for highly relevant files, skeleton for structure
+            // 4. Stay within token budget
+            // CRITICAL: Pass workspaceRoot to ensure we ONLY search the selected workspace
+            const actualSessionId = await refinementManager.startSessionWithSmartContext(
                 taskId,
                 task.prompt,
                 aiClient,
-                skeletonContext
+                workspaceRoot,  // CRITICAL: Only search within this workspace
+                task.model  // Pass model ID for token budget calculation
             );
 
-            task.logs.push(`> [Refinement]: Session ${actualSessionId} started successfully`);
+            task.logs.push(`> [Refinement]: Session ${actualSessionId} started with smart context for ${workspaceRoot}`);
             this._onTaskUpdate.fire({ taskId, task });
             this.saveTask(task);
 
@@ -2169,14 +2185,44 @@ ${contextData}
         }
     }
 
-    public async replyToTask(taskId: string, message: string, attachments: string[] = []) {
+    public async replyToTask(taskId: string, message: string, attachments: (string | Attachment)[] = []) {
         const task = this.tasks.get(taskId);
         if (task) {
-            task.userMessages.push({ text: message, attachments });
+            // Convert string paths to Attachment objects for consistent handling
+            const normalizedAttachments: Attachment[] = attachments.map(a => {
+                if (typeof a === 'string') {
+                    return { name: a.split(/[\\/]/).pop() || a, type: 'file' as const, path: a };
+                }
+                return a;
+            });
+            
+            task.userMessages.push({ text: message, attachments: normalizedAttachments.map(a => a.path || a.name) });
 
             // Log with context notice
-            const contextMsg = attachments.length > 0 ? ` (with ${attachments.length} attachments)` : '';
+            const contextMsg = normalizedAttachments.length > 0 ? ` (with ${normalizedAttachments.length} attachments)` : '';
             this.updateStatus(taskId, task.status, task.progress, `**User**: ${message}${contextMsg}`);
+            
+            // Process attachments (images via vision, documents via text extraction)
+            let enrichedMessage = message;
+            const imageAttachments = normalizedAttachments.filter(a => a.type === 'image' || 
+                (a.path && /\.(png|jpg|jpeg|gif|webp)$/i.test(a.path)));
+            const docAttachments = normalizedAttachments.filter(a => a.type === 'document' ||
+                (a.path && /\.(pdf|txt|md|doc|docx)$/i.test(a.path)));
+            
+            if (imageAttachments.length > 0 || docAttachments.length > 0) {
+                try {
+                    const processor = getAttachmentProcessor();
+                    const processed = await processor.processAttachments(normalizedAttachments);
+                    const contextString = processor.generateContextString(processed);
+                    if (contextString) {
+                        enrichedMessage = message + contextString;
+                        task.logs.push(`> [System]: Processed ${processed.length} attachments for context enrichment`);
+                    }
+                } catch (error: any) {
+                    console.error('[TaskRunner] Attachment processing failed:', error);
+                    task.logs.push(`> [System]: Attachment processing failed: ${error.message}`);
+                }
+            }
 
             // ========== REFINEMENT MODE REPLY HANDLING ==========
             // If task is awaiting-approval AND was started in refinement mode, route to RefinementManager
@@ -2213,7 +2259,7 @@ ${contextData}
                             task.logs.push('> [Refinement]: Processing your answers...');
                             this._onTaskUpdate.fire({ taskId, task });
 
-                            await refinementManager.handleUserMessage(sessionId, message);
+                            await refinementManager.handleUserMessage(sessionId, enrichedMessage);
                         } else {
                             console.error('[TaskRunner] No active refinement session found for task:', taskId);
                             task.logs.push('> [Error]: Refinement session not found. Please start a new task.');
@@ -2286,7 +2332,7 @@ ${contextData}
 
                     const systemPrompt = `You are ${isTrivial ? 'responding to a simple question' : (isNewMission ? 'starting a COMPLETELY NEW mission - forget all previous context' : 'continuing substantial work')}.
                     
-                    USER'S ${isNewMission ? 'NEW MISSION (IGNORE ALL PREVIOUS WORK)' : 'REQUEST'}: ${message}
+                    USER'S ${isNewMission ? 'NEW MISSION (IGNORE ALL PREVIOUS WORK)' : 'REQUEST'}: ${enrichedMessage}
                     
                     ${contextSection}
                     

@@ -18,22 +18,32 @@ export class GeminiClient {
         this.modelName = modelName;
     }
 
-    public startSession(systemPrompt: string, thinkingLevel: 'low' | 'high' = 'high'): ISession {
+    public startSession(systemPrompt: string, thinkingLevel: 'low' | 'high' = 'high', includeToolInstructions: boolean = true): ISession {
         // TODO: Configure thinking level when API supports it publicly or via specific params.
         // For now, we will assume the model handles reasoning based on prompt.
 
+        // For refinement mode (includeToolInstructions=false), add instruction to not use tools
+        const effectivePrompt = includeToolInstructions 
+            ? systemPrompt
+            : `${systemPrompt}\n\nIMPORTANT: You are in analysis/refinement mode. Do NOT use any tools. Only provide text responses - questions, analysis, or structured documents.`;
+
         const model = this.genAI.getGenerativeModel({
             model: this.modelName,
-            systemInstruction: systemPrompt
+            systemInstruction: effectivePrompt
         });
 
-        const chat = model.startChat({
+        // Only include tools if tool instructions are enabled
+        const chatConfig: any = {
             history: [],
             generationConfig: {
                 maxOutputTokens: 8192,
                 temperature: thinkingLevel === 'high' ? 0.2 : 0.7, // Lower temp for planning
-            },
-            tools: [
+            }
+        };
+
+        // Only add tools if not in refinement mode
+        if (includeToolInstructions) {
+            chatConfig.tools = [
                 {
                     functionDeclarations: [
                         {
@@ -215,8 +225,10 @@ export class GeminiClient {
                         }
                     ]
                 }
-            ]
-        });
+            ];
+        }
+
+        const chat = model.startChat(chatConfig);
 
         return {
             sendMessage: async (prompt: string | Part[]) => {
