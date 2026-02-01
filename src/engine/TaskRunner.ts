@@ -1474,9 +1474,15 @@ ${contextData}
             5. UPDATE: After completing a step, OVERWRITE '.vibearchitect/task.md' to mark items done (e.g., "- [x] Step 1").
             
             6. VERIFY (ATTEMPT):
-               - Run tests or verification scripts if possible.
-               - ** Web Apps **: Start the server (e.g. 'npm run dev') and call 'reload_browser()' to refresh.
-               - ** Check Ports **: Ensure correct port. Kill old servers if preview shows stale content.
+               - **USE EXISTING INFRASTRUCTURE** - Do NOT create minimal test setups or test servers!
+               - ** Web Apps **: 
+                 * Look for EXISTING server scripts in package.json, run.py, app.py, manage.py
+                 * If server running: Just call 'reload_browser()' to refresh
+                 * If not running: Use PROJECT'S actual start command (e.g., 'npm run dev', 'python app.py')
+                 * **Python**: Check for existing venv folder first! Use it: 'venv/Scripts/python app.py'
+                 * **NEVER** create a minimal test server - use the real app's entry point
+               - ** Dependencies **: If server fails, install using EXISTING venv/package.json
+               - ** Check Ports **: Read config files to find correct port.
                - If PRD exists: Verify against PRD's acceptance criteria.
                - If verification fails, note it but CONTINUE to FINISH.
                - IMPORTANT: Verification failure should NOT block mission completion.
@@ -3020,13 +3026,17 @@ CORE WORKFLOW (PLANNING MODE):
 5. UPDATE: After completing a step, OVERWRITE '.vibearchitect/task.md' to mark items done (e.g., "- [x] Step 1").
 
 6. VERIFY (MANDATORY - AI-POWERED):
-   - Run tests or verification scripts.
+   - **USE EXISTING INFRASTRUCTURE** - Do NOT create minimal test setups or test servers!
    - **Web Apps**: You MUST:
-     a) Start the server (e.g. 'npm run dev')
-     b) Call 'reload_browser()' to refresh the preview
-     c) Call 'browser_verify_ui("page-name", "description of expected UI")' for AI vision verification
-     d) If FAIL: Read the issues, fix the code, and call browser_verify_ui AGAIN
-   - **Check Ports**: Ensure you are viewing the correct port.
+     a) Look for EXISTING server scripts: package.json scripts, run.py, app.py, manage.py, etc.
+     b) If server already running: Just call 'reload_browser()' to refresh
+     c) If server not running: Use the PROJECT'S actual start command (e.g., 'npm run dev', 'python app.py', 'flask run')
+     d) **Python apps**: Check for existing venv folder first! If exists, use it: 'venv/Scripts/python app.py' (Windows)
+     e) **NEVER create a minimal test server** - always use the real app's entry point
+     f) Call 'browser_verify_ui("page-name", "description of expected UI")' for AI vision verification
+     g) If FAIL: Read the issues, fix the code, and call browser_verify_ui AGAIN
+   - **Check Ports**: Read package.json or config files to find the correct port.
+   - **Dependencies**: If server fails to start, check for requirements.txt/package.json and install using EXISTING venv
    - If PRD exists: Verify against PRD's acceptance criteria.
    - CRITICAL: browser_verify_ui() provides actual AI verification. Never say "verified" unless you got PASS.
 

@@ -18,6 +18,7 @@ import {
     ClarifyingQuestion,
     UserClarification,
     CritiqueResult,
+    CritiqueIssue,
     RefinementArtifact,
     RefinementEvent
 } from './RefinementTypes';
@@ -741,77 +742,118 @@ ${acceptanceCriteria || 'Not specified'}
     }
 
     private parseCritiqueResponse(response: string): CritiqueResult {
-        // Try to parse JSON from response
-        const defaultFallback: CritiqueResult = {
-            confidenceScore: 75,
-            passedValidation: true,
-            issues: [{
-                type: 'ambiguity',
-                severity: 'low',
-                description: 'Critique response was not in expected format'
-            }]
-        };
+        // Try multiple strategies to parse the critique response
+        
+        // Strategy 1: Look for JSON in various formats
+        const jsonPatterns = [
+            /```json\n?([\s\S]*?)\n?```/i,    // ```json ... ```
+            /```JSON\n?([\s\S]*?)\n?```/,      // ```JSON ... ```
+            /```\n?(\{[\s\S]*?\})\n?```/,      // ``` { ... } ```
+            /(\{[\s\S]*"confidenceScore"[\s\S]*\})/  // Raw JSON with confidenceScore
+        ];
 
-        // #region debug instrumentation
-        const logCritique = (message: string, data: Record<string, unknown>, hypothesisId: string) => {
-            fetch('http://127.0.0.1:7242/ingest/2339ffe5-68e3-436b-9b87-c502b12becf6', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'RefinementSession.ts:parseCritiqueResponse', message, data: { ...data, hypothesisId }, timestamp: Date.now(), sessionId: 'debug-session' }) }).catch(() => {});
-        };
-        logCritique('parseCritiqueResponse entry', { responseLength: response?.length ?? 0, responseStart: (response || '').slice(0, 200), responseEnd: (response || '').slice(-200), hasBacktickJson: (response || '').includes('```json'), hasBacktickJSON: (response || '').includes('```JSON') }, 'H1');
-        // #endregion
-
-        try {
-            let parsed: any;
-            const jsonMatch = response.match(/```json\n?([\s\S]*?)\n?```/);
-            // #region debug instrumentation
-            logCritique('json match result', { jsonMatchFound: !!jsonMatch, jsonMatchLength: jsonMatch?.[1]?.length ?? 0, extractedStart: jsonMatch?.[1]?.slice(0, 150) ?? null }, 'H1');
-            // #endregion
-
-            if (jsonMatch) {
-                parsed = JSON.parse(jsonMatch[1]);
-            } else {
-                // Try direct JSON parse
-                // #region debug instrumentation
-                logCritique('no json fence, trying direct parse', { responseTrimmed: response?.trim().slice(0, 100) ?? null }, 'H2');
-                // #endregion
-                parsed = JSON.parse(response);
+        for (const pattern of jsonPatterns) {
+            const match = response.match(pattern);
+            if (match && match[1]) {
+                try {
+                    const parsed = JSON.parse(match[1].trim());
+                    if (typeof parsed.confidenceScore === 'number' || parsed.confidence_score !== undefined) {
+                        const score = parsed.confidenceScore ?? parsed.confidence_score ?? 75;
+                        return {
+                            confidenceScore: score,
+                            passedValidation: parsed.passedValidation ?? parsed.passed_validation ?? (score >= 70),
+                            issues: Array.isArray(parsed.issues) ? parsed.issues : []
+                        };
+                    }
+                } catch {
+                    // Continue to next pattern
+                }
             }
-
-            // #region debug instrumentation
-            logCritique('after parse', { confidenceScore: parsed?.confidenceScore, confidenceScoreType: typeof parsed?.confidenceScore, hasIssues: Array.isArray(parsed?.issues), passedValidation: parsed?.passedValidation }, 'H4');
-            // #endregion
-
-            // Validate parsed JSON has required structure
-            if (typeof parsed.confidenceScore !== 'number') {
-                // #region debug instrumentation
-                logCritique('validation failed: confidenceScore not number', { confidenceScore: parsed?.confidenceScore }, 'H4');
-                // #endregion
-                console.warn('[RefinementSession] Parsed critique missing confidenceScore, using fallback');
-                return defaultFallback;
-            }
-
-            // Ensure issues is an array
-            if (!Array.isArray(parsed.issues)) {
-                parsed.issues = [];
-            }
-
-            // Ensure passedValidation exists
-            if (typeof parsed.passedValidation !== 'boolean') {
-                parsed.passedValidation = parsed.confidenceScore >= 70;
-            }
-
-            // #region debug instrumentation
-            logCritique('parseCritiqueResponse success', { confidenceScore: parsed.confidenceScore }, 'H4');
-            // #endregion
-            return parsed as CritiqueResult;
-        } catch (err: unknown) {
-            // #region debug instrumentation
-            const errMsg = err instanceof Error ? err.message : String(err);
-            logCritique('parseCritiqueResponse catch', { errorMessage: errMsg, errorName: err instanceof Error ? err.name : undefined }, 'H3');
-            // #endregion
-            // Fallback: create a default critique
-            console.warn('[RefinementSession] Failed to parse Critic JSON, using fallback');
-            return defaultFallback;
         }
+
+        // Strategy 2: Try direct JSON parse
+        try {
+            const parsed = JSON.parse(response.trim());
+            if (typeof parsed.confidenceScore === 'number') {
+                return {
+                    confidenceScore: parsed.confidenceScore,
+                    passedValidation: parsed.passedValidation ?? (parsed.confidenceScore >= 70),
+                    issues: Array.isArray(parsed.issues) ? parsed.issues : []
+                };
+            }
+        } catch {
+            // Continue to natural language extraction
+        }
+
+        // Strategy 3: Extract from natural language
+        // Look for confidence score mentions
+        const scoreMatch = response.match(/confidence[:\s]*(\d+)/i) ||
+                          response.match(/score[:\s]*(\d+)/i) ||
+                          response.match(/(\d+)%?\s*confidence/i) ||
+                          response.match(/rating[:\s]*(\d+)/i);
+        
+        const extractedScore = scoreMatch ? parseInt(scoreMatch[1], 10) : null;
+
+        // Look for approval indicators
+        const approvalIndicators = [
+            /\bapprove[ds]?\b/i,
+            /\blooks?\s+good\b/i,
+            /\bno\s+(?:major\s+)?issues?\b/i,
+            /\bwell[\s-]?defined\b/i,
+            /\bcomprehensive\b/i,
+            /\bpasses?\s+validation\b/i
+        ];
+        
+        const rejectionIndicators = [
+            /\breject(?:ed|s)?\b/i,
+            /\bfail(?:ed|s)?\b/i,
+            /\bmajor\s+issues?\b/i,
+            /\bcritical\s+(?:issues?|problems?)\b/i,
+            /\bnot\s+ready\b/i,
+            /\bincomplete\b/i
+        ];
+
+        const hasApproval = approvalIndicators.some(p => p.test(response));
+        const hasRejection = rejectionIndicators.some(p => p.test(response));
+
+        // Determine result based on extracted information
+        let confidenceScore = extractedScore ?? 75;
+        let passedValidation = true;
+
+        if (hasRejection && !hasApproval) {
+            passedValidation = false;
+            confidenceScore = extractedScore ?? 50;
+        } else if (hasApproval) {
+            passedValidation = true;
+            confidenceScore = extractedScore ?? 85;
+        }
+
+        // Extract any issues mentioned (using proper CritiqueIssue types)
+        const issues: CritiqueIssue[] = [];
+        const issuePatterns = [
+            /(?:issue|problem|concern|gap)[:\s]+([^.\n]+)/gi,
+            /(?:missing|lacks?|needs?)[:\s]+([^.\n]+)/gi,
+            /(?:ambiguous|unclear|vague)[:\s]+([^.\n]+)/gi
+        ];
+
+        for (const pattern of issuePatterns) {
+            let issueMatch;
+            while ((issueMatch = pattern.exec(response)) !== null) {
+                issues.push({
+                    type: 'ambiguity' as const,
+                    severity: 'medium' as const,
+                    description: issueMatch[1].trim()
+                });
+            }
+        }
+
+        console.log(`[RefinementSession] Extracted critique: score=${confidenceScore}, passed=${passedValidation}, issues=${issues.length}`);
+        
+        return {
+            confidenceScore,
+            passedValidation,
+            issues
+        };
     }
 
     private parseRefinedArtifact(response: string): RefinementArtifact {

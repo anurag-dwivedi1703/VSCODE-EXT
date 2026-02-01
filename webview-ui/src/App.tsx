@@ -61,7 +61,8 @@ function parseLogs(logs: string[], checkpoints: { id: string, message: string }[
         }
     };
 
-    for (const log of logs) {
+    for (let i = 0; i < logs.length; i++) {
+        const log = logs[i];
         // Skip duplicate mission complete usually at end
         if (log.toLowerCase() === 'mission complete' && groups.length > 0 && groups[groups.length - 1].content.includes('MISSION COMPLETE')) continue;
 
@@ -261,6 +262,11 @@ function parseLogs(logs: string[], checkpoints: { id: string, message: string }[
             commitSystem();
             // Create a step for Analyst/Refinement content
             const text = log.replace(/^\*\*(Analyst|System)\*\*:\s*/i, '').trim();
+            
+            // Determine if this is the last log (still in progress) for animations
+            const isLastLog = i === logs.length - 1;
+            const isFinalPRD = log.startsWith('**Final PRD Ready**');
+            
             currentStep = {
                 type: 'step',
                 content: 'Refinement',
@@ -272,16 +278,36 @@ function parseLogs(logs: string[], checkpoints: { id: string, message: string }[
                 markdown: log,  // Keep the full markdown including the header
                 tools: [],
                 artifacts: [],
-                status: 'completed'
+                // Set to 'running' for animations if this is the last log and not final PRD
+                status: isLastLog && !isFinalPRD ? 'running' : 'completed'
             };
         }
         // Refinement State/System Messages (e.g., > [Refinement]:)
         else if (log.startsWith('> [Refinement]') || log.startsWith('> [Context]:') || log.includes('[Refinement]')) {
-            commitStep();
-            if (!systemGroup) {
-                systemGroup = { type: 'system', content: 'Refinement Mode', details: [] };
+            // Check if this is a "processing" message - should show as running with animation
+            const isProcessing = log.includes('Processing') || log.includes('processing');
+            const isLastLog = i === logs.length - 1;
+            
+            if (isProcessing) {
+                commitStep();
+                commitSystem();
+                // Create a step with running status for processing messages
+                currentStep = {
+                    type: 'step',
+                    content: 'Refinement',
+                    title: '⏳ Processing...',
+                    markdown: log.replace(/^>\s*\[Refinement\]:\s*/i, ''),
+                    tools: [],
+                    artifacts: [],
+                    status: isLastLog ? 'running' : 'completed'
+                };
+            } else {
+                commitStep();
+                if (!systemGroup) {
+                    systemGroup = { type: 'system', content: 'Refinement Mode', details: [] };
+                }
+                systemGroup.details?.push(log);
             }
-            systemGroup.details?.push(log);
         }
         // Generic markdown content - fallback for any unmatched content that looks like markdown
         else if (log.trim().length > 0 && (log.includes('**') || log.startsWith('##') || log.startsWith('#') || log.startsWith('- ') || log.startsWith('1.'))) {

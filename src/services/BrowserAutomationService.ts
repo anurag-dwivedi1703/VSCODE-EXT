@@ -331,15 +331,49 @@ playwright-core is required but not installed.
                 const authResult = await this.authManager.promptUserForAuth(currentUrl);
 
                 if (authResult === 'completed') {
-                    // Wait for redirect
+                    // Wait for authentication redirect to complete
+                    // Okta/SSO redirects can take 5-15 seconds with multiple hops
+                    console.log(`[BrowserAutomation] Waiting for auth redirect...`);
+                    
+                    try {
+                        // Wait for navigation away from login page (up to 30 seconds)
+                        await this.page.waitForURL(
+                            (url: URL) => !url.href.includes('login') && 
+                                          !url.href.includes('okta') &&
+                                          !url.href.includes('auth'),
+                            { timeout: 30000 }
+                        ).catch(() => {
+                            console.log('[BrowserAutomation] waitForURL timeout, checking URL...');
+                        });
+                    } catch {
+                        // Fallback: just wait a bit
+                        await this.page.waitForTimeout(5000);
+                    }
+
+                    // Additional wait for page to stabilize after redirect
                     await this.page.waitForTimeout(2000);
+                    
+                    // Check if we're still on a login page
+                    const finalUrl = this.page.url();
+                    if (this.authManager.isLoginPage(finalUrl)) {
+                        console.log(`[BrowserAutomation] Still on login page after auth: ${finalUrl}`);
+                        return {
+                            success: false,
+                            url: finalUrl,
+                            loadTime: result.loadTime,
+                            retryCount: result.retryCount,
+                            error: 'Authentication completed but still on login page. Please try again.',
+                            authRequired: true
+                        };
+                    }
                     
                     // Save session for future use (filtered for auth only)
                     await this.saveCurrentSession(new URL(url).hostname);
+                    console.log(`[BrowserAutomation] Auth complete, redirected to: ${finalUrl}`);
 
                     return {
                         success: true,
-                        url: this.page.url(),
+                        url: finalUrl,
                         loadTime: result.loadTime,
                         retryCount: result.retryCount,
                         authRequired: true
@@ -455,6 +489,7 @@ playwright-core is required but not installed.
 
     /**
      * Take a screenshot
+     * Also checks for login page and handles authentication if needed
      */
     async takeScreenshot(name?: string): Promise<ScreenshotResult | string> {
         if (!this.page) {
@@ -462,6 +497,41 @@ playwright-core is required but not installed.
         }
 
         try {
+            // Check if we're on a login page - handle auth first
+            const currentUrl = this.page.url();
+            if (this.authManager.isLoginPage(currentUrl)) {
+                console.log(`[BrowserAutomation] Login page detected during screenshot: ${currentUrl}`);
+                
+                // Prompt user for authentication
+                const authResult = await this.authManager.promptUserForAuth(currentUrl);
+                
+                if (authResult === 'completed') {
+                    // Wait for redirect after login
+                    console.log(`[BrowserAutomation] Waiting for post-login redirect...`);
+                    try {
+                        await this.page.waitForURL(
+                            (url: URL) => !url.href.includes('login') && 
+                                          !url.href.includes('okta') &&
+                                          !url.href.includes('auth'),
+                            { timeout: 30000 }
+                        );
+                    } catch {
+                        await this.page.waitForTimeout(5000);
+                    }
+                    await this.page.waitForTimeout(2000);
+                    
+                    // Check if still on login
+                    if (this.authManager.isLoginPage(this.page.url())) {
+                        return 'Error: Still on login page after authentication. Please check your credentials.';
+                    }
+                    
+                    // Save session
+                    await this.saveCurrentSession(new URL(currentUrl).hostname);
+                } else {
+                    return `Error: Authentication ${authResult}. Cannot take screenshot of login page.`;
+                }
+            }
+
             const recordingsDir = this.ensureRecordingsDir();
             const timestamp = Date.now();
             const filename = name ? `${name}_${timestamp}.png` : `screenshot_${timestamp}.png`;
