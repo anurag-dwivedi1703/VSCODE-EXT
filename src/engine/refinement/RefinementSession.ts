@@ -20,7 +20,8 @@ import {
     CritiqueResult,
     CritiqueIssue,
     RefinementArtifact,
-    RefinementEvent
+    RefinementEvent,
+    QuestionnaireEventPayload
 } from './RefinementTypes';
 import {
     getPersonaPrompt,
@@ -211,6 +212,22 @@ export class RefinementSession {
             }
         });
 
+        // If structured questionnaire was detected, also fire questionnaire event for interactive UI
+        const structuredQuestionnaire = this.parseQuestionnaireBlock(response);
+        if (structuredQuestionnaire && structuredQuestionnaire.questions.length > 0) {
+            console.log(`[RefinementSession] Firing 'questionnaire' event with ${structuredQuestionnaire.questions.length} structured questions`);
+            const questionnairePayload: QuestionnaireEventPayload = {
+                questions: structuredQuestionnaire.questions,
+                contextSummary: structuredQuestionnaire.contextSummary,
+                rawAnalystResponse: this.getResponseWithoutQuestionnaire(response)
+            };
+            this._onEvent.fire({
+                type: 'questionnaire',
+                sessionId: this.sessionId,
+                payload: questionnairePayload
+            });
+        }
+
         return turn;
     }
 
@@ -303,6 +320,22 @@ Incorporate this into your requirements. If sufficient info, produce a PRD draft
                 questionCount: questionCount
             }
         });
+
+        // If structured questionnaire was detected, also fire questionnaire event for interactive UI
+        const structuredQuestionnaire = this.parseQuestionnaireBlock(aiResponse);
+        if (structuredQuestionnaire && structuredQuestionnaire.questions.length > 0) {
+            console.log(`[RefinementSession] Firing 'questionnaire' event with ${structuredQuestionnaire.questions.length} structured questions`);
+            const questionnairePayload: QuestionnaireEventPayload = {
+                questions: structuredQuestionnaire.questions,
+                contextSummary: structuredQuestionnaire.contextSummary,
+                rawAnalystResponse: this.getResponseWithoutQuestionnaire(aiResponse)
+            };
+            this._onEvent.fire({
+                type: 'questionnaire',
+                sessionId: this.sessionId,
+                payload: questionnairePayload
+            });
+        }
 
         return turn;
     }
@@ -697,7 +730,55 @@ ${acceptanceCriteria || 'Not specified'}
         }
     }
 
+    /**
+     * Parse structured questionnaire JSON block from analyst response.
+     * Returns parsed questions or null if no valid questionnaire block found.
+     */
+    private parseQuestionnaireBlock(response: string): { questions: ClarifyingQuestion[], contextSummary?: string } | null {
+        // Look for ```questionnaire ... ``` block
+        const match = response.match(/```questionnaire\s*([\s\S]*?)```/);
+        if (!match) return null;
+
+        try {
+            const parsed = JSON.parse(match[1].trim());
+            if (!parsed.questions || !Array.isArray(parsed.questions)) {
+                return null;
+            }
+
+            // Validate and normalize questions
+            const questions: ClarifyingQuestion[] = parsed.questions.map((q: any, idx: number) => ({
+                id: q.id || `q${idx + 1}`,
+                question: q.question || '',
+                category: q.category || 'requirement',
+                options: Array.isArray(q.options) ? q.options : undefined,
+                allowMultiple: q.allowMultiple === true,
+                inputType: q.inputType || (Array.isArray(q.options) ? 'select' : 'text'),
+                placeholder: q.placeholder || undefined,
+                required: q.required !== false  // Default to true
+            })).filter((q: ClarifyingQuestion) => q.question.length > 0);
+
+            return {
+                questions,
+                contextSummary: parsed.contextSummary || undefined
+            };
+        } catch (e) {
+            console.warn('[RefinementSession] Failed to parse questionnaire JSON:', e);
+            return null;
+        }
+    }
+
+    /**
+     * Get text content outside the questionnaire block for display.
+     */
+    private getResponseWithoutQuestionnaire(response: string): string {
+        // Remove the questionnaire block but keep the rest of the response
+        return response.replace(/```questionnaire\s*[\s\S]*?```/g, '').trim();
+    }
+
     private parseAnalystResponse(response: string): RefinementTurn {
+        // First, try to parse structured questionnaire block
+        const structuredQuestionnaire = this.parseQuestionnaireBlock(response);
+        
         // Check if response contains a PRD draft (look for structured headers)
         const hasDraft = response.includes('## Functional Requirements') ||
             response.includes('## Problem Statement') ||
@@ -709,7 +790,22 @@ ${acceptanceCriteria || 'Not specified'}
             // to avoid duplicate bubbles in the UI
         }
 
-        // Extract questions (look for numbered list or question marks)
+        // If we have structured questions, use those
+        if (structuredQuestionnaire && structuredQuestionnaire.questions.length > 0) {
+            return {
+                role: 'analyst',
+                content: response,
+                timestamp: Date.now(),
+                metadata: {
+                    questions: structuredQuestionnaire.questions,
+                    hasDraft,
+                    // Store context summary in metadata for UI
+                    contextSummary: structuredQuestionnaire.contextSummary
+                } as any  // Extended metadata type
+            };
+        }
+
+        // Fallback: Extract questions from free-form text (look for numbered list or question marks)
         // This is for state tracking, NOT for separate display
         const questions: ClarifyingQuestion[] = [];
         const lines = response.split('\n');

@@ -91,6 +91,16 @@ export class TaskRunner {
     private _onApprovalComplete = new vscode.EventEmitter<{ taskId: string }>();
     public readonly onApprovalComplete = this._onApprovalComplete.event;
 
+    // Questionnaire event for interactive refinement questions
+    private _onQuestionnaire = new vscode.EventEmitter<{ 
+        taskId: string; 
+        sessionId: string;
+        questions: any[]; 
+        contextSummary?: string;
+        rawAnalystResponse?: string;
+    }>();
+    public readonly onQuestionnaire = this._onQuestionnaire.event;
+
     // Approval resolvers - allows execution loop to await user approval
     private _approvalResolvers: Map<string, { resolve: (approved: boolean) => void, feedback?: string }> = new Map();
 
@@ -260,6 +270,72 @@ Please complete the login in the browser window, then click **"I've Logged In"**
 *The automation is paused and will resume after you confirm.*`;
 
         return this.waitForApproval(taskId, 'login-checkpoint', content);
+    }
+
+    /**
+     * Handle questionnaire submission from the interactive UI.
+     * Converts structured responses to a message for the refinement session.
+     */
+    public async handleQuestionnaireSubmit(
+        taskId: string,
+        sessionId: string,
+        responses: Array<{ questionId: string; selectedOptions?: string[]; textResponse?: string }>
+    ): Promise<void> {
+        const task = this.tasks.get(taskId);
+        if (!task) {
+            console.error(`[TaskRunner] handleQuestionnaireSubmit: Task not found: ${taskId}`);
+            return;
+        }
+
+        console.log(`[TaskRunner] Processing questionnaire submission for task ${taskId}, session ${sessionId}`);
+
+        // Convert structured responses to a formatted message
+        const formattedAnswers = responses.map((r, idx) => {
+            const parts: string[] = [];
+            
+            // Add selected options
+            if (r.selectedOptions && r.selectedOptions.length > 0) {
+                parts.push(r.selectedOptions.join(', '));
+            }
+            
+            // Add text response
+            if (r.textResponse && r.textResponse.trim()) {
+                if (parts.length > 0) {
+                    parts.push(`(Additional: ${r.textResponse.trim()})`);
+                } else {
+                    parts.push(r.textResponse.trim());
+                }
+            }
+            
+            return `${idx + 1}. ${parts.join(' ') || 'No answer provided'}`;
+        }).join('\n');
+
+        const message = `My answers to your questions:\n\n${formattedAnswers}`;
+
+        // Log the submission
+        task.logs.push(`\n**Your Answers:**\n${formattedAnswers}`);
+        this._onTaskUpdate.fire({ taskId, task });
+
+        // Route to refinement manager
+        const refinementManager = getRefinementManager();
+        const actualSessionId = refinementManager.getSessionForTask(taskId);
+        
+        if (actualSessionId) {
+            try {
+                task.logs.push('\n> [Refinement]: Processing your answers...');
+                this._onTaskUpdate.fire({ taskId, task });
+                
+                await refinementManager.handleUserMessage(actualSessionId, message);
+            } catch (error: any) {
+                console.error('[TaskRunner] Error handling questionnaire submission:', error);
+                task.logs.push(`> [Error]: Failed to process answers: ${error.message}`);
+                this._onTaskUpdate.fire({ taskId, task });
+            }
+        } else {
+            console.error(`[TaskRunner] No refinement session found for task ${taskId}`);
+            task.logs.push(`> [Error]: Refinement session not found. Please try again.`);
+            this._onTaskUpdate.fire({ taskId, task });
+        }
     }
 
     public async approvePrd(taskId: string) {
@@ -1004,6 +1080,28 @@ ${originalPrompt}`;
                         type: 'prd',
                         content: prdContent
                     });
+                } else if (event.type === 'questionnaire') {
+                    // Handle structured questionnaire for interactive UI
+                    const payload = event.payload as { 
+                        questions: any[]; 
+                        contextSummary?: string; 
+                        rawAnalystResponse?: string 
+                    };
+                    
+                    if (payload.questions && payload.questions.length > 0) {
+                        // Add summary to chat indicating questionnaire is available
+                        const questionCount = payload.questions.length;
+                        task.logs.push(`\n> **📋 ${questionCount} question${questionCount > 1 ? 's' : ''} to answer** - View in Context pane for interactive form.`);
+                        
+                        // Fire questionnaire event for the webview
+                        this._onQuestionnaire.fire({
+                            taskId,
+                            sessionId: event.sessionId,
+                            questions: payload.questions,
+                            contextSummary: payload.contextSummary,
+                            rawAnalystResponse: payload.rawAnalystResponse
+                        });
+                    }
                 } else if (event.type === 'state-change') {
                     task.logs.push(`> [Refinement]: State → ${event.payload}`);
                 } else if (event.type === 'progress') {

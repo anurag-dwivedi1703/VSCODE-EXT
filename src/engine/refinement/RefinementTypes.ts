@@ -22,16 +22,51 @@ export type AgentPersona = 'analyst' | 'critic' | 'refiner';
 
 /**
  * Structure for clarifying questions asked by the Analyst.
+ * Enhanced to support interactive questionnaire UI.
  */
 export interface ClarifyingQuestion {
     id: string;
     question: string;
-    options?: string[];  // Optional predefined options for Smart Buttons
     category: 'requirement' | 'constraint' | 'preference' | 'technical';
+    options?: string[];           // Predefined choices for selection
+    allowMultiple?: boolean;      // Allow multiple option selection (default: false)
+    inputType?: 'select' | 'text' | 'both';  // Display type (default: 'select' if options, 'text' otherwise)
+    placeholder?: string;         // Hint text for text input fields
+    required?: boolean;           // Must answer before submission (default: true)
 }
 
 /**
- * User's response to a clarifying question.
+ * User's response to a single question in the questionnaire.
+ */
+export interface QuestionnaireResponse {
+    questionId: string;
+    selectedOptions?: string[];   // Selected option(s) for select/both types
+    textResponse?: string;        // Text input for text/both types
+}
+
+/**
+ * Complete questionnaire data sent from backend to frontend.
+ */
+export interface QuestionnaireData {
+    sessionId: string;
+    taskId: string;
+    questions: ClarifyingQuestion[];
+    contextSummary?: string;      // Brief context/analysis summary from analyst
+}
+
+/**
+ * User's submission of all questionnaire answers.
+ */
+export interface QuestionnaireSubmission {
+    sessionId: string;
+    taskId: string;
+    responses: QuestionnaireResponse[];
+    submittedAt: number;
+}
+
+/**
+ * User's response to a clarifying question (legacy format).
+ * @deprecated Use QuestionnaireResponse for new code
  */
 export interface UserClarification {
     questionId: string;
@@ -121,7 +156,16 @@ export interface ProjectAxiom {
  * Event emitted by RefinementSession for UI updates.
  */
 export interface RefinementEvent {
-    type: 'state-change' | 'question' | 'draft-ready' | 'critique-ready' | 'artifact-ready' | 'error' | 'progress' | 'analyst-response';
+    type: 'state-change' | 'question' | 'draft-ready' | 'critique-ready' | 'artifact-ready' | 'error' | 'progress' | 'analyst-response' | 'questionnaire';
     sessionId: string;
     payload: unknown;
+}
+
+/**
+ * Payload type for the 'questionnaire' event.
+ */
+export interface QuestionnaireEventPayload {
+    questions: ClarifyingQuestion[];
+    contextSummary?: string;
+    rawAnalystResponse?: string;  // Original full response for fallback display
 }

@@ -48,11 +48,55 @@ export const ANALYST_SYSTEM_PROMPT = `You are an expert Technical Product Manage
 
 ## Question Format
 
-When asking clarifying questions:
+When asking clarifying questions, output them in a structured JSON block that enables interactive UI:
+
+\`\`\`questionnaire
+{
+  "contextSummary": "Brief 1-2 sentence summary of your analysis so far",
+  "questions": [
+    {
+      "id": "q1",
+      "question": "What authentication method should be used?",
+      "category": "technical",
+      "options": ["OAuth 2.0", "JWT tokens", "Session-based", "Other"],
+      "allowMultiple": false,
+      "required": true
+    },
+    {
+      "id": "q2",
+      "question": "Should this support multiple file uploads simultaneously?",
+      "category": "requirement",
+      "options": ["Yes, batch upload", "No, single file only"],
+      "allowMultiple": false,
+      "required": true
+    },
+    {
+      "id": "q3",
+      "question": "Describe any specific security or compliance requirements",
+      "category": "constraint",
+      "inputType": "text",
+      "placeholder": "e.g., GDPR compliance, data encryption at rest, audit logging...",
+      "required": false
+    }
+  ]
+}
+\`\`\`
+
+Question format guidelines:
+- **id**: Unique identifier like "q1", "q2", etc.
+- **category**: One of "requirement", "constraint", "preference", "technical"
+- **options**: Array of predefined choices when applicable (include "Other" when open-ended input might be needed)
+- **allowMultiple**: true if user can select multiple options
+- **inputType**: Use "text" for free-form questions, "select" for options-only, "both" for options + comment
+- **placeholder**: Hint text for text inputs
+- **required**: true for must-answer questions
+
+Guidelines:
 - Be specific, not generic ("What fields should the User entity have?" not "What do you mean?")
 - Offer constrained options when possible ("Should this be a soft delete (flag in DB) or hard delete (GDPR compliance)?")
 - Group related questions together
 - Prioritize by impact (security > functionality > performance > convenience)
+- For complex decisions, provide options with brief explanations
 
 ## Interaction Style
 Professional, concise, and structured. Focus on "What" and "Why" before "How".`;
@@ -304,6 +348,18 @@ NOTE: If you need implementation details of specific files to properly analyze, 
    - Problem Statement (2-3 sentences)
    - Functional Requirements (numbered list)
    - Non-Functional Requirements (bullet points)
+
+## Question Format
+Output questions in structured JSON:
+\`\`\`questionnaire
+{
+  "contextSummary": "Brief analysis summary",
+  "questions": [
+    {"id": "q1", "question": "Question text?", "category": "technical|requirement|constraint|preference", "options": ["Option A", "Option B"], "required": true},
+    {"id": "q2", "question": "Open question?", "category": "constraint", "inputType": "text", "placeholder": "hint...", "required": false}
+  ]
+}
+\`\`\`
 
 Be concise. Ask critical questions first.`;
 }

@@ -156,6 +156,20 @@ export class MissionControlProvider {
         });
         this._disposables.push(approvalCompleteSub);
 
+        // Listen for questionnaire events from refinement mode
+        const questionnaireSub = this._taskRunner.onQuestionnaire((event) => {
+            console.log(`[MissionControlProvider] Questionnaire event for task ${event.taskId}`);
+            this.safePostMessage({
+                command: 'questionnaireReady',
+                taskId: event.taskId,
+                sessionId: event.sessionId,
+                questions: event.questions,
+                contextSummary: event.contextSummary,
+                rawAnalystResponse: event.rawAnalystResponse
+            });
+        });
+        this._disposables.push(questionnaireSub);
+
         // Phase execution event subscriptions
         this._setupPhaseIntegrationEvents();
 
@@ -760,6 +774,14 @@ export class MissionControlProvider {
                         return;
                     case 'cancelLogin':
                         this._taskRunner.cancelLoginCheckpoint(message.taskId);
+                        return;
+                    // Questionnaire Submission Handler (Refinement Mode)
+                    case 'submitQuestionnaireAnswers':
+                        this._taskRunner.handleQuestionnaireSubmit(
+                            message.taskId,
+                            message.sessionId,
+                            message.responses
+                        );
                         return;
                     // Constitution Review Handlers
                     case 'approveConstitution':

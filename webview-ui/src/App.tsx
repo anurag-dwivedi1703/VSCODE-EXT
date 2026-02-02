@@ -13,6 +13,7 @@ import { PhaseApprovalModal, PhaseApprovalData } from './components/PhaseApprova
 import { BrowserSetupWizard } from './components/BrowserSetupWizard';
 import { SessionManagerUI } from './components/SessionManagerUI';
 import { TypewriterText } from './components/TypewriterText';
+import { RefinementQuestionnaire } from './components/RefinementQuestionnaire';
 
 // Mock Data
 const DEFAULT_WORKSPACES = [
@@ -388,6 +389,18 @@ function App() {
         riskReason?: string;
     } | null>(null);
 
+    // Questionnaire State (for interactive Refinement Mode questions)
+    const [questionnaireData, setQuestionnaireData] = useState<{
+        taskId: string;
+        sessionId: string;
+        questions: any[];
+        contextSummary?: string;
+        rawAnalystResponse?: string;
+    } | null>(null);
+
+    // Context Pane Tab Navigation (for switching between multiple open items)
+    const [contextPaneIndex, setContextPaneIndex] = useState(0);
+
     // Review Comment State (ephemeral - for current session)
     const [reviewComment, setReviewComment] = useState('');
 
@@ -525,10 +538,22 @@ function App() {
                     taskId: message.taskId
                 });
             }
+            // Handle interactive questionnaire from refinement mode
+            if (message.command === 'questionnaireReady') {
+                setQuestionnaireData({
+                    taskId: message.taskId,
+                    sessionId: message.sessionId,
+                    questions: message.questions,
+                    contextSummary: message.contextSummary,
+                    rawAnalystResponse: message.rawAnalystResponse
+                });
+                setRightPaneTab('context');  // Switch to context pane to show questionnaire
+            }
             if (message.command === 'approvalComplete') {
                 setPendingApproval(null);
                 setReviewComment('');
                 setConstitutionReview(null);  // Also clear constitution review
+                setQuestionnaireData(null);   // Also clear questionnaire
             }
             // Handle constitution review from backend
             if (message.command === 'constitutionReview') {
@@ -739,6 +764,21 @@ function App() {
             taskId: pendingApproval.taskId
         });
         setPendingApproval(null);
+    };
+
+    // Questionnaire Handlers
+    const handleQuestionnaireSubmit = (taskId: string, sessionId: string, responses: any[]) => {
+        vscode.postMessage({
+            command: 'submitQuestionnaireAnswers',
+            taskId,
+            sessionId,
+            responses
+        });
+        setQuestionnaireData(null);  // Clear questionnaire after submission
+    };
+
+    const handleQuestionnaireCancel = () => {
+        setQuestionnaireData(null);  // Just hide the questionnaire
     };
 
     const handleAgentModeChange = (newMode: 'auto' | 'agent-decides') => {
@@ -1637,117 +1677,199 @@ function App() {
                         </div>
 
                         {
-                            rightPaneTab === 'context' ? (
-                                <div className="context-list">
-                                    {/* Priority 1: Review Pane for Plan Approval */}
-                                    {pendingApproval && pendingApproval.type === 'plan' ? (
-                                        <div className="review-pane">
-                                            <div className="review-header">
-                                                <span className="review-icon">📋</span>
-                                                <h3>Review Implementation Plan</h3>
+                            rightPaneTab === 'context' ? (() => {
+                                // Build array of available context items
+                                const contextItems: { id: string; render: () => React.ReactNode }[] = [];
+                                
+                                if (questionnaireData) {
+                                    contextItems.push({
+                                        id: 'questionnaire',
+                                        render: () => (
+                                            <RefinementQuestionnaire
+                                                taskId={questionnaireData.taskId}
+                                                sessionId={questionnaireData.sessionId}
+                                                questions={questionnaireData.questions}
+                                                contextSummary={questionnaireData.contextSummary}
+                                                onSubmit={handleQuestionnaireSubmit}
+                                                onCancel={handleQuestionnaireCancel}
+                                            />
+                                        )
+                                    });
+                                }
+                                
+                                if (pendingApproval && pendingApproval.type === 'plan') {
+                                    contextItems.push({
+                                        id: 'plan',
+                                        render: () => (
+                                            <div className="review-pane">
+                                                <div className="review-header">
+                                                    <span className="review-icon">📋</span>
+                                                    <h3>Review Implementation Plan</h3>
+                                                </div>
+                                                <div className="review-content markdown-body">
+                                                    <ReactMarkdown>{pendingApproval.content}</ReactMarkdown>
+                                                </div>
+                                                <div className="review-comment-section">
+                                                    <label className="comment-label">Add feedback or suggestions (optional):</label>
+                                                    <textarea
+                                                        className="review-textarea"
+                                                        placeholder="e.g., 'Add error handling' or 'Include unit tests'..."
+                                                        value={reviewComment}
+                                                        onChange={(e) => setReviewComment(e.target.value)}
+                                                    />
+                                                </div>
+                                                <div className="review-actions">
+                                                    <button className="decline-btn" onClick={handleRejectReview}>
+                                                        ✕ Cancel
+                                                    </button>
+                                                    <button className="approve-btn" onClick={handleApproveReview}>
+                                                        ✓ Approve & Continue
+                                                    </button>
+                                                </div>
                                             </div>
-                                            <div className="review-content markdown-body">
-                                                <ReactMarkdown>{pendingApproval.content}</ReactMarkdown>
-                                            </div>
-                                            <div className="review-comment-section">
-                                                <label className="comment-label">Add feedback or suggestions (optional):</label>
-                                                <textarea
-                                                    className="review-textarea"
-                                                    placeholder="e.g., 'Add error handling' or 'Include unit tests'..."
-                                                    value={reviewComment}
-                                                    onChange={(e) => setReviewComment(e.target.value)}
-                                                />
-                                            </div>
-                                            <div className="review-actions">
-                                                <button className="decline-btn" onClick={handleRejectReview}>
-                                                    ✕ Cancel
-                                                </button>
-                                                <button className="approve-btn" onClick={handleApproveReview}>
-                                                    ✓ Approve & Continue
-                                                </button>
-                                            </div>
-                                        </div>
-                                    ) : pendingApproval && pendingApproval.type === 'prd' ? (
-                                        /* Priority 2: PRD Review Pane for Refinement Mode */
-                                        <div className="review-pane prd-review">
-                                            <div className="review-header">
-                                                <span className="review-icon">📝</span>
-                                                <h3>Review Product Requirements Document</h3>
-                                            </div>
-                                            <div className="review-content markdown-body">
-                                                <ReactMarkdown>{pendingApproval.content}</ReactMarkdown>
-                                            </div>
-                                            <div className="review-comment-section">
-                                                <label className="comment-label">Request changes or refinements (optional):</label>
-                                                <textarea
-                                                    className="review-textarea"
-                                                    placeholder="e.g., 'Add authentication requirements' or 'Include database schemas'..."
-                                                    value={reviewComment}
-                                                    onChange={(e) => setReviewComment(e.target.value)}
-                                                />
-                                            </div>
-                                            <div className="review-actions">
-                                                <button className="decline-btn" onClick={() => {
-                                                    // Request changes - send feedback to refinement
-                                                    if (reviewComment.trim()) {
+                                        )
+                                    });
+                                }
+                                
+                                if (pendingApproval && pendingApproval.type === 'prd') {
+                                    contextItems.push({
+                                        id: 'prd',
+                                        render: () => (
+                                            <div className="review-pane prd-review">
+                                                <div className="review-header">
+                                                    <span className="review-icon">📝</span>
+                                                    <h3>Review Product Requirements Document</h3>
+                                                </div>
+                                                <div className="review-content markdown-body">
+                                                    <ReactMarkdown>{pendingApproval.content}</ReactMarkdown>
+                                                </div>
+                                                <div className="review-comment-section">
+                                                    <label className="comment-label">Request changes or refinements (optional):</label>
+                                                    <textarea
+                                                        className="review-textarea"
+                                                        placeholder="e.g., 'Add authentication requirements' or 'Include database schemas'..."
+                                                        value={reviewComment}
+                                                        onChange={(e) => setReviewComment(e.target.value)}
+                                                    />
+                                                </div>
+                                                <div className="review-actions">
+                                                    <button className="decline-btn" onClick={() => {
+                                                        if (reviewComment.trim()) {
+                                                            vscode.postMessage({
+                                                                command: 'prdFeedback',
+                                                                taskId: pendingApproval.taskId,
+                                                                feedback: reviewComment
+                                                            });
+                                                        } else {
+                                                            vscode.postMessage({
+                                                                command: 'prdFeedback',
+                                                                taskId: pendingApproval.taskId,
+                                                                feedback: 'Please refine the PRD further with more details.'
+                                                            });
+                                                        }
+                                                        setPendingApproval(null);
+                                                        setReviewComment('');
+                                                    }}>
+                                                        ✎ Request Changes
+                                                    </button>
+                                                    <button className="approve-btn" onClick={() => {
                                                         vscode.postMessage({
-                                                            command: 'prdFeedback',
-                                                            taskId: pendingApproval.taskId,
-                                                            feedback: reviewComment
+                                                            command: 'prdApproved',
+                                                            taskId: pendingApproval.taskId
                                                         });
-                                                    } else {
-                                                        vscode.postMessage({
-                                                            command: 'prdFeedback',
-                                                            taskId: pendingApproval.taskId,
-                                                            feedback: 'Please refine the PRD further with more details.'
-                                                        });
-                                                    }
-                                                    setPendingApproval(null);
-                                                    setReviewComment('');
-                                                }}>
-                                                    ✎ Request Changes
+                                                        setPendingApproval(null);
+                                                        setReviewComment('');
+                                                    }}>
+                                                        ✓ Approve & Continue to Planning
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        )
+                                    });
+                                }
+                                
+                                if (diffContent) {
+                                    contextItems.push({
+                                        id: 'diff',
+                                        render: () => (
+                                            <DiffViewer
+                                                filePath={diffContent.path}
+                                                beforeContent={diffContent.before}
+                                                afterContent={diffContent.after}
+                                                onClose={() => setDiffContent(null)}
+                                            />
+                                        )
+                                    });
+                                }
+                                
+                                if (previewContent) {
+                                    contextItems.push({
+                                        id: 'preview',
+                                        render: () => (
+                                            <div className="file-preview">
+                                                <div className="preview-header">
+                                                    <span className="preview-filename">{previewPath?.split(/[\\/]/).pop()}</span>
+                                                    <button className="icon-btn-small" onClick={() => setPreviewContent(null)}>×</button>
+                                                </div>
+                                                <div className="preview-body markdown-body">
+                                                    {previewPath?.endsWith('.md') ? (
+                                                        <ReactMarkdown>{previewContent}</ReactMarkdown>
+                                                    ) : (
+                                                        <pre>{previewContent}</pre>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        )
+                                    });
+                                }
+                                
+                                // Clamp index to valid range
+                                const safeIndex = Math.max(0, Math.min(contextPaneIndex, contextItems.length - 1));
+                                if (safeIndex !== contextPaneIndex && contextItems.length > 0) {
+                                    // Reset index if it's out of bounds (item was removed)
+                                    setTimeout(() => setContextPaneIndex(safeIndex), 0);
+                                }
+                                
+                                // If no items, show empty state
+                                if (contextItems.length === 0) {
+                                    return (
+                                        <div className="context-list">
+                                            <div className="empty-state">
+                                                <div>No artifacts open. Click OPEN on an artifact card to view.</div>
+                                            </div>
+                                        </div>
+                                    );
+                                }
+                                
+                                return (
+                                    <div className="context-list">
+                                        {/* Navigation bar when multiple items */}
+                                        {contextItems.length > 1 && (
+                                            <div className="context-nav-bar">
+                                                <button 
+                                                    className="context-nav-btn" 
+                                                    onClick={() => setContextPaneIndex(prev => Math.max(0, prev - 1))}
+                                                    disabled={safeIndex === 0}
+                                                >
+                                                    &lt;
                                                 </button>
-                                                <button className="approve-btn" onClick={() => {
-                                                    // Approve PRD - transition to planning
-                                                    vscode.postMessage({
-                                                        command: 'prdApproved',
-                                                        taskId: pendingApproval.taskId
-                                                    });
-                                                    setPendingApproval(null);
-                                                    setReviewComment('');
-                                                }}>
-                                                    ✓ Approve & Continue to Planning
+                                                <span className="context-nav-indicator">
+                                                    {safeIndex + 1} / {contextItems.length}
+                                                </span>
+                                                <button 
+                                                    className="context-nav-btn" 
+                                                    onClick={() => setContextPaneIndex(prev => Math.min(contextItems.length - 1, prev + 1))}
+                                                    disabled={safeIndex === contextItems.length - 1}
+                                                >
+                                                    &gt;
                                                 </button>
                                             </div>
-                                        </div>
-                                    ) : diffContent ? (
-                                        <DiffViewer
-                                            filePath={diffContent.path}
-                                            beforeContent={diffContent.before}
-                                            afterContent={diffContent.after}
-                                            onClose={() => setDiffContent(null)}
-                                        />
-                                    ) : previewContent ? (
-                                        <div className="file-preview">
-                                            <div className="preview-header">
-                                                <span className="preview-filename">{previewPath?.split(/[\\/]/).pop()}</span>
-                                                <button className="icon-btn-small" onClick={() => setPreviewContent(null)}>×</button>
-                                            </div>
-                                            <div className="preview-body markdown-body">
-                                                {previewPath?.endsWith('.md') ? (
-                                                    <ReactMarkdown>{previewContent}</ReactMarkdown>
-                                                ) : (
-                                                    <pre>{previewContent}</pre>
-                                                )}
-                                            </div>
-                                        </div>
-                                    ) : (
-                                        <div className="empty-state">
-                                            <div>No artifacts open. Click OPEN on an artifact card to view.</div>
-                                        </div>
-                                    )}
-                                </div>
-                            ) : (
+                                        )}
+                                        {/* Render current item */}
+                                        {contextItems[safeIndex].render()}
+                                    </div>
+                                );
+                            })() : (
                                 <BrowserPreview taskId={activeAgent?.id || ''} />
                             )
                         }

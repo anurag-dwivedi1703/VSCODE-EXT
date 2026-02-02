@@ -29,6 +29,54 @@
     overflow-y: auto;
     min-height: 0;
     padding: 10px;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Context Pane Navigation Bar */
+.context-nav-bar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 8px 12px;
+    margin-bottom: 10px;
+    background: var(--vscode-sideBar-background);
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 6px;
+    flex-shrink: 0;
+}
+
+.context-nav-btn {
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--vscode-button-secondaryBackground);
+    color: var(--vscode-button-secondaryForeground);
+    border: 1px solid var(--vscode-button-border, var(--vscode-panel-border));
+    border-radius: 4px;
+    font-size: 16px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.context-nav-btn:hover:not(:disabled) {
+    background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.context-nav-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.context-nav-indicator {
+    font-size: 13px;
+    color: var(--vscode-descriptionForeground);
+    min-width: 50px;
+    text-align: center;
 }
 
 /* Resizable Layout */
