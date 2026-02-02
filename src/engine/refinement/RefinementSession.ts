@@ -440,18 +440,33 @@ Incorporate this into your requirements. If sufficient info, produce a PRD draft
             // Ready to refine
             return this.triggerRefine();
         } else {
-            // Need more clarification
+            // Need more clarification - generate questions from issues
+            const issues = critique.issues || [];
+            const significantIssues = issues.filter(i => i.severity !== 'low').slice(0, 3);
+            
+            // If no specific issues but still failed validation, create a generic prompt
+            if (significantIssues.length === 0) {
+                console.log(`[RefinementSession] Critique failed (score: ${critique.confidenceScore}) but no issues provided. Proceeding with refinement anyway.`);
+                
+                // Fire an event to let user know what's happening
+                this._onEvent.fire({
+                    type: 'progress',
+                    sessionId: this.sessionId,
+                    payload: `Critique confidence is ${critique.confidenceScore}% (threshold: ${CONFIDENCE_THRESHOLD}%). Proceeding to generate PRD with current information.`
+                });
+                
+                // Proceed to refinement since we have no specific issues to address
+                return this.triggerRefine();
+            }
+            
+            // We have specific issues to address
             this.transitionTo('AWAITING_USER');
 
-            // Generate questions based on critique issues (null safety) - limit to top 3
-            const questions = (critique.issues || [])
-                .filter(i => i.severity !== 'low')
-                .slice(0, 3)  // Limit questions to avoid overwhelming user
-                .map((issue, idx) => ({
-                    id: `crit-${idx}`,
-                    question: `Issue: ${issue.description}. ${issue.suggestion || 'Please clarify.'}`,
-                    category: 'requirement' as const
-                }));
+            const questions = significantIssues.map((issue, idx) => ({
+                id: `crit-${idx}`,
+                question: `Issue: ${issue.description}. ${issue.suggestion || 'Please clarify.'}`,
+                category: 'requirement' as const
+            }));
 
             this._onEvent.fire({
                 type: 'question',

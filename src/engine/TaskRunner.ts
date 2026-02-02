@@ -906,6 +906,7 @@ Please complete the login in the browser window, then click **"I've Logged In"**
         if (task.worktreePath) {
             const chatId = task.chatId || 'default';
             const missionFolderManager = new MissionFolderManager(task.worktreePath);
+            const baseDir = missionFolderManager.getBaseDir();
             
             // Get or create the mission folder for this chat
             const missionFolder = missionFolderManager.getMissionFolder(chatId);
@@ -921,6 +922,12 @@ Please complete the login in the browser window, then click **"I've Logged In"**
                 // Update the current symlink to point to this mission folder
                 missionFolderManager.updateCurrentSymlink(missionFolder);
                 task.logs.push(`> [System]: Mission folder set to current: .vibearchitect/current/prd.md`);
+                
+                // CRITICAL: Also save a copy directly to .vibearchitect/prd.md as backup
+                // This ensures the AI can find the PRD even if symlink fails
+                const backupPrdPath = path.join(baseDir, 'prd.md');
+                fs.writeFileSync(backupPrdPath, prdContent, 'utf-8');
+                console.log(`[TaskRunner] Also saved backup PRD to ${backupPrdPath}`);
             } catch (error) {
                 console.error(`[TaskRunner] Failed to save PRD file: ${error}`);
             }
@@ -929,7 +936,7 @@ Please complete the login in the browser window, then click **"I've Logged In"**
         // Prepend PRD to prompt for the planning phase
         const originalPrompt = task.displayPrompt || task.prompt;
         const prdReference = prdRelativePath 
-            ? `\n\n**IMPORTANT**: The full PRD is saved at \`.vibearchitect/current/prd.md\` (also at \`${prdRelativePath}\`). You MUST read this file first and implement according to its specifications.`
+            ? `\n\n**IMPORTANT**: The full PRD is saved at \`.vibearchitect/prd.md\` (also at \`${prdRelativePath}\`). You MUST read this file first and implement according to its specifications.`
             : '';
         
         task.prompt = `## Approved Product Requirement Document (PRD)
@@ -1065,7 +1072,32 @@ ${originalPrompt}`;
                     // Only show if not already shown as part of analyst-response
                     task.logs.push(`\n**Draft PRD:**\n${event.payload}`);
                 } else if (event.type === 'critique-ready') {
-                    task.logs.push(`\n**Critic Feedback:**\n${JSON.stringify(event.payload, null, 2)}`);
+                    // Format critique in a user-friendly way
+                    const critique = event.payload as { confidenceScore: number; passedValidation: boolean; issues: any[] };
+                    const scoreEmoji = critique.confidenceScore >= 70 ? '✅' : critique.confidenceScore >= 50 ? '⚠️' : '❌';
+                    
+                    let critiqueMessage = `\n**Critic Review:**\n`;
+                    critiqueMessage += `${scoreEmoji} **Confidence Score:** ${critique.confidenceScore}%\n`;
+                    critiqueMessage += `**Validation:** ${critique.passedValidation ? 'Passed' : 'Needs Improvement'}\n`;
+                    
+                    if (critique.issues && critique.issues.length > 0) {
+                        critiqueMessage += `\n**Issues Found:**\n`;
+                        critique.issues.forEach((issue: any, i: number) => {
+                            const severityIcon = issue.severity === 'high' ? '🔴' : issue.severity === 'medium' ? '🟡' : '🟢';
+                            critiqueMessage += `${i + 1}. ${severityIcon} [${issue.type || 'issue'}] ${issue.description}`;
+                            if (issue.suggestion) {
+                                critiqueMessage += `\n   💡 *${issue.suggestion}*`;
+                            }
+                            critiqueMessage += '\n';
+                        });
+                        critiqueMessage += `\n> Please address the issues above by replying with clarifications.`;
+                    } else if (!critique.passedValidation) {
+                        critiqueMessage += `\n> The PRD needs more detail. The system will proceed with refinement using available information.`;
+                    } else {
+                        critiqueMessage += `\n> ✓ PRD looks good! Proceeding to final refinement.`;
+                    }
+                    
+                    task.logs.push(critiqueMessage);
                 } else if (event.type === 'artifact-ready') {
                     // Fire PRD review event to show in Context pane
                     const artifact = event.payload as any;
@@ -1629,11 +1661,14 @@ ${contextData}
                 systemPrompt += `
             CORE WORKFLOW(PLANNING MODE):
             1. **CHECK FOR PRD** (Refinement Mode Output):
-               - First, check if a PRD file exists at '.vibearchitect/current/prd.md'.
-               - If a PRD exists, READ IT FIRST using read_file('.vibearchitect/current/prd.md').
-               - This is the APPROVED specification from refinement mode - you MUST implement it exactly.
+               - First, check if a PRD file exists. Try these locations IN ORDER:
+                 1. '.vibearchitect/prd.md' (primary backup location)
+                 2. '.vibearchitect/current/prd.md' (symlink location)
+               - Use read_file to check each location until you find the PRD.
+               - If a PRD exists, READ IT FIRST - this is the APPROVED specification from refinement mode.
+               - You MUST implement the PRD requirements exactly as specified.
                - Your task.md and implementation_plan.md MUST implement the PRD requirements.
-               - If no PRD exists (file not found), proceed to EXPLORE.
+               - If no PRD exists in any location, proceed to EXPLORE.
                
             1b. **CHECK FOR EXISTING PLAN** (Phased Implementation):
                - Check if '.vibearchitect/task.md' or '.vibearchitect/implementation_plan.md' exists.
@@ -1996,9 +2031,14 @@ ${contextData}
                                     // Check for secrets and PII BEFORE writing
                                     const isEnvFile = filePath.endsWith('.env') || filePath.includes('.env.');
                                     const isTextFile = /\.(js|ts|jsx|tsx|py|rb|java|go|rs|php|cs|cpp|c|h|txt|json|yaml|yml|xml|md|csv|sql|html|htm|css|scss|less)$/i.test(filePath) || !filePath.includes('.');
+                                    
+                                    // SKIP security checks for .vibearchitect folder - these are internal planning docs
+                                    const isVibearchitectFile = filePath.includes('.vibearchitect') || 
+                                                                filePath.includes('.vibearchitect/') ||
+                                                                filePath.includes('.vibearchitect\\');
 
-                                    const detectedSecrets = detectSecrets(afterContent);
-                                    const detectedPII = detectPII(afterContent);
+                                    const detectedSecrets = isVibearchitectFile ? [] : detectSecrets(afterContent);
+                                    const detectedPII = isVibearchitectFile ? [] : detectPII(afterContent);
                                     const highSeverityPII = detectedPII.filter(p => p.severity === 'high');
 
                                     const hasSecurityIssues = (detectedSecrets.length > 0 && !isEnvFile) || (highSeverityPII.length > 0 && isTextFile);
@@ -3222,11 +3262,14 @@ CORE WORKFLOW (FAST MODE):
         return `
 CORE WORKFLOW (PLANNING MODE):
 1. **CHECK FOR PRD** (Refinement Mode Output):
-   - First, check if a PRD file exists at '.vibearchitect/current/prd.md'.
-   - If a PRD exists, READ IT FIRST using read_file('.vibearchitect/current/prd.md').
-   - This is the APPROVED specification from refinement mode - you MUST implement it exactly.
+   - First, check if a PRD file exists. Try these locations IN ORDER:
+     1. '.vibearchitect/prd.md' (primary backup location)
+     2. '.vibearchitect/current/prd.md' (symlink location)
+   - Use read_file to check each location until you find the PRD.
+   - If a PRD exists, READ IT FIRST - this is the APPROVED specification from refinement mode.
+   - You MUST implement the PRD requirements exactly as specified.
    - Your task.md and implementation_plan.md MUST implement the PRD requirements.
-   - If no PRD exists (file not found), proceed to EXPLORE.
+   - If no PRD exists in any location, proceed to EXPLORE.
 
 1b. **CHECK FOR EXISTING PLAN** (Phased Implementation):
    - Check if '.vibearchitect/task.md' or '.vibearchitect/implementation_plan.md' exists.

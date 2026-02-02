@@ -354,9 +354,8 @@ function App() {
     const [expandedAgentId, setExpandedAgentId] = useState<string | null>(null);
     const [showNewAgentModal, setShowNewAgentModal] = useState(false);
 
-    // Preview State
-    const [previewContent, setPreviewContent] = useState<string | null>(null);
-    const [previewPath, setPreviewPath] = useState<string | null>(null);
+    // Preview State - supports multiple files
+    const [previewFiles, setPreviewFiles] = useState<Array<{ path: string; content: string }>>([]);
 
     // Right Pane Tab State
     const [rightPaneTab, setRightPaneTab] = useState<'context' | 'browser'>('context');
@@ -474,8 +473,16 @@ function App() {
                 });
             }
             if (message.command === 'fileContent') {
-                setPreviewContent(message.content);
-                setPreviewPath(message.path);
+                // Add to preview files array (avoid duplicates)
+                setPreviewFiles(prev => {
+                    const exists = prev.find(f => f.path === message.path);
+                    if (exists) {
+                        // Update content if already exists
+                        return prev.map(f => f.path === message.path ? { path: message.path, content: message.content } : f);
+                    }
+                    return [...prev, { path: message.path, content: message.content }];
+                });
+                setRightPaneTab('context'); // Switch to context pane when file opened
             }
             if (message.command === 'contextSelected') {
                 setContextFiles(prev => [...prev, ...message.paths]);
@@ -1802,26 +1809,29 @@ function App() {
                                     });
                                 }
                                 
-                                if (previewContent) {
+                                // Add all preview files to context items
+                                previewFiles.forEach((file, idx) => {
                                     contextItems.push({
-                                        id: 'preview',
+                                        id: `preview-${idx}`,
                                         render: () => (
                                             <div className="file-preview">
                                                 <div className="preview-header">
-                                                    <span className="preview-filename">{previewPath?.split(/[\\/]/).pop()}</span>
-                                                    <button className="icon-btn-small" onClick={() => setPreviewContent(null)}>×</button>
+                                                    <span className="preview-filename">{file.path?.split(/[\\/]/).pop()}</span>
+                                                    <button className="icon-btn-small" onClick={() => {
+                                                        setPreviewFiles(prev => prev.filter(f => f.path !== file.path));
+                                                    }}>×</button>
                                                 </div>
                                                 <div className="preview-body markdown-body">
-                                                    {previewPath?.endsWith('.md') ? (
-                                                        <ReactMarkdown>{previewContent}</ReactMarkdown>
+                                                    {file.path?.endsWith('.md') ? (
+                                                        <ReactMarkdown>{file.content}</ReactMarkdown>
                                                     ) : (
-                                                        <pre>{previewContent}</pre>
+                                                        <pre>{file.content}</pre>
                                                     )}
                                                 </div>
                                             </div>
                                         )
                                     });
-                                }
+                                });
                                 
                                 // Clamp index to valid range
                                 const safeIndex = Math.max(0, Math.min(contextPaneIndex, contextItems.length - 1));
