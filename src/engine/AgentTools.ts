@@ -151,9 +151,10 @@ export class AgentTools {
             }
 
             // ==================== ORIGINAL FILE WRITE ====================
-            // Enforce Locking
+            // Enforce Locking (thread-safe async version)
             if (this.fileLockManager && this.taskId) {
-                if (!this.fileLockManager.acquireLock(absolutePath, this.taskId)) {
+                const lockAcquired = await this.fileLockManager.acquireLock(absolutePath, this.taskId);
+                if (!lockAcquired) {
                     return `Error: File ${relativePath} is currently locked by another agent. Please wait.`;
                 }
             }
@@ -178,9 +179,9 @@ export class AgentTools {
                 }
                 return response;
             } finally {
-                // Always release lock
+                // Always release lock (thread-safe async version)
                 if (this.fileLockManager && this.taskId) {
-                    this.fileLockManager.releaseLock(absolutePath, this.taskId);
+                    await this.fileLockManager.releaseLock(absolutePath, this.taskId);
                 }
             }
         } catch (error: any) {
@@ -260,9 +261,10 @@ TIP: You can add line hints for faster matching:
 <<<<<<< SEARCH @@ 120-135 @@`;
             }
 
-            // Enforce locking BEFORE applying
+            // Enforce locking BEFORE applying (thread-safe async version)
             if (this.fileLockManager && this.taskId) {
-                if (!this.fileLockManager.acquireLock(absolutePath, this.taskId)) {
+                const lockAcquired = await this.fileLockManager.acquireLock(absolutePath, this.taskId);
+                if (!lockAcquired) {
                     return `Error: File ${relativePath} is currently locked by another agent. Please wait.`;
                 }
             }
@@ -457,9 +459,9 @@ TIP: You can add line hints for faster matching:
 
                 return response;
             } finally {
-                // Always release lock
+                // Always release lock (thread-safe async version)
                 if (this.fileLockManager && this.taskId) {
-                    this.fileLockManager.releaseLock(absolutePath, this.taskId);
+                    await this.fileLockManager.releaseLock(absolutePath, this.taskId);
                 }
             }
         } catch (error: any) {

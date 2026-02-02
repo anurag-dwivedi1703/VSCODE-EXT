@@ -35,34 +35,64 @@ export interface ValidationIssue {
 }
 
 export class DiffLogger {
-    private static instance: DiffLogger | null = null;
+    private static instances: Map<string, DiffLogger> = new Map();
+    private static defaultInstance: DiffLogger | null = null;
     private logDir: string;
     private currentLogFile: string | null = null;
     private enabled: boolean = true;
+    private taskId: string | undefined;
 
-    private constructor(workspaceRoot: string) {
+    private constructor(workspaceRoot: string, taskId?: string) {
         this.logDir = path.join(workspaceRoot, '.antigravity', 'logs');
+        this.taskId = taskId;
         this.ensureLogDir();
     }
 
     /**
-     * Get or create singleton instance
+     * Get or create a task-specific instance.
+     * For parallel execution safety, each task should have its own logger.
+     * 
+     * @param workspaceRoot The workspace root path
+     * @param taskId Optional task ID for per-task log isolation
      */
-    public static getInstance(workspaceRoot?: string): DiffLogger {
-        if (!DiffLogger.instance && workspaceRoot) {
-            DiffLogger.instance = new DiffLogger(workspaceRoot);
+    public static getInstance(workspaceRoot?: string, taskId?: string): DiffLogger {
+        // If taskId is provided, return task-specific instance
+        if (taskId) {
+            const key = `${workspaceRoot || 'default'}_${taskId}`;
+            let instance = DiffLogger.instances.get(key);
+            if (!instance && workspaceRoot) {
+                instance = new DiffLogger(workspaceRoot, taskId);
+                DiffLogger.instances.set(key, instance);
+            }
+            if (instance) {
+                return instance;
+            }
         }
-        if (!DiffLogger.instance) {
+        
+        // Fallback to default instance for backward compatibility
+        if (!DiffLogger.defaultInstance && workspaceRoot) {
+            DiffLogger.defaultInstance = new DiffLogger(workspaceRoot);
+        }
+        if (!DiffLogger.defaultInstance) {
             throw new Error('DiffLogger not initialized. Call with workspaceRoot first.');
         }
-        return DiffLogger.instance;
+        return DiffLogger.defaultInstance;
     }
 
     /**
      * Reset instance (useful for testing)
      */
     public static reset(): void {
-        DiffLogger.instance = null;
+        DiffLogger.defaultInstance = null;
+        DiffLogger.instances.clear();
+    }
+
+    /**
+     * Clean up task-specific instance when task completes.
+     */
+    public static cleanupTaskInstance(workspaceRoot: string, taskId: string): void {
+        const key = `${workspaceRoot}_${taskId}`;
+        DiffLogger.instances.delete(key);
     }
 
     private ensureLogDir(): void {
@@ -76,8 +106,17 @@ export class DiffLogger {
         }
     }
 
+    /**
+     * Get the log file path. If taskId is set, includes it for isolation.
+     */
     private getLogFilePath(): string {
         const date = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+        if (this.taskId) {
+            // Per-task log file: diff-diagnostics-YYYY-MM-DD-taskId.jsonl
+            const shortTaskId = this.taskId.substring(0, 8);
+            return path.join(this.logDir, `diff-diagnostics-${date}-${shortTaskId}.jsonl`);
+        }
+        // Default date-based log file for backward compatibility
         return path.join(this.logDir, `diff-diagnostics-${date}.jsonl`);
     }
 

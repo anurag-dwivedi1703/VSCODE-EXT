@@ -14,8 +14,49 @@ export interface CleanupResult {
 }
 
 /**
+ * Simple async mutex for serializing operations.
+ * Prevents race conditions when multiple tasks access shared resources.
+ */
+class AsyncMutex {
+    private locked = false;
+    private queue: Array<() => void> = [];
+
+    async acquire(): Promise<void> {
+        return new Promise((resolve) => {
+            if (!this.locked) {
+                this.locked = true;
+                resolve();
+            } else {
+                this.queue.push(resolve);
+            }
+        });
+    }
+
+    release(): void {
+        if (this.queue.length > 0) {
+            const next = this.queue.shift();
+            if (next) next();
+        } else {
+            this.locked = false;
+        }
+    }
+
+    async runExclusive<T>(fn: () => T | Promise<T>): Promise<T> {
+        await this.acquire();
+        try {
+            return await fn();
+        } finally {
+            this.release();
+        }
+    }
+}
+
+/**
  * Manages chat-specific mission folders to prevent context bleeding
  * between missions in the same chat session.
+ * 
+ * Thread-safe: Uses mutex for symlink operations and tracks active folders
+ * to prevent cleanup from deleting in-use folders.
  * 
  * Folder structure:
  * .vibearchitect/
@@ -29,6 +70,10 @@ export interface CleanupResult {
 export class MissionFolderManager {
     private workspaceRoot: string;
     private config: MissionFolderConfig;
+    private symlinkMutex = new AsyncMutex();
+    
+    // Track active folders to prevent cleanup from deleting them
+    private static activeFolders: Set<string> = new Set();
     
     constructor(workspaceRoot: string, config?: Partial<MissionFolderConfig>) {
         this.workspaceRoot = workspaceRoot;
@@ -37,6 +82,28 @@ export class MissionFolderManager {
             maxFolders: config?.maxFolders ?? 50,
             enableSymlink: config?.enableSymlink ?? true
         };
+    }
+    
+    /**
+     * Mark a folder as active (in use by a task).
+     * Active folders will not be deleted during cleanup.
+     */
+    public static markActive(folderPath: string): void {
+        MissionFolderManager.activeFolders.add(folderPath);
+    }
+    
+    /**
+     * Mark a folder as inactive (task completed).
+     */
+    public static markInactive(folderPath: string): void {
+        MissionFolderManager.activeFolders.delete(folderPath);
+    }
+    
+    /**
+     * Check if a folder is currently active.
+     */
+    public static isActive(folderPath: string): boolean {
+        return MissionFolderManager.activeFolders.has(folderPath);
     }
     
     /**
@@ -74,13 +141,20 @@ export class MissionFolderManager {
      * Get or create mission folder for a chat session.
      * If a folder already exists for this chatId, returns it.
      * Otherwise, creates a new timestamped folder.
+     * 
+     * Thread-safe: Uses atomic mkdir with recursive: true.
      */
     public getMissionFolder(chatId: string): string {
         const baseDir = this.getBaseDir();
         
-        // Ensure base directory exists
-        if (!fs.existsSync(baseDir)) {
+        // Atomic directory creation - ignores EEXIST, safe for concurrent calls
+        try {
             fs.mkdirSync(baseDir, { recursive: true });
+        } catch (error: any) {
+            // Only throw if it's not an "already exists" error
+            if (error.code !== 'EEXIST') {
+                throw error;
+            }
         }
         
         // Check if folder already exists for this chatId
@@ -94,9 +168,10 @@ export class MissionFolderManager {
             
             if (existing) {
                 const existingPath = path.join(baseDir, existing.name);
-                // Update symlink to point to this folder (in case it's stale)
+                // Mark as active and update symlink
+                MissionFolderManager.markActive(existingPath);
                 if (this.config.enableSymlink) {
-                    this.updateCurrentSymlink(existingPath);
+                    this.updateCurrentSymlinkAsync(existingPath);
                 }
                 return existingPath;
             }
@@ -104,7 +179,7 @@ export class MissionFolderManager {
             console.warn(`[MissionFolderManager] Error reading base dir: ${error}`);
         }
         
-        // Create new folder
+        // Create new folder - atomic with recursive: true
         const folderName = this.createFolderName(chatId);
         const folderPath = path.join(baseDir, folderName);
         
@@ -112,16 +187,36 @@ export class MissionFolderManager {
             fs.mkdirSync(folderPath, { recursive: true });
             console.log(`[MissionFolderManager] Created mission folder: ${folderName}`);
             
-            // Update symlink
+            // Mark as active
+            MissionFolderManager.markActive(folderPath);
+            
+            // Update symlink (async, non-blocking)
             if (this.config.enableSymlink) {
-                this.updateCurrentSymlink(folderPath);
+                this.updateCurrentSymlinkAsync(folderPath);
             }
-        } catch (error) {
+        } catch (error: any) {
+            // If another task created it first, that's fine - use it
+            if (error.code === 'EEXIST') {
+                MissionFolderManager.markActive(folderPath);
+                return folderPath;
+            }
             console.error(`[MissionFolderManager] Failed to create folder: ${error}`);
             throw error;
         }
         
         return folderPath;
+    }
+    
+    /**
+     * Async wrapper for symlink update to avoid blocking.
+     * Uses mutex to prevent concurrent symlink operations.
+     */
+    private updateCurrentSymlinkAsync(targetFolder: string): void {
+        this.symlinkMutex.runExclusive(() => {
+            this.updateCurrentSymlink(targetFolder);
+        }).catch(err => {
+            console.warn(`[MissionFolderManager] Async symlink update failed: ${err}`);
+        });
     }
     
     /**
@@ -257,6 +352,13 @@ export class MissionFolderManager {
             const age = now - folder.timestamp;
             const isExpired = age > retentionMs;
             const exceedsLimit = index >= this.config.maxFolders;
+            
+            // Skip folders that are currently in use by active tasks
+            if (MissionFolderManager.isActive(folder.path)) {
+                console.log(`[MissionFolderManager] Skipping active folder: ${folder.name}`);
+                result.kept.push(folder.name);
+                return;
+            }
             
             if (isExpired || exceedsLimit) {
                 try {

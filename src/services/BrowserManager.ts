@@ -137,6 +137,48 @@ const BROWSER_PATHS: Record<string, Record<string, string[]>> = {
 };
 
 // ============================================
+// ASYNC MUTEX FOR THREAD SAFETY
+// ============================================
+
+/**
+ * Simple async mutex for serializing browser operations.
+ * Prevents race conditions when multiple tasks launch browsers simultaneously.
+ */
+class AsyncMutex {
+    private locked = false;
+    private queue: Array<() => void> = [];
+
+    async acquire(): Promise<void> {
+        return new Promise((resolve) => {
+            if (!this.locked) {
+                this.locked = true;
+                resolve();
+            } else {
+                this.queue.push(resolve);
+            }
+        });
+    }
+
+    release(): void {
+        if (this.queue.length > 0) {
+            const next = this.queue.shift();
+            if (next) next();
+        } else {
+            this.locked = false;
+        }
+    }
+
+    async runExclusive<T>(fn: () => T | Promise<T>): Promise<T> {
+        await this.acquire();
+        try {
+            return await fn();
+        } finally {
+            this.release();
+        }
+    }
+}
+
+// ============================================
 // BROWSER MANAGER CLASS
 // ============================================
 
@@ -145,6 +187,7 @@ export class BrowserManager {
     private config: BrowserConfig = {};
     private activeBrowsers: Map<number, BrowserHealth> = new Map();
     private playwrightModule: any = null;
+    private launchMutex = new AsyncMutex(); // Serialize browser launch operations
 
     private constructor() {
         this.loadConfig();
@@ -516,9 +559,23 @@ export class BrowserManager {
     }
 
     /**
-     * Launch browser with optimal configuration
+     * Launch browser with optimal configuration.
+     * Thread-safe: Uses mutex to serialize launch operations.
      */
     public async launchBrowser(options: LaunchOptions = {}): Promise<{
+        browser: any;
+        browserInfo: BrowserInfo;
+    } | null> {
+        // Serialize browser launch operations to prevent concurrent access issues
+        return this.launchMutex.runExclusive(async () => {
+            return this.launchBrowserInternal(options);
+        });
+    }
+
+    /**
+     * Internal browser launch implementation (called within mutex).
+     */
+    private async launchBrowserInternal(options: LaunchOptions = {}): Promise<{
         browser: any;
         browserInfo: BrowserInfo;
     } | null> {

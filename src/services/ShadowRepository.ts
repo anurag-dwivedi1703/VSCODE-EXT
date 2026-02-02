@@ -8,17 +8,23 @@ export class ShadowRepository {
     public git: SimpleGit;
     public shadowDir: string; // Where .git lives (Global Storage)
     public workTree: string;  // The User's Workspace
+    public readonly taskId: string;  // Task ID for isolation
 
     /**
      * @param context Extension Context to access globalStorageUri
      * @param workspaceRoot The root of the user's workspace to track
+     * @param taskId Optional task ID for per-task isolation (parallel execution safe)
      */
-    constructor(context: vscode.ExtensionContext, workspaceRoot: string) {
+    constructor(context: vscode.ExtensionContext, workspaceRoot: string, taskId?: string) {
         this.workTree = workspaceRoot;
+        this.taskId = taskId || `default-${Date.now()}`;
 
         // Generate a stable hash for the workspace path to create a unique shadow ID
+        // Include taskId for per-task isolation to prevent git index corruption
+        // when multiple tasks run in parallel on the same workspace
         const workspaceHash = crypto.createHash('sha256').update(this.workTree).digest('hex').substring(0, 12);
-        this.shadowDir = path.join(context.globalStorageUri.fsPath, 'shadows', workspaceHash);
+        const taskHash = taskId ? `-${taskId.substring(0, 8)}` : '';
+        this.shadowDir = path.join(context.globalStorageUri.fsPath, 'shadows', `${workspaceHash}${taskHash}`);
 
         // Initialize simple-git instance
         // We set baseDir to the workTree because we want git to see the files,
@@ -160,6 +166,23 @@ export class ShadowRepository {
             }));
         } catch (e) {
             return [];
+        }
+    }
+
+    /**
+     * Cleans up the shadow repository directory.
+     * Call this when the task is completed to free disk space.
+     * Note: This permanently deletes all checkpoints for this task.
+     */
+    public async cleanup(): Promise<void> {
+        try {
+            if (await fs.pathExists(this.shadowDir)) {
+                console.log(`[ShadowRepo] Cleaning up shadow directory: ${this.shadowDir}`);
+                await fs.remove(this.shadowDir);
+            }
+        } catch (error: any) {
+            console.warn(`[ShadowRepo] Failed to cleanup shadow directory: ${error.message}`);
+            // Non-fatal - disk cleanup failed but shouldn't block task completion
         }
     }
 }

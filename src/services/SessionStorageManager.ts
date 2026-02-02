@@ -167,12 +167,56 @@ const SSO_DOMAINS: RegExp[] = [
 ];
 
 // ============================================
+// ASYNC MUTEX FOR THREAD SAFETY
+// ============================================
+
+/**
+ * Simple async mutex for serializing session operations.
+ * Prevents race conditions when multiple tasks access same session.
+ */
+class AsyncMutex {
+    private locked = false;
+    private queue: Array<() => void> = [];
+
+    async acquire(): Promise<void> {
+        return new Promise((resolve) => {
+            if (!this.locked) {
+                this.locked = true;
+                resolve();
+            } else {
+                this.queue.push(resolve);
+            }
+        });
+    }
+
+    release(): void {
+        if (this.queue.length > 0) {
+            const next = this.queue.shift();
+            if (next) next();
+        } else {
+            this.locked = false;
+        }
+    }
+
+    async runExclusive<T>(fn: () => T | Promise<T>): Promise<T> {
+        await this.acquire();
+        try {
+            return await fn();
+        } finally {
+            this.release();
+        }
+    }
+}
+
+// ============================================
 // SESSION STORAGE MANAGER CLASS
 // ============================================
 
 export class SessionStorageManager {
     private static instance: SessionStorageManager;
     private sessions: Map<string, SavedSession> = new Map();
+    private sessionLocks: Map<string, AsyncMutex> = new Map(); // Per-session locks
+    private indexMutex = new AsyncMutex(); // Lock for index file operations
 
     private constructor() {
         this.ensureSessionDir();
@@ -184,6 +228,18 @@ export class SessionStorageManager {
             SessionStorageManager.instance = new SessionStorageManager();
         }
         return SessionStorageManager.instance;
+    }
+
+    /**
+     * Get or create a lock for a specific session.
+     */
+    private getSessionLock(sessionId: string): AsyncMutex {
+        let lock = this.sessionLocks.get(sessionId);
+        if (!lock) {
+            lock = new AsyncMutex();
+            this.sessionLocks.set(sessionId, lock);
+        }
+        return lock;
     }
 
     // ============================================
@@ -364,7 +420,8 @@ export class SessionStorageManager {
     // ============================================
 
     /**
-     * Save session from browser context (filtered for auth only)
+     * Save session from browser context (filtered for auth only).
+     * Thread-safe: Uses per-session lock to prevent concurrent access.
      */
     public async saveSession(
         context: any,
@@ -382,56 +439,68 @@ export class SessionStorageManager {
 
         // Generate session ID
         const sessionId = `${domain.replace(/[^a-z0-9]/gi, '_')}_${Date.now()}`;
+        
+        // Use per-session lock for file operations
+        const lock = this.getSessionLock(sessionId);
+        return lock.runExclusive(async () => {
+            // Find earliest expiry in cookies
+            const expiringCookies = stateToSave.cookies.filter(c => c.expires > 0);
+            const earliestExpiry = expiringCookies.length > 0
+                ? Math.min(...expiringCookies.map(c => c.expires * 1000))
+                : undefined;
 
-        // Find earliest expiry in cookies
-        const expiringCookies = stateToSave.cookies.filter(c => c.expires > 0);
-        const earliestExpiry = expiringCookies.length > 0
-            ? Math.min(...expiringCookies.map(c => c.expires * 1000))
-            : undefined;
+            // Save to file
+            const filePath = this.getSessionFilePath(sessionId);
+            fs.writeFileSync(filePath, JSON.stringify(stateToSave, null, 2));
 
-        // Save to file
-        const filePath = this.getSessionFilePath(sessionId);
-        fs.writeFileSync(filePath, JSON.stringify(stateToSave, null, 2));
+            // Create session record
+            const session: SavedSession = {
+                id: sessionId,
+                name,
+                domain,
+                savedAt: Date.now(),
+                expiresAt: earliestExpiry,
+                cookieCount: stateToSave.cookies.length,
+                localStorageKeys: stateToSave.origins.flatMap(o => o.localStorage.map(e => e.name))
+            };
 
-        // Create session record
-        const session: SavedSession = {
-            id: sessionId,
-            name,
-            domain,
-            savedAt: Date.now(),
-            expiresAt: earliestExpiry,
-            cookieCount: stateToSave.cookies.length,
-            localStorageKeys: stateToSave.origins.flatMap(o => o.localStorage.map(e => e.name))
-        };
+            // Use index mutex for session map updates
+            await this.indexMutex.runExclusive(() => {
+                this.sessions.set(sessionId, session);
+                this.saveSessionIndex();
+            });
 
-        this.sessions.set(sessionId, session);
-        this.saveSessionIndex();
-
-        console.log(`[SessionStorageManager] Saved session: ${name} (${stateToSave.cookies.length} cookies)`);
-        return session;
+            console.log(`[SessionStorageManager] Saved session: ${name} (${stateToSave.cookies.length} cookies)`);
+            return session;
+        });
     }
 
     /**
-     * Load session into browser context
+     * Load session into browser context.
+     * Thread-safe: Uses per-session lock to prevent concurrent access.
      */
     public async loadSession(sessionId: string): Promise<StorageState | null> {
-        const filePath = this.getSessionFilePath(sessionId);
+        const lock = this.getSessionLock(sessionId);
         
-        if (!fs.existsSync(filePath)) {
-            console.warn(`[SessionStorageManager] Session file not found: ${sessionId}`);
-            return null;
-        }
-
-        try {
-            const data = fs.readFileSync(filePath, 'utf8');
-            const state: StorageState = JSON.parse(data);
+        return lock.runExclusive(async () => {
+            const filePath = this.getSessionFilePath(sessionId);
             
-            console.log(`[SessionStorageManager] Loaded session: ${sessionId} (${state.cookies.length} cookies)`);
-            return state;
-        } catch (error) {
-            console.error(`[SessionStorageManager] Failed to load session: ${sessionId}`, error);
-            return null;
-        }
+            if (!fs.existsSync(filePath)) {
+                console.warn(`[SessionStorageManager] Session file not found: ${sessionId}`);
+                return null;
+            }
+
+            try {
+                const data = fs.readFileSync(filePath, 'utf8');
+                const state: StorageState = JSON.parse(data);
+                
+                console.log(`[SessionStorageManager] Loaded session: ${sessionId} (${state.cookies.length} cookies)`);
+                return state;
+            } catch (error) {
+                console.error(`[SessionStorageManager] Failed to load session: ${sessionId}`, error);
+                return null;
+            }
+        });
     }
 
     /**

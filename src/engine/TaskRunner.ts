@@ -74,6 +74,7 @@ export class TaskRunner {
     private tasks: Map<string, AgentTask> = new Map();
     private sessions: Map<string, ISession> = new Map(); // Keep sessions alive
     private taskContexts: Map<string, TaskContext> = new Map(); // Isolated execution context per task
+    private runningTasks: Set<string> = new Set(); // Guard against duplicate task processing
     private worktreeManager: WorktreeManager | undefined;
     private _onTaskUpdate = new vscode.EventEmitter<{ taskId: string, task: AgentTask }>();
     public readonly onTaskUpdate = this._onTaskUpdate.event;
@@ -900,6 +901,64 @@ Please complete the login in the browser window, then click **"I've Logged In"**
 
         // Change mode to planning
         task.mode = 'planning';
+        
+        // ========================================
+        // CRITICAL: Clear refinement-phase logs to prevent context bleeding
+        // The approved PRD is the source of truth - old refinement conversations
+        // (including user inputs that weren't accepted by REFINER) should NOT
+        // bleed into the planning/execution context.
+        // ========================================
+        const refinementEndMarker = '=== REFINEMENT PHASE COMPLETE - PRD APPROVED ===';
+        
+        // Archive refinement logs for debugging but clear from active context
+        const refinementLogs = task.logs.filter(log => 
+            log.includes('[Refinement]') || 
+            log.includes('**Analyst**') || 
+            log.includes('**Critic**') ||
+            log.includes('**Refiner**') ||
+            log.includes('Draft PRD') ||
+            log.includes('Refinement Mode')
+        );
+        
+        if (refinementLogs.length > 0) {
+            console.log(`[TaskRunner] Archiving ${refinementLogs.length} refinement logs to prevent context bleeding`);
+        }
+        
+        // Keep only essential logs: system messages, errors, and the transition marker
+        // Remove user messages from refinement phase to prevent their ignored inputs from bleeding
+        const cleanedLogs = task.logs.filter(log => {
+            // Keep system and error messages
+            if (log.startsWith('**System**') || log.includes('[Error]')) {
+                return true;
+            }
+            // Remove refinement-specific conversation logs
+            if (log.includes('[Refinement]') || 
+                log.includes('**Analyst**') || 
+                log.includes('**Critic**') ||
+                log.includes('**Refiner**') ||
+                log.includes('Draft PRD') ||
+                log.startsWith('**User**:')) {  // CRITICAL: Remove user messages from refinement phase
+                return false;
+            }
+            // Keep other logs
+            return true;
+        });
+        
+        // Replace logs with cleaned version + marker
+        task.logs = [
+            ...cleanedLogs.slice(0, 5), // Keep first few system logs
+            `\n${refinementEndMarker}\n`,
+            `> [System]: PRD approved. Starting implementation phase.`,
+            `> [System]: The PRD below is the ONLY source of truth for requirements.`
+        ];
+        
+        // CRITICAL: Explicitly cleanup the refinement session to ensure no lingering state
+        const refinementManager = getRefinementManager();
+        const sessionId = refinementManager.getSessionForTask(taskId);
+        if (sessionId) {
+            console.log(`[TaskRunner] Cleaning up refinement session ${sessionId} after transition`);
+            refinementManager.cancelSession(sessionId); // This will clean up session state
+        }
 
         // Save PRD to .vibearchitect folder for persistence and AI access
         let prdRelativePath = '';
@@ -928,6 +987,14 @@ Please complete the login in the browser window, then click **"I've Logged In"**
                 const backupPrdPath = path.join(baseDir, 'prd.md');
                 fs.writeFileSync(backupPrdPath, prdContent, 'utf-8');
                 console.log(`[TaskRunner] Also saved backup PRD to ${backupPrdPath}`);
+                
+                // Verify PRD files exist after save
+                const primaryExists = fs.existsSync(prdFilePath);
+                const backupExists = fs.existsSync(backupPrdPath);
+                console.log(`[TaskRunner] PRD verification - mission folder: ${primaryExists}, backup: ${backupExists}`);
+                if (!primaryExists || !backupExists) {
+                    console.error(`[TaskRunner] PRD verification FAILED - files may not have saved correctly!`);
+                }
             } catch (error) {
                 console.error(`[TaskRunner] Failed to save PRD file: ${error}`);
             }
@@ -954,6 +1021,9 @@ ${originalPrompt}`;
         task.status = 'pending';
         task.logs.push('\n**System**: 🎯 PRD Approved! Transitioning to Planning Mode for implementation...');
         task.logs.push('\n---\n');
+        
+        // CRITICAL: Mark task as coming from refinement to prevent PRD deletion
+        (task as any)._fromRefinement = true;
 
         this._onTaskUpdate.fire({ taskId, task });
         this.saveTask(task);
@@ -1197,6 +1267,15 @@ ${originalPrompt}`;
         if (!task) { return; }
 
         // ========================================
+        // RACE CONDITION GUARD: Prevent duplicate task processing
+        // ========================================
+        if (this.runningTasks.has(taskId)) {
+            console.warn(`[TaskRunner] Task ${taskId} is already being processed, skipping duplicate call`);
+            return;
+        }
+        this.runningTasks.add(taskId);
+
+        // ========================================
         // REFINEMENT MODE: Route to RefinementManager
         // ========================================
         if (task.mode === 'refinement') {
@@ -1209,6 +1288,8 @@ ${originalPrompt}`;
                 this._onTaskUpdate.fire({ taskId, task });
                 this.saveTask(task);
                 return;
+            } finally {
+                this.runningTasks.delete(taskId);
             }
         }
 
@@ -1243,14 +1324,22 @@ ${originalPrompt}`;
             task.worktreePath = workspaceRoot; // Ensure it is set
 
             // Clean up stale artifacts from previous missions to prevent session bleeding
-            this.clearWorkspaceArtifacts(workspaceRoot);
-            this.clearCurrentArtifacts();
+            // CRITICAL: Skip cleanup if this task is transitioning from refinement mode
+            // because we just saved the PRD and don't want to delete it!
+            const fromRefinement = (task as any)._fromRefinement;
+            if (fromRefinement) {
+                console.log(`[TaskRunner] Skipping artifact cleanup - task came from refinement mode, PRD must be preserved`);
+                delete (task as any)._fromRefinement; // Clear the flag
+            } else {
+                this.clearWorkspaceArtifacts(workspaceRoot);
+                this.clearCurrentArtifacts();
+            }
 
             this.updateStatus(taskId, 'executing', 10, `Accessing Workspace: ${workspaceRoot}`);
             task.logs.push(`\n**Working Directory**: \`${workspaceRoot}\``);
 
-            // INITIALIZE SHADOW REPO (Isolated per task)
-            const shadowRepo = new ShadowRepository(this.context, workspaceRoot);
+            // INITIALIZE SHADOW REPO (Isolated per task for parallel execution safety)
+            const shadowRepo = new ShadowRepository(this.context, workspaceRoot, taskId);
             await shadowRepo.initialize();
             const revertManager = new RevertManager(shadowRepo);
 
@@ -1663,97 +1752,9 @@ ${contextData}
 
 
 
-            if (task.mode === 'planning') {
-                systemPrompt += `
-            CORE WORKFLOW(PLANNING MODE):
-            1. **CHECK FOR PRD** (Refinement Mode Output):
-               - First, check if a PRD file exists. Try these locations IN ORDER:
-                 1. '.vibearchitect/prd.md' (primary backup location)
-                 2. '.vibearchitect/current/prd.md' (symlink location)
-               - Use read_file to check each location until you find the PRD.
-               - If a PRD exists, READ IT FIRST - this is the APPROVED specification from refinement mode.
-               - You MUST implement the PRD requirements exactly as specified.
-               - Your task.md and implementation_plan.md MUST implement the PRD requirements.
-               - If no PRD exists in any location, proceed to EXPLORE.
-               
-            1b. **CHECK FOR EXISTING PLAN** (Phased Implementation):
-               - Check if '.vibearchitect/task.md' or '.vibearchitect/implementation_plan.md' exists.
-               - If they exist: This is a PHASED IMPLEMENTATION in progress - READ and CONTINUE from where it left off!
-               - Look for "Phase X" markers and checkboxes to determine current progress.
-               - Do NOT create new plans - continue the existing one.
-               
-            ⚠️ CRITICAL - IGNORE MISSION SUMMARIES ONLY:
-               - NEVER read 'mission_summary.md' - it means a PREVIOUS mission is done, not yours!
-               - If you find mission_summary.md, IGNORE it completely - start your own work
-               - However, DO use existing task.md and implementation_plan.md if they exist (phased work)
-               
-            2. EXPLORE: Use list_files / read_file to understand the codebase.
-            
-            3. PLAN(Mandatory):
-               - Create '.vibearchitect/task.md' - a Markdown checklist of implementation steps.
-               - If PRD exists: Derive steps DIRECTLY from the PRD's functional requirements and acceptance criteria.
-               - Create '.vibearchitect/implementation_plan.md' - your technical approach.
-               - If PRD exists: Your plan MUST reference and align with the PRD specifications.
-               
-            4. ACT: Use write_file / run_command to implement the plan.
-            
-            5. UPDATE: After completing a step, OVERWRITE '.vibearchitect/task.md' to mark items done (e.g., "- [x] Step 1").
-            
-            6. VERIFY (ATTEMPT):
-               - **USE EXISTING INFRASTRUCTURE** - Do NOT create minimal test setups or test servers!
-               - ** Web Apps **: 
-                 * Look for EXISTING server scripts in package.json, run.py, app.py, manage.py
-                 * If server running: Just call 'reload_browser()' to refresh
-                 * If not running: Use PROJECT'S actual start command (e.g., 'npm run dev', 'python app.py')
-                 * **Python**: Check for existing venv folder first! Use it: 'venv/Scripts/python app.py'
-                 * **NEVER** create a minimal test server - use the real app's entry point
-               - ** Dependencies **: If server fails, install using EXISTING venv/package.json
-               - ** Check Ports **: Read config files to find correct port.
-               - If PRD exists: Verify against PRD's acceptance criteria.
-               - If verification fails, note it but CONTINUE to FINISH.
-               - IMPORTANT: Verification failure should NOT block mission completion.
-               
-            7. FINISH (ONLY AFTER ALL WORK IS DONE):
-               - Create ".vibearchitect/mission_summary.md", REGARDLESS of verification outcome.
-               - Include:
-                   - Summary of changes made
-                   - Verification status (passed, failed, or skipped with reason)
-                   - If PRD was used: List which PRD requirements were implemented
-                   - Any known issues or warnings
-                   - Instructions for user to verify manually if needed
-               - Answer with "MISSION COMPLETE" only after creating this file.
-               
-            ⚠️ CRITICAL OUTPUT RULES:
-               - NEVER say "MISSION COMPLETE" until ALL tasks are finished
-               - NEVER output a "Mission Summary" or summary section mid-work
-               - Do NOT write conclusions or wrap-ups until step 7
-               - Each turn should focus on the CURRENT task, not summarize the mission
-               - Only ONE final "MISSION COMPLETE" at the very end
-            `;
-            } else {
-                // FAST MODE
-                systemPrompt += `
-            CORE WORKFLOW(FAST MODE):
-            1. ACT: Execute the request immediately.
-            2. NO PLANNING DOCS: Do NOT create '.vibearchitect/task.md' or '.vibearchitect/implementation_plan.md' unless explicitly asked.
-            3. EXPLORE(optional): Only if needed to locate files.
-            4. VERIFY(MANDATORY):
-               - Run the code or start the server.
-               - ** Web Apps **: Call 'reload_browser()' to refresh the preview.
-            5. FINISH (ONLY AFTER ALL WORK IS DONE):
-               - Answer with "MISSION COMPLETE" at the end.
-               
-            ⚠️ CRITICAL - IGNORE MISSION SUMMARIES:
-               - NEVER read 'mission_summary.md' - it means a PREVIOUS mission is done!
-               - If you find mission_summary.md, IGNORE it and start your own work
-               
-            ⚠️ CRITICAL OUTPUT RULES:
-               - NEVER say "MISSION COMPLETE" until ALL tasks are finished
-               - NEVER output summaries or conclusions mid-work
-               - Each turn should describe what you're DOING, not summarize
-               - Only ONE final "MISSION COMPLETE" at the very end
-            `;
-            }
+            // Use the unified workflow from buildModeWorkflow()
+            const modeWorkflow = this.buildModeWorkflow(task.mode || 'planning', false);
+            systemPrompt += `\n${modeWorkflow}\n`;
 
             // Inject constitution into system prompt if available
             if (taskContext.specManager && taskContext.specManager.hasConstitution()) {
@@ -1802,6 +1803,9 @@ ${contextData}
         } catch (error: any) {
             this.updateStatus(taskId, 'failed', 0, `Error: ${error.message} `);
             vscode.window.showErrorMessage(`Agent Failed: ${error.message} `);
+        } finally {
+            // Always remove from running tasks when done (success or failure)
+            this.runningTasks.delete(taskId);
         }
     }
 
@@ -2725,10 +2729,14 @@ ${contextData}
                         (message.length > 50 && !refersToOldWork && !msgLower.includes('the code'));
 
                     // CRITICAL: If this is a new mission, clear old artifacts to prevent bleeding
-                    if (isNewMission) {
+                    // BUT: Don't clear if task has active PRD from refinement (check prompt for PRD marker)
+                    const hasPrdFromRefinement = task.prompt.includes('## Approved Product Requirement Document (PRD)');
+                    if (isNewMission && !hasPrdFromRefinement) {
                         task.logs.push(`> [System]: New mission detected - clearing old artifacts to prevent context bleeding.`);
                         this.clearWorkspaceArtifacts(worktreePath);
                         this.clearCurrentArtifacts();
+                    } else if (isNewMission && hasPrdFromRefinement) {
+                        task.logs.push(`> [System]: New mission detected but PRD from refinement is active - preserving artifacts.`);
                     }
 
                     // CRITICAL: For substantial work, ALWAYS use planning mode regardless of original task.mode
@@ -2802,7 +2810,8 @@ ${contextData}
                     let taskContext = this.taskContexts.get(taskId);
                     if (!taskContext) {
                         // Create and initialize context (ShadowRepo needed for tools and revert)
-                        const shadowRepo = new ShadowRepository(this.context, worktreePath);
+                        // Pass taskId for per-task isolation (parallel execution safe)
+                        const shadowRepo = new ShadowRepository(this.context, worktreePath, taskId);
                         await shadowRepo.initialize(); // Essential for checkpoints to work!
                         const revertManager = new RevertManager(shadowRepo);
                         
@@ -2931,7 +2940,8 @@ ${contextData}
         if (!taskContext) {
             if (task.worktreePath) {
                 console.log(`[TaskRunner] Re-initializing Context for ${task.worktreePath}`);
-                const shadowRepo = new ShadowRepository(this.context, task.worktreePath);
+                // Pass taskId for per-task isolation (parallel execution safe)
+                const shadowRepo = new ShadowRepository(this.context, task.worktreePath, taskId);
                 await shadowRepo.initialize(); // Must initialize for revert to work!
                 const revertManager = new RevertManager(shadowRepo);
                 
@@ -3013,6 +3023,31 @@ ${contextData}
      */
     private buildContextFromTask(task: AgentTask): string {
         const contextLines: string[] = [];
+        
+        // ========================================
+        // CRITICAL: Filter out refinement-phase logs to prevent context bleeding
+        // Only include logs AFTER the refinement end marker (if present)
+        // ========================================
+        const refinementEndMarker = '=== REFINEMENT PHASE COMPLETE - PRD APPROVED ===';
+        const markerIndex = task.logs.findIndex(log => log.includes(refinementEndMarker));
+        
+        // If marker exists, only use logs after it for context building
+        const relevantLogs = markerIndex >= 0 
+            ? task.logs.slice(markerIndex + 1) 
+            : task.logs;
+        
+        // Use a filtered copy of logs for the rest of this function
+        const logsToProcess = relevantLogs.filter(log => {
+            // Always skip refinement-specific logs that might have survived
+            if (log.includes('[Refinement]') || 
+                log.includes('**Analyst**') || 
+                log.includes('**Critic**') ||
+                log.includes('**Refiner**') ||
+                log.includes('Refinement Mode')) {
+                return false;
+            }
+            return true;
+        });
 
         // Add artifacts (files created/modified)
         if (task.artifacts && task.artifacts.length > 0) {
@@ -3024,7 +3059,7 @@ ${contextData}
 
         // Extract key write_file calls from logs
         const writeFileCalls: string[] = [];
-        for (const log of task.logs) {
+        for (const log of logsToProcess) {
             if (log.includes('[Tool Call]:') && log.includes('write_file')) {
                 // Extract path from write_file call
                 const pathMatch = log.match(/["']path["']\s*:\s*["']([^"']+)["']/);
@@ -3049,7 +3084,7 @@ ${contextData}
         const conversationHistory: string[] = [];
         let lastToolCall = '';
 
-        for (const log of task.logs) {
+        for (const log of logsToProcess) {
             // CRITICAL: Skip any logs containing mission complete or summary content
             // This prevents the AI from echoing back previous mission completions
             const logLower = log.toLowerCase();
@@ -3097,10 +3132,24 @@ ${contextData}
                     conversationHistory.push(`[AI Response]: ${truncated}`);
                 }
             }
-            // Extract user messages
+            // Extract user messages - but SKIP refinement phase messages
             else if (log.startsWith('**User**:')) {
                 const userMsg = log.replace('**User**:', '').trim();
-                conversationHistory.push(`[User]: ${userMsg}`);
+                
+                // CRITICAL: Skip user messages that appear to be from refinement phase
+                // These can contain requirements/pointers that were NOT accepted into the PRD
+                // and would confuse the agent with conflicting context
+                const isRefinementPhaseMsg = 
+                    userMsg.toLowerCase().includes('refinement') ||
+                    userMsg.toLowerCase().includes('prd') ||
+                    userMsg.toLowerCase().includes('requirement') ||
+                    userMsg.toLowerCase().includes('clarif') ||
+                    userMsg.toLowerCase().includes('approve') ||
+                    userMsg.length > 500; // Long messages during refinement are usually requirement discussions
+                    
+                if (!isRefinementPhaseMsg) {
+                    conversationHistory.push(`[User]: ${userMsg}`);
+                }
             }
             // Extract tool calls (important for understanding what was attempted)
             else if (log.includes('[Tool Call]:')) {
@@ -3148,7 +3197,14 @@ ${contextData}
         }
 
         // Add the original prompt reminder
-        contextLines.push(`\n## Original Mission: "${task.prompt}"`);
+        // CRITICAL: If this task has a PRD, emphasize it as the source of truth
+        if (task.prompt.includes('## Approved Product Requirement Document (PRD)')) {
+            contextLines.push(`\n## IMPORTANT: This mission has an APPROVED PRD`);
+            contextLines.push(`The PRD in the task prompt is the ONLY source of truth for requirements.`);
+            contextLines.push(`Do NOT use any other requirements or pointers from conversation history.`);
+            contextLines.push(`If user's request conflicts with PRD, ask for clarification.`);
+        }
+        contextLines.push(`\n## Original Mission Prompt: "${task.prompt.substring(0, 500)}${task.prompt.length > 500 ? '...' : ''}"`);
 
         // Add current status
         if (task.status === 'failed') {
@@ -3256,14 +3312,26 @@ CORE WORKFLOW (FAST MODE):
 1. ACT: Execute the request immediately.
 2. NO PLANNING DOCS: Do NOT create '.vibearchitect/task.md' or '.vibearchitect/implementation_plan.md' unless explicitly asked.
 3. EXPLORE (optional): Only if needed to locate files.
-4. VERIFY (MANDATORY):
-   - Run the code or start the server.
+
+4. ⚠️ TEST & VERIFY (MANDATORY - CANNOT SKIP):
+   
+   **Environment Setup (if needed)**:
+   - Check for .env requirements - ASK USER if env vars are needed but not set
+   - Python: Use existing venv or create one, install requirements.txt
+   - Node.js: Ensure node_modules exists, run npm install if needed
+   
+   **Run and Verify**:
+   - Run the code or start the server using PROJECT'S actual start command
    - **Web Apps**: 
      a) Call 'reload_browser()' to refresh the preview
      b) Call 'browser_verify_ui("page-name", "description of expected UI")' for AI-powered verification
-     c) If FAIL: Fix the issues and call browser_verify_ui AGAIN
+     c) If FAIL: Fix the issues and call browser_verify_ui AGAIN (SELF-HEALING)
+     d) REPEAT until PASS or ask user for help after 3 attempts
    - Never say "verified" unless browser_verify_ui returned PASS
-5. FINISH (ONLY WHEN 100% DONE):
+   
+   ❌ **TESTING IS MANDATORY EVEN IN FAST MODE**
+
+5. FINISH (ONLY WHEN 100% DONE AND TESTED):
    - Answer with "MISSION COMPLETE" at the end.
 
 ⚠️ CRITICAL - IGNORE MISSION SUMMARIES:
@@ -3271,7 +3339,7 @@ CORE WORKFLOW (FAST MODE):
    - If you find mission_summary.md, IGNORE it and do your own work
 
 ⚠️ CRITICAL OUTPUT RULES:
-   - Do NOT say "MISSION COMPLETE" or write summaries until ALL work is finished
+   - Do NOT say "MISSION COMPLETE" or write summaries until ALL work is finished AND TESTED
    - Each response should focus on the current task only
             `.trim();
         }
@@ -3307,34 +3375,80 @@ CORE WORKFLOW (PLANNING MODE):
    - If PRD exists: Derive steps DIRECTLY from the PRD's functional requirements and acceptance criteria.
    - Create '.vibearchitect/implementation_plan.md' - your technical approach.
    - If PRD exists: Your plan MUST reference and align with the PRD specifications.
+   - ⚠️ MUST include a "Testing & Verification" section in implementation_plan.md
 
 4. ACT: Use write_file / run_command to implement the plan.
 
 5. UPDATE: After completing a step, OVERWRITE '.vibearchitect/task.md' to mark items done (e.g., "- [x] Step 1").
 
-6. VERIFY (MANDATORY - AI-POWERED):
-   - **USE EXISTING INFRASTRUCTURE** - Do NOT create minimal test setups or test servers!
-   - **Web Apps**: You MUST:
-     a) Look for EXISTING server scripts: package.json scripts, run.py, app.py, manage.py, etc.
-     b) If server already running: Just call 'reload_browser()' to refresh
-     c) If server not running: Use the PROJECT'S actual start command (e.g., 'npm run dev', 'python app.py', 'flask run')
-     d) **Python apps**: Check for existing venv folder first! If exists, use it: 'venv/Scripts/python app.py' (Windows)
-     e) **NEVER create a minimal test server** - always use the real app's entry point
-     f) Call 'browser_verify_ui("page-name", "description of expected UI")' for AI vision verification
-     g) If FAIL: Read the issues, fix the code, and call browser_verify_ui AGAIN
-   - **Check Ports**: Read package.json or config files to find the correct port.
-   - **Dependencies**: If server fails to start, check for requirements.txt/package.json and install using EXISTING venv
-   - If PRD exists: Verify against PRD's acceptance criteria.
-   - CRITICAL: browser_verify_ui() provides actual AI verification. Never say "verified" unless you got PASS.
+6. ⚠️ TEST & VERIFY (MANDATORY - CANNOT SKIP):
+   
+   📋 **STEP 6a: ENVIRONMENT SETUP (MUST DO FIRST)**
+   - **Check for environment requirements**:
+     a) Look for .env.example, .env.template, or README mentioning environment variables
+     b) If environment variables are needed but .env doesn't exist:
+        → ASK USER: "I found that this project needs environment variables: [list them]. Please create a .env file or tell me the values to use."
+        → WAIT for user response before proceeding
+     c) Check for requirements.txt (Python) or package.json (Node)
+   
+   - **Python Projects - venv setup (MANDATORY)**:
+     a) Check if 'venv' or '.venv' folder exists
+     b) If NOT exists: Create it with 'python -m venv venv'
+     c) Install dependencies: 
+        - Windows: 'venv\\Scripts\\pip install -r requirements.txt'
+        - Unix: './venv/bin/pip install -r requirements.txt'
+     d) ALWAYS run the app using venv python:
+        - Windows: 'venv\\Scripts\\python app.py'
+        - Unix: './venv/bin/python app.py'
+   
+   - **Node.js Projects - dependency setup (MANDATORY)**:
+     a) Check if 'node_modules' exists
+     b) If NOT exists: Run 'npm install'
+     c) Use the project's actual start script from package.json
 
-7. FINISH (ONLY WHEN 100% DONE):
+   📋 **STEP 6b: START THE APPLICATION**
+   - **USE EXISTING INFRASTRUCTURE** - Do NOT create minimal test setups!
+   - Look for EXISTING server scripts: package.json scripts, run.py, app.py, manage.py, etc.
+   - If server already running: Call 'reload_browser()' to refresh
+   - If server not running: Use the PROJECT'S actual start command
+   - Check config files for the correct port
+   
+   📋 **STEP 6c: VERIFY WITH BROWSER (MANDATORY FOR WEB APPS)**
+   - Call 'browser_verify_ui("page-name", "description of expected UI elements")'
+   - This provides AI-powered visual verification
+   - NEVER say "verified" unless browser_verify_ui returned PASS
+   
+   📋 **STEP 6d: SELF-HEALING LOOP (MANDATORY)**
+   - If browser_verify_ui returns FAIL or finds issues:
+     a) READ the specific issues reported
+     b) FIX the code based on the issues
+     c) Reload the browser
+     d) Call browser_verify_ui AGAIN
+     e) REPEAT until PASS or user intervention needed
+   - This self-healing loop is CRITICAL - do not skip it!
+   - If stuck after 3 attempts: ASK USER for guidance
+   
+   📋 **STEP 6e: VERIFY PRD CRITERIA (if PRD exists)**
+   - Go through EACH acceptance criterion from the PRD
+   - Test EACH one systematically
+   - Document which criteria PASS and which FAIL
+   - Fix any failures before proceeding
+
+   ❌ **YOU CANNOT SAY "MISSION COMPLETE" WITHOUT COMPLETING STEP 6**
+   ❌ **SKIPPING TESTING IS NOT ALLOWED - IT IS A REQUIRED STEP**
+
+7. FINISH (ONLY WHEN 100% DONE AND TESTED):
    - Create ".vibearchitect/mission_summary.md".
-   - Write a detailed summary of changes and verification results.
-   - If PRD was used: List which PRD requirements were implemented.
+   - Write a detailed summary including:
+     a) Changes made
+     b) TESTING RESULTS with browser_verify_ui outcomes
+     c) If PRD was used: Checklist of which PRD requirements were verified
+     d) Any issues found and fixed during self-healing
    - Answer with "MISSION COMPLETE" only after creating this file.
 
 ⚠️ CRITICAL OUTPUT RULES:
-   - NEVER say "MISSION COMPLETE" until ALL tasks are finished
+   - NEVER say "MISSION COMPLETE" until ALL tasks are finished AND TESTED
+   - NEVER skip Step 6 (Testing) - it is MANDATORY
    - NEVER output "Mission Summary" or wrap-up text mid-work
    - Each response should describe current work, NOT summarize the whole mission
    - Summary and "MISSION COMPLETE" appear ONLY ONCE at the very end
