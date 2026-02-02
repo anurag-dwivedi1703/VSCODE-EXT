@@ -17,6 +17,8 @@ import { getSymbolNavigator } from '../utils/SymbolNavigator';
 export class AgentTools {
     private browserService: BrowserAutomationService | null = null;
     private visualService: VisualComparisonService | null = null;
+    private readonly taskName: string;
+    private readonly workspaceName: string;
 
     constructor(
         private readonly worktreeRoot: string,
@@ -28,8 +30,14 @@ export class AgentTools {
         private readonly onNavigateBrowserCallback?: (url: string) => void,
         private readonly fileLockManager?: FileLockManager,
         private readonly taskId?: string,
-        private readonly loginCheckpointCallback?: LoginCheckpointCallback
+        private readonly loginCheckpointCallback?: LoginCheckpointCallback,
+        taskName?: string
     ) {
+        // Derive workspace name from path
+        this.workspaceName = worktreeRoot.split(/[\\/]/).pop() || worktreeRoot;
+        // Use provided task name or default
+        this.taskName = taskName || `Task-${taskId?.substring(0, 8) || 'unknown'}`;
+        
         // Initialize browser automation services if taskId is available
         if (this.taskId) {
             this.browserService = new BrowserAutomationService(this.taskId, this.worktreeRoot);
@@ -39,6 +47,11 @@ export class AgentTools {
             if (this.loginCheckpointCallback) {
                 this.browserService.setLoginCheckpointCallback(this.loginCheckpointCallback);
             }
+        }
+        
+        // Initialize task-specific terminal if taskId provided
+        if (this.taskId && this.terminalManager) {
+            this.terminalManager.getTerminalForTask(this.taskId, this.taskName, this.workspaceName);
         }
     }
 
@@ -604,10 +617,18 @@ TIP: You can add line hints for faster matching:
             // Cap timeout at 10 minutes to prevent indefinite hangs
             const effectiveTimeout = Math.min(Math.max(waitTimeoutMs, 1000), 600000);
 
-            // Show Terminal
-            if (this.terminalManager) {
+            // Show Terminal - use task-specific terminal if available
+            if (this.terminalManager && this.taskId) {
+                // Task-specific terminal (parallel-safe)
+                this.terminalManager.showForTask(this.taskId);
+                this.terminalManager.printCommandHeader(this.taskId, command);
+                if (effectiveTimeout > 15000) {
+                    this.terminalManager.printForTask(this.taskId, `\x1b[33m[Extended timeout: ${Math.round(effectiveTimeout / 1000)}s]\x1b[0m\n`);
+                }
+            } else if (this.terminalManager) {
+                // Legacy fallback (single shared terminal)
                 this.terminalManager.show();
-                this.terminalManager.print(`\x1b[36m> ${command}\x1b[0m\n`); // Cyan prompt
+                this.terminalManager.print(`\x1b[36m> ${command}\x1b[0m\n`);
                 if (effectiveTimeout > 15000) {
                     this.terminalManager.print(`\x1b[33m[Using extended timeout: ${Math.round(effectiveTimeout / 1000)}s]\x1b[0m\n`);
                 }
@@ -654,13 +675,21 @@ TIP: You can add line hints for faster matching:
             child.stdout.on('data', (data) => {
                 const text = data.toString();
                 combinedOutput += text;
-                if (this.terminalManager) { this.terminalManager.print(text); }
+                if (this.terminalManager && this.taskId) {
+                    this.terminalManager.printForTask(this.taskId, text);
+                } else if (this.terminalManager) {
+                    this.terminalManager.print(text);
+                }
             });
 
             child.stderr.on('data', (data) => {
                 const text = data.toString();
                 combinedOutput += text;
-                if (this.terminalManager) { this.terminalManager.print(`\x1b[31m${text}\x1b[0m`); } // Red for error
+                if (this.terminalManager && this.taskId) {
+                    this.terminalManager.printForTask(this.taskId, `\x1b[31m${text}\x1b[0m`);
+                } else if (this.terminalManager) {
+                    this.terminalManager.print(`\x1b[31m${text}\x1b[0m`);
+                }
             });
 
             child.on('close', (code) => {
@@ -675,7 +704,11 @@ TIP: You can add line hints for faster matching:
             child.on('error', (err) => {
                 const errorMsg = `Error spawning process: ${err.message}`;
                 combinedOutput += errorMsg;
-                if (this.terminalManager) { this.terminalManager.print(`\x1b[31m${errorMsg}\x1b[0m\n`); }
+                if (this.terminalManager && this.taskId) {
+                    this.terminalManager.printForTask(this.taskId, `\x1b[31m${errorMsg}\x1b[0m\n`);
+                } else if (this.terminalManager) {
+                    this.terminalManager.print(`\x1b[31m${errorMsg}\x1b[0m\n`);
+                }
                 safeResolve(combinedOutput);
             });
 

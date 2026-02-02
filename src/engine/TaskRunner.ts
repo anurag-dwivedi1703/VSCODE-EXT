@@ -1536,6 +1536,11 @@ ${contextData}
                 searchClient = new GeminiClient(geminiApiKey); // dedicated for search
             }
 
+            // Derive task display name for terminal
+            const taskDisplayName = task.displayPrompt?.substring(0, 40) || 
+                                    task.prompt.substring(0, 40) || 
+                                    `Task-${taskId.substring(0, 8)}`;
+            
             const tools = new AgentTools(
                 workspaceRoot,
                 terminalManager,
@@ -1548,7 +1553,8 @@ ${contextData}
                 taskId, // Inject Task ID for locking
                 // Login checkpoint callback - shows "I've Logged In" button in UI
                 (checkpointTaskId: string, loginUrl: string, ssoProvider?: string) => 
-                    this.requestLoginCheckpoint(checkpointTaskId, loginUrl, ssoProvider)
+                    this.requestLoginCheckpoint(checkpointTaskId, loginUrl, ssoProvider),
+                taskDisplayName // Task name for terminal display
             );
 
             // Step 3: Start Gemini Session
@@ -2577,6 +2583,12 @@ ${contextData}
             this._onTaskUpdate.fire({ taskId, task });
             this.saveTask(task); // Persist update
             console.log(`[${taskId}] ${status}: ${log}`);
+            
+            // Terminal lifecycle: Mark terminal as completed when task finishes
+            // Keeps terminal open for user review (not immediate dispose)
+            if (status === 'completed' || status === 'failed') {
+                terminalManager.disposeForTask(taskId, false); // false = keep open for review
+            }
         }
     }
 
@@ -2871,6 +2883,11 @@ ${contextData}
                         if (geminiApiKey) { searchClient = new GeminiClient(geminiApiKey); }
                     }
 
+                    // Derive task display name for terminal
+                    const taskDisplayName = task.displayPrompt?.substring(0, 40) || 
+                                            task.prompt.substring(0, 40) || 
+                                            `Task-${taskId.substring(0, 8)}`;
+                    
                     const tools = new AgentTools(
                         worktreePath,
                         terminalManager,
@@ -2883,7 +2900,8 @@ ${contextData}
                         taskId,
                         // Login checkpoint callback - shows "I've Logged In" button in UI
                         (checkpointTaskId: string, loginUrl: string, ssoProvider?: string) => 
-                            this.requestLoginCheckpoint(checkpointTaskId, loginUrl, ssoProvider)
+                            this.requestLoginCheckpoint(checkpointTaskId, loginUrl, ssoProvider),
+                        taskDisplayName // Task name for terminal display
                     );
                     this.runExecutionLoop(taskId, session, tools);
                 } else {
