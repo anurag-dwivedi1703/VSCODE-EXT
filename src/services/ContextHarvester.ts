@@ -1,5 +1,15 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import {
+    WorkspaceAnalysis,
+    ProjectIdentity,
+    ProjectType,
+    PrimaryLanguage,
+    CodingStandard
+} from '../engine/ConstitutionSchema';
+import { createDependencyAnalyzer, DependencyAnalyzer } from './DependencyAnalyzer';
+import { createLintRuleExtractor, LintRuleExtractor, flattenCodingStandards } from './LintRuleExtractor';
+import { createRiskDetector, RiskDetector } from './RiskDetector';
 
 /**
  * Files that provide high-leverage context about a project.
@@ -390,5 +400,221 @@ export class ContextHarvester {
         }
 
         return summary;
+    }
+
+    /**
+     * Perform intelligent workspace analysis for constitution generation.
+     * Uses specialized analyzers for dependencies, lint rules, and risks.
+     * 
+     * @param workspaceRoot - Path to the workspace root
+     * @returns Structured workspace analysis
+     */
+    async analyzeWorkspace(workspaceRoot: string): Promise<WorkspaceAnalysis> {
+        console.log('[ContextHarvester] Starting intelligent workspace analysis...');
+        
+        // Create analyzers
+        const dependencyAnalyzer = createDependencyAnalyzer(workspaceRoot);
+        const lintRuleExtractor = createLintRuleExtractor(workspaceRoot);
+        const riskDetector = createRiskDetector(workspaceRoot);
+        
+        // Run analyses in parallel
+        const [
+            dependencyAnalysis,
+            codingStandards,
+            risks
+        ] = await Promise.all([
+            dependencyAnalyzer.analyze(),
+            lintRuleExtractor.extract(),
+            riskDetector.scan()
+        ]);
+        
+        // Infer project identity
+        const identity = await this.inferProjectIdentity(workspaceRoot);
+        
+        // Generate file tree summary
+        const fileTreeSummary = await this.generateFileTree(workspaceRoot, 0, 2);
+        
+        // Get high-leverage files list
+        const highLeverageFiles = await this.findHighLeverageFiles(workspaceRoot);
+        
+        // Flatten coding standards
+        const flatLintRules = flattenCodingStandards(codingStandards);
+        
+        const analysis: WorkspaceAnalysis = {
+            identity,
+            dependencies: dependencyAnalysis,
+            lintRules: flatLintRules,
+            risks,
+            fileTreeSummary,
+            highLeverageFiles
+        };
+        
+        console.log(`[ContextHarvester] Analysis complete:
+  - Identity: ${identity.name} (${identity.type}, ${identity.primaryLanguage})
+  - Critical deps: ${dependencyAnalysis.critical.length}
+  - Lint rules: ${flatLintRules.length}
+  - Risks: ${risks.length}
+  - High-leverage files: ${highLeverageFiles.length}`);
+        
+        return analysis;
+    }
+
+    /**
+     * Infer project identity from workspace files
+     */
+    private async inferProjectIdentity(workspaceRoot: string): Promise<ProjectIdentity> {
+        const identity: ProjectIdentity = {
+            name: path.basename(workspaceRoot),
+            type: 'unknown',
+            primaryLanguage: 'other'
+        };
+        
+        // Try to read package.json for name and type hints
+        const packageJsonPath = path.join(workspaceRoot, 'package.json');
+        try {
+            const packageJsonUri = vscode.Uri.file(packageJsonPath);
+            const contentBytes = await vscode.workspace.fs.readFile(packageJsonUri);
+            const content = new TextDecoder().decode(contentBytes);
+            const packageJson = JSON.parse(content);
+            
+            // Name
+            if (packageJson.name) {
+                identity.name = packageJson.name;
+            }
+            
+            // Description
+            if (packageJson.description) {
+                identity.description = packageJson.description;
+            }
+            
+            // Detect type from keywords or fields
+            if (packageJson.engines?.vscode) {
+                identity.type = 'extension';
+            } else if (packageJson.main?.includes('cli') || packageJson.bin) {
+                identity.type = 'cli';
+            } else if (packageJson.workspaces) {
+                identity.type = 'monorepo';
+            }
+            
+            // Detect framework
+            const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
+            if (deps['next']) {
+                identity.framework = 'Next.js';
+                identity.type = 'webapp';
+            } else if (deps['nuxt']) {
+                identity.framework = 'Nuxt.js';
+                identity.type = 'webapp';
+            } else if (deps['react']) {
+                identity.framework = 'React';
+                identity.type = 'webapp';
+            } else if (deps['vue']) {
+                identity.framework = 'Vue';
+                identity.type = 'webapp';
+            } else if (deps['@angular/core']) {
+                identity.framework = 'Angular';
+                identity.type = 'webapp';
+            } else if (deps['express'] || deps['fastify'] || deps['koa']) {
+                identity.framework = deps['express'] ? 'Express' : deps['fastify'] ? 'Fastify' : 'Koa';
+                identity.type = 'api';
+            }
+            
+            // Set primary language
+            if (packageJson.devDependencies?.typescript || 
+                await this.fileExists(path.join(workspaceRoot, 'tsconfig.json'))) {
+                identity.primaryLanguage = 'typescript';
+            } else {
+                identity.primaryLanguage = 'javascript';
+            }
+        } catch {
+            // Try other config files
+        }
+        
+        // Check for Python
+        if (identity.primaryLanguage === 'other') {
+            if (await this.fileExists(path.join(workspaceRoot, 'pyproject.toml')) ||
+                await this.fileExists(path.join(workspaceRoot, 'requirements.txt'))) {
+                identity.primaryLanguage = 'python';
+                identity.type = 'api'; // Default assumption for Python
+                
+                // Check for Django/Flask
+                const reqPath = path.join(workspaceRoot, 'requirements.txt');
+                try {
+                    const reqUri = vscode.Uri.file(reqPath);
+                    const reqBytes = await vscode.workspace.fs.readFile(reqUri);
+                    const reqContent = new TextDecoder().decode(reqBytes).toLowerCase();
+                    if (reqContent.includes('django')) {
+                        identity.framework = 'Django';
+                        identity.type = 'webapp';
+                    } else if (reqContent.includes('flask')) {
+                        identity.framework = 'Flask';
+                        identity.type = 'api';
+                    } else if (reqContent.includes('fastapi')) {
+                        identity.framework = 'FastAPI';
+                        identity.type = 'api';
+                    }
+                } catch {
+                    // Skip
+                }
+            }
+        }
+        
+        // Check for Go
+        if (identity.primaryLanguage === 'other') {
+            if (await this.fileExists(path.join(workspaceRoot, 'go.mod'))) {
+                identity.primaryLanguage = 'go';
+                identity.type = 'api';
+            }
+        }
+        
+        // Check for Rust
+        if (identity.primaryLanguage === 'other') {
+            if (await this.fileExists(path.join(workspaceRoot, 'Cargo.toml'))) {
+                identity.primaryLanguage = 'rust';
+                identity.type = 'library';
+            }
+        }
+        
+        // Check for Java
+        if (identity.primaryLanguage === 'other') {
+            if (await this.fileExists(path.join(workspaceRoot, 'pom.xml')) ||
+                await this.fileExists(path.join(workspaceRoot, 'build.gradle'))) {
+                identity.primaryLanguage = 'java';
+                identity.type = 'api';
+            }
+        }
+        
+        return identity;
+    }
+
+    /**
+     * Check if a file exists
+     */
+    private async fileExists(filePath: string): Promise<boolean> {
+        try {
+            await vscode.workspace.fs.stat(vscode.Uri.file(filePath));
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    /**
+     * Find high-leverage files that exist in the workspace
+     */
+    private async findHighLeverageFiles(workspaceRoot: string): Promise<string[]> {
+        const found: string[] = [];
+        
+        for (const filename of HIGH_LEVERAGE_FILES) {
+            // Skip glob patterns
+            if (filename.includes('*')) {
+                continue;
+            }
+            
+            if (await this.fileExists(path.join(workspaceRoot, filename))) {
+                found.push(filename);
+            }
+        }
+        
+        return found;
     }
 }

@@ -131,6 +131,9 @@ export class MissionControlProvider {
                 case 'prd':
                     command = 'prdReview';
                     break;
+                case 'login-checkpoint':
+                    command = 'loginCheckpoint';
+                    break;
                 default:
                     command = 'awaitingApproval';
             }
@@ -750,6 +753,13 @@ export class MissionControlProvider {
                         return;
                     case 'declineCommand':
                         this._taskRunner.declineCommand(message.taskId);
+                        return;
+                    // Login Checkpoint Handlers
+                    case 'confirmLogin':
+                        this._taskRunner.confirmLoginComplete(message.taskId);
+                        return;
+                    case 'cancelLogin':
+                        this._taskRunner.cancelLoginCheckpoint(message.taskId);
                         return;
                     // Constitution Review Handlers
                     case 'approveConstitution':

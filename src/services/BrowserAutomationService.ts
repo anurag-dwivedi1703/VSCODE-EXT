@@ -75,6 +75,11 @@ export interface NavigationResult {
 // ============================================
 
 /**
+ * Callback for requesting login checkpoint from TaskRunner
+ */
+export type LoginCheckpointCallback = (taskId: string, loginUrl: string, ssoProvider?: string) => Promise<boolean>;
+
+/**
  * BrowserAutomationService - Main class for browser automation
  */
 export class BrowserAutomationService {
@@ -91,12 +96,23 @@ export class BrowserAutomationService {
     private readonly browserManager = getBrowserManager();
     private readonly sessionManager = getSessionStorageManager();
     private readonly authManager: AuthSessionManager;
+    
+    // Login checkpoint callback - set by TaskRunner/AgentTools
+    private loginCheckpointCallback: LoginCheckpointCallback | null = null;
 
     constructor(
         private readonly taskId: string,
         private readonly workspacePath: string
     ) {
         this.authManager = AuthSessionManager.getInstance();
+    }
+    
+    /**
+     * Set the callback for requesting login checkpoints.
+     * This is called by AgentTools when creating the service.
+     */
+    setLoginCheckpointCallback(callback: LoginCheckpointCallback) {
+        this.loginCheckpointCallback = callback;
     }
 
     // ============================================
@@ -327,34 +343,48 @@ playwright-core is required but not installed.
             if (this.authManager.isLoginPage(currentUrl)) {
                 console.log(`[BrowserAutomation] Login page detected: ${currentUrl}`);
 
-                // Prompt user for authentication
-                const authResult = await this.authManager.promptUserForAuth(currentUrl);
+                // Use the login checkpoint callback if available (preferred method)
+                // This shows a clear button in the chat UI and waits indefinitely
+                const ssoProvider = this.authManager.getSsoProvider(currentUrl) || undefined;
+                let userConfirmed = false;
+                
+                if (this.loginCheckpointCallback) {
+                    console.log('[BrowserAutomation] Using login checkpoint callback...');
+                    userConfirmed = await this.loginCheckpointCallback(this.taskId, currentUrl, ssoProvider);
+                } else {
+                    // Fallback to VS Code notification if callback not set
+                    console.log('[BrowserAutomation] Falling back to VS Code notification...');
+                    const authResult = await this.authManager.promptUserForAuth(currentUrl);
+                    userConfirmed = authResult === 'completed';
+                }
 
-                if (authResult === 'completed') {
-                    // Wait for authentication redirect to complete
-                    // Okta/SSO redirects can take 5-15 seconds with multiple hops
-                    console.log(`[BrowserAutomation] Waiting for auth redirect...`);
+                if (userConfirmed) {
+                    // User clicked "I've Logged In" - now check if we're off the login page
+                    console.log(`[BrowserAutomation] User confirmed login. Checking current URL...`);
                     
-                    try {
-                        // Wait for navigation away from login page (up to 30 seconds)
-                        await this.page.waitForURL(
-                            (url: URL) => !url.href.includes('login') && 
-                                          !url.href.includes('okta') &&
-                                          !url.href.includes('auth'),
-                            { timeout: 30000 }
-                        ).catch(() => {
-                            console.log('[BrowserAutomation] waitForURL timeout, checking URL...');
-                        });
-                    } catch {
-                        // Fallback: just wait a bit
-                        await this.page.waitForTimeout(5000);
-                    }
-
-                    // Additional wait for page to stabilize after redirect
+                    // Give a moment for any final redirects to complete
                     await this.page.waitForTimeout(2000);
                     
-                    // Check if we're still on a login page
-                    const finalUrl = this.page.url();
+                    // Check current URL - user may have already been redirected
+                    let finalUrl = this.page.url();
+                    
+                    // If still on login page, wait a bit more with longer timeout
+                    if (this.authManager.isLoginPage(finalUrl)) {
+                        console.log('[BrowserAutomation] Still on login page after confirmation, waiting for redirect...');
+                        try {
+                            // Wait up to 60 seconds for redirect after user confirms
+                            await this.page.waitForURL(
+                                (pageUrl: URL) => !this.authManager.isLoginPage(pageUrl.href),
+                                { timeout: 60000 }
+                            );
+                            finalUrl = this.page.url();
+                        } catch {
+                            // Still on login - maybe auth failed
+                            console.log('[BrowserAutomation] Timeout waiting for redirect after login confirmation');
+                        }
+                    }
+                    
+                    // Final check
                     if (this.authManager.isLoginPage(finalUrl)) {
                         console.log(`[BrowserAutomation] Still on login page after auth: ${finalUrl}`);
                         return {
@@ -362,7 +392,7 @@ playwright-core is required but not installed.
                             url: finalUrl,
                             loadTime: result.loadTime,
                             retryCount: result.retryCount,
-                            error: 'Authentication completed but still on login page. Please try again.',
+                            error: 'Authentication may have failed - still on login page. Please check your credentials and try again.',
                             authRequired: true
                         };
                     }
@@ -384,7 +414,7 @@ playwright-core is required but not installed.
                         url: currentUrl,
                         loadTime: result.loadTime,
                         retryCount: result.retryCount,
-                        error: `Authentication ${authResult}. Still on login page.`,
+                        error: 'Login cancelled by user.',
                         authRequired: true
                     };
                 }
@@ -502,25 +532,35 @@ playwright-core is required but not installed.
             if (this.authManager.isLoginPage(currentUrl)) {
                 console.log(`[BrowserAutomation] Login page detected during screenshot: ${currentUrl}`);
                 
-                // Prompt user for authentication
-                const authResult = await this.authManager.promptUserForAuth(currentUrl);
+                // Use the login checkpoint callback if available
+                const ssoProvider = this.authManager.getSsoProvider(currentUrl) || undefined;
+                let userConfirmed = false;
                 
-                if (authResult === 'completed') {
-                    // Wait for redirect after login
-                    console.log(`[BrowserAutomation] Waiting for post-login redirect...`);
-                    try {
-                        await this.page.waitForURL(
-                            (url: URL) => !url.href.includes('login') && 
-                                          !url.href.includes('okta') &&
-                                          !url.href.includes('auth'),
-                            { timeout: 30000 }
-                        );
-                    } catch {
-                        await this.page.waitForTimeout(5000);
-                    }
+                if (this.loginCheckpointCallback) {
+                    userConfirmed = await this.loginCheckpointCallback(this.taskId, currentUrl, ssoProvider);
+                } else {
+                    const authResult = await this.authManager.promptUserForAuth(currentUrl);
+                    userConfirmed = authResult === 'completed';
+                }
+                
+                if (userConfirmed) {
+                    // Wait for redirect after login confirmation
+                    console.log(`[BrowserAutomation] User confirmed login, waiting for redirect...`);
                     await this.page.waitForTimeout(2000);
                     
-                    // Check if still on login
+                    // Check if still on login page
+                    if (this.authManager.isLoginPage(this.page.url())) {
+                        try {
+                            await this.page.waitForURL(
+                                (pageUrl: URL) => !this.authManager.isLoginPage(pageUrl.href),
+                                { timeout: 60000 }
+                            );
+                        } catch {
+                            // Timeout
+                        }
+                    }
+                    
+                    // Final check
                     if (this.authManager.isLoginPage(this.page.url())) {
                         return 'Error: Still on login page after authentication. Please check your credentials.';
                     }
@@ -528,7 +568,7 @@ playwright-core is required but not installed.
                     // Save session
                     await this.saveCurrentSession(new URL(currentUrl).hostname);
                 } else {
-                    return `Error: Authentication ${authResult}. Cannot take screenshot of login page.`;
+                    return 'Error: Login cancelled. Cannot take screenshot of login page.';
                 }
             }
 

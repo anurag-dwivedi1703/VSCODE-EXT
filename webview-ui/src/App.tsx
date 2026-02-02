@@ -380,9 +380,9 @@ function App() {
         return Array.from(array, byte => byte.toString(16).padStart(2, '0')).join('');
     });
 
-    // Pending Approval State (for Agent Decides mode and Refinement Mode)
+    // Pending Approval State (for Agent Decides mode, Refinement Mode, and Login Checkpoints)
     const [pendingApproval, setPendingApproval] = useState<{
-        type: 'plan' | 'command' | 'prd';
+        type: 'plan' | 'command' | 'prd' | 'login-checkpoint';
         content: string;
         taskId: string;
         riskReason?: string;
@@ -515,6 +515,14 @@ function App() {
                     content: message.content,
                     taskId: message.taskId,
                     riskReason: message.riskReason
+                });
+            }
+            // Handle login checkpoint from browser automation
+            if (message.command === 'loginCheckpoint') {
+                setPendingApproval({
+                    type: 'login-checkpoint',
+                    content: message.content,
+                    taskId: message.taskId
                 });
             }
             if (message.command === 'approvalComplete') {
@@ -714,6 +722,25 @@ function App() {
         setPendingApproval(null);
     };
 
+    // Login Checkpoint Handlers
+    const handleConfirmLogin = () => {
+        if (!pendingApproval) return;
+        vscode.postMessage({
+            command: 'confirmLogin',
+            taskId: pendingApproval.taskId
+        });
+        setPendingApproval(null);
+    };
+
+    const handleCancelLogin = () => {
+        if (!pendingApproval) return;
+        vscode.postMessage({
+            command: 'cancelLogin',
+            taskId: pendingApproval.taskId
+        });
+        setPendingApproval(null);
+    };
+
     const handleAgentModeChange = (newMode: 'auto' | 'agent-decides') => {
         setAgentMode(newMode);
         vscode.postMessage({
@@ -805,6 +832,45 @@ function App() {
                             </button>
                             <button className="approve-btn" onClick={handleApproveCommand}>
                                 ✓ Accept
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Login Checkpoint Modal */}
+            {pendingApproval && pendingApproval.type === 'login-checkpoint' && (
+                <div className="modal-overlay">
+                    <div className="login-checkpoint-modal">
+                        <div className="modal-header">
+                            <span className="modal-icon">🔐</span>
+                            <h3>Authentication Required</h3>
+                        </div>
+                        <div className="modal-body">
+                            <div className="login-instructions">
+                                <ReactMarkdown>{pendingApproval.content}</ReactMarkdown>
+                            </div>
+                            <div className="login-steps">
+                                <div className="step">
+                                    <span className="step-number">1</span>
+                                    <span className="step-text">Complete the login in the browser window</span>
+                                </div>
+                                <div className="step">
+                                    <span className="step-number">2</span>
+                                    <span className="step-text">Wait for the page to redirect after login</span>
+                                </div>
+                                <div className="step">
+                                    <span className="step-number">3</span>
+                                    <span className="step-text">Click "I've Logged In" below to continue</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="modal-actions">
+                            <button className="cancel-btn" onClick={handleCancelLogin}>
+                                ✕ Skip Login
+                            </button>
+                            <button className="login-confirm-btn" onClick={handleConfirmLogin}>
+                                ✓ I've Logged In
                             </button>
                         </div>
                     </div>

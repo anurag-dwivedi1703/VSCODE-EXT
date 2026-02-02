@@ -1,5 +1,23 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import {
+    ConstitutionV2,
+    WorkspaceAnalysis,
+    createEmptyConstitution,
+    constitutionToMarkdown,
+    parseMarkdownConstitution,
+    CodingStandard,
+    ProjectIdentity,
+    CriticalDependency,
+    AgentRule,
+    ForbiddenPattern
+} from './ConstitutionSchema';
+import {
+    CorporateGuidelinesConfig,
+    DEFAULT_GUIDELINES_CONFIG,
+    getEnabledGuidelines,
+    guidelinesToAgentConstraints
+} from './CorporateGuidelines';
 
 /**
  * Phases of the Spec-Kit lifecycle.
@@ -41,6 +59,8 @@ export class SpecManager {
     private _constitution: string = '';
     private _constitutionPath: string = '';
     private _workspaceRoot: string = '';
+    private _structuredConstitution: ConstitutionV2 | null = null;
+    private _guidelinesConfig: CorporateGuidelinesConfig = DEFAULT_GUIDELINES_CONFIG;
 
     /**
      * Initialize the SpecManager for a workspace.
@@ -137,43 +157,481 @@ export class SpecManager {
     /**
      * Generate the system prompt for constitution generation.
      * This is fed to the AI along with the harvested context.
+     * 
+     * @param analysis - Pre-computed workspace analysis (optional)
      */
-    getConstitutionGenerationPrompt(): string {
+    getConstitutionGenerationPrompt(analysis?: WorkspaceAnalysis): string {
+        // If we have pre-computed analysis, use the structured prompt
+        if (analysis) {
+            return this.getStructuredConstitutionPrompt(analysis);
+        }
+        
+        // Legacy prompt for backward compatibility
         return `You are the Chief Architect of this repository. I have provided you with the file structure and configuration files. Your goal is to reverse-engineer the "Constitution" — the set of immutable rules that govern this codebase.
 
-Generate a Markdown file that contains:
+Generate a Markdown file following this EXACT structure:
 
-## Tech Stack
-List the technologies and their versions inferred from package.json, go.mod, Cargo.toml, pyproject.toml, etc. Be specific about versions when available.
+# Workspace Constitution v2.0
 
-## Architecture Patterns
-Infer the architecture style (e.g., "MVC", "Hexagonal", "Feature-Sliced", "Monolithic", "Microservices") based on the folder structure and organization.
+## 1. Project Identity
+- **Name**: [Project name from package.json or directory]
+- **Type**: [extension|webapp|api|library|cli|monorepo]
+- **Primary Language**: [typescript|javascript|python|java|go|etc]
+- **Framework**: [React|Vue|Express|FastAPI|etc if applicable]
+- **Description**: [Brief one-line description]
 
-## Coding Standards
-Infer coding rules based on linter configs (.eslintrc, .prettierrc, etc.):
-- Language preferences (TypeScript vs JavaScript)
-- Formatting rules (semicolons, quotes, indentation)
-- Import organization
+## 2. Critical Dependencies (DO NOT MODIFY WITHOUT REVIEW)
+| Package | Version | Reason | Risk Level |
+|---------|---------|--------|------------|
+| [package] | [version] | [Why this is critical] | [CRITICAL|HIGH|MEDIUM|LOW] |
 
-## Testing Strategy
-Infer testing tools (Jest, Playwright, pytest, etc.) and conventions:
-- Test file location patterns
-- Testing frameworks in use
-- Coverage requirements if detectable
+## 3. Architecture Rules
+- **Pattern**: [MVC|Hexagonal|Feature-Sliced|Layered|etc]
+- **Entry Point**: [Main entry file path]
 
-## Critical Invariants
-Any patterns that MUST be preserved for the codebase to function:
-- Required folder naming conventions
-- Build system dependencies
-- Configuration patterns
+### Module Boundaries
+- **[module-name]**: [Purpose of this module]
 
-## Agent Constraints
-Specific rules the AI agent MUST follow when working in this codebase:
-- Never modify certain files
-- Always run specific commands after changes
-- Required code review steps
+### Import Rules
+- [Describe import direction rules, e.g., "services cannot import from controllers"]
 
-Output ONLY the markdown content for constitution.md. Do not include any preamble or explanation.`;
+## 4. Coding Standards
+List each standard with enforcement level:
+- 🔴 **[Standard]**: [Value] (STRICT - must follow)
+- 🟡 **[Standard]**: [Value] (WARNING - should follow)
+- 🟢 **[Standard]**: [Value] (SUGGESTION)
+
+## 5. Forbidden Patterns
+- ❌ **[Pattern description]**
+  - Reason: [Why this is forbidden]
+  - Instead: [What to do instead]
+
+## 6. Testing Requirements
+- **Framework**: [jest|mocha|playwright|pytest|etc]
+- **Test Pattern**: [e.g., **/*.test.ts]
+- **Coverage Minimum**: [percentage if enforced]
+- **Required Test Types**: [unit|integration|e2e]
+
+## 7. Agent Constraints (ENFORCED)
+
+### MUST
+- ✅ [Things the agent MUST do]
+
+### MUST NOT
+- ❌ [Things the agent MUST NOT do]
+
+### SHOULD
+- 💡 [Things the agent SHOULD do when possible]
+
+## 8. Custom Rules (User-Defined)
+*Add custom rules here using the format:*
+\`\`\`
+- MUST: [Your rule here]
+- MUST NOT: [Your rule here]
+- SHOULD: [Your rule here]
+\`\`\`
+
+---
+*This constitution is the source of truth for AI agents working in this workspace.*
+
+RULES FOR GENERATION:
+1. Be SPECIFIC - "Don't use any" is bad, "Use 'unknown' instead of 'any' for API responses" is good
+2. Be ACTIONABLE - Each rule should be verifiable by looking at the code
+3. Include REASONING - Why does this rule exist?
+4. Set ENFORCEMENT levels appropriately based on severity
+5. Do NOT dump raw config files - only include distilled, actionable rules
+6. Keep the constitution under 500 lines - be concise
+
+Output ONLY the markdown content. Do not include any preamble or explanation.`;
+    }
+
+    /**
+     * Generate structured constitution prompt with pre-computed analysis
+     */
+    private getStructuredConstitutionPrompt(analysis: WorkspaceAnalysis): string {
+        const criticalDepsTable = analysis.dependencies.critical.length > 0
+            ? analysis.dependencies.critical.map(d => 
+                `| ${d.name} | ${d.version} | ${d.reason} | ${d.riskLevel.toUpperCase()} |`
+            ).join('\n')
+            : '*No critical dependencies identified*';
+
+        const lintRulesList = analysis.lintRules.length > 0
+            ? analysis.lintRules.slice(0, 10).map(r => {
+                const icon = r.enforcement === 'strict' ? '🔴' : r.enforcement === 'warning' ? '🟡' : '🟢';
+                return `- ${icon} **${r.description}**: ${r.value}`;
+            }).join('\n')
+            : '*No lint rules detected*';
+
+        const risksList = analysis.risks.length > 0
+            ? analysis.risks.slice(0, 5).map(r => 
+                `- **${r.description}** (${r.type}, ${r.severity})`
+            ).join('\n')
+            : '*No risks detected*';
+
+        return `You are generating a Constitution for an AI coding agent. This is the "Agent Bible" - the source of truth for all rules in this workspace.
+
+## PRE-COMPUTED ANALYSIS (from workspace scanning)
+
+### Project Identity
+- Name: ${analysis.identity.name}
+- Type: ${analysis.identity.type}
+- Primary Language: ${analysis.identity.primaryLanguage}
+${analysis.identity.framework ? `- Framework: ${analysis.identity.framework}` : ''}
+
+### Critical Dependencies (auto-detected)
+| Package | Version | Reason | Risk Level |
+|---------|---------|--------|------------|
+${criticalDepsTable}
+
+### Lint Rules (extracted from config)
+${lintRulesList}
+
+### Detected Risks
+${risksList}
+
+### File Structure Summary
+${analysis.fileTreeSummary}
+
+### High-Leverage Files
+${analysis.highLeverageFiles.slice(0, 10).map(f => `- ${f}`).join('\n')}
+
+---
+
+## YOUR TASK
+
+Using the above analysis, generate a constitution.md following this EXACT structure:
+
+# Workspace Constitution v2.0
+
+## 1. Project Identity
+[Use the detected identity above, add description if inferrable]
+
+## 2. Critical Dependencies (DO NOT MODIFY WITHOUT REVIEW)
+[Use the critical dependencies table above]
+
+## 3. Architecture Rules
+- **Pattern**: [Infer from file structure: MVC|Hexagonal|Feature-Sliced|Layered|etc]
+- **Entry Point**: [Main entry file path]
+
+### Module Boundaries
+[Infer logical module boundaries from the file structure]
+
+### Import Rules
+[Infer import direction rules based on architecture]
+
+## 4. Coding Standards
+[Use the lint rules above, add any additional inferred standards]
+
+## 5. Forbidden Patterns
+[Convert detected risks to forbidden patterns with reasons and alternatives]
+
+## 6. Testing Requirements
+[Infer from file structure and dependencies]
+
+## 7. Agent Constraints (ENFORCED)
+
+### MUST
+- ✅ Run lint/type checks before completing code changes
+- ✅ Use apply_diff instead of write_file for existing files
+- ✅ [Add project-specific MUST rules]
+
+### MUST NOT  
+- ❌ Modify files in node_modules/ or .git/
+- ❌ Change version numbers without explicit approval
+- ❌ [Add project-specific MUST NOT rules based on risks]
+
+### SHOULD
+- 💡 Prefer existing utilities over new implementations
+- 💡 Add documentation comments to public functions
+- 💡 [Add project-specific SHOULD rules]
+
+## 8. Custom Rules (User-Defined)
+*Add custom rules here using the MUST/MUST NOT/SHOULD format*
+
+---
+
+RULES FOR GENERATION:
+1. Be SPECIFIC and ACTIONABLE - vague rules are useless
+2. Include REASONING for each rule - why does it exist?
+3. Use the pre-computed analysis - don't dump raw configs
+4. Keep it CONCISE - under 500 lines, no verbose explanations
+5. Make rules VERIFIABLE - an agent should be able to check compliance
+
+Output ONLY the markdown content. No preamble.`;
+    }
+
+    /**
+     * Get the structured constitution object
+     */
+    getStructuredConstitution(): ConstitutionV2 | null {
+        return this._structuredConstitution;
+    }
+
+    /**
+     * Set the structured constitution (and update markdown representation)
+     */
+    setStructuredConstitution(constitution: ConstitutionV2): void {
+        this._structuredConstitution = constitution;
+        this._constitution = constitutionToMarkdown(constitution);
+    }
+
+    /**
+     * Create a structured constitution from workspace analysis
+     */
+    createConstitutionFromAnalysis(analysis: WorkspaceAnalysis): ConstitutionV2 {
+        const constitution = createEmptyConstitution(analysis.identity.name);
+        
+        // Set identity
+        constitution.identity = analysis.identity;
+        
+        // Set critical dependencies
+        constitution.criticalDependencies = analysis.dependencies.critical;
+        
+        // Set coding standards
+        for (const rule of analysis.lintRules) {
+            if (rule.id.includes('indent') || rule.id.includes('semi') || 
+                rule.id.includes('quote') || rule.id.includes('spacing')) {
+                constitution.codingStandards.formatting.push(rule);
+            } else if (rule.id.includes('naming') || rule.id.includes('camel')) {
+                constitution.codingStandards.naming.push(rule);
+            } else if (rule.id.includes('import')) {
+                constitution.codingStandards.imports.push(rule);
+            } else {
+                constitution.codingStandards.other.push(rule);
+            }
+        }
+        
+        // Convert risks to forbidden patterns
+        for (const risk of analysis.risks) {
+            constitution.forbiddenPatterns.push({
+                id: risk.id,
+                description: risk.description,
+                reason: `Detected risk: ${risk.type}`,
+                enforcement: risk.severity,
+                autoDetected: true,
+                suggestion: risk.suggestion
+            });
+        }
+        
+        // Add corporate guidelines if enabled
+        const guidelines = getEnabledGuidelines(this._guidelinesConfig);
+        const guidelineConstraints = guidelinesToAgentConstraints(guidelines);
+        
+        constitution.agentConstraints.must.push(...guidelineConstraints.must);
+        constitution.agentConstraints.mustNot.push(...guidelineConstraints.mustNot);
+        constitution.agentConstraints.should.push(...guidelineConstraints.should);
+        
+        // Add built-in constraints
+        this.addBuiltInConstraints(constitution);
+        
+        constitution.generatedAt = new Date().toISOString();
+        
+        return constitution;
+    }
+
+    /**
+     * Add built-in agent constraints that always apply
+     */
+    private addBuiltInConstraints(constitution: ConstitutionV2): void {
+        // MUST rules
+        const builtInMust: AgentRule[] = [
+            {
+                id: 'builtin-use-apply-diff',
+                description: 'Use apply_diff instead of write_file for existing files',
+                enforcement: 'strict',
+                autoDetect: false,
+                reason: 'apply_diff preserves formatting and reduces merge conflicts'
+            },
+            {
+                id: 'builtin-verify-changes',
+                description: 'Verify changes compile/lint before marking task complete',
+                enforcement: 'strict',
+                autoDetect: false,
+                reason: 'Broken code wastes user time and erodes trust'
+            }
+        ];
+
+        // MUST NOT rules
+        const builtInMustNot: AgentRule[] = [
+            {
+                id: 'builtin-no-node-modules',
+                description: 'Never modify files in node_modules/',
+                enforcement: 'strict',
+                autoDetect: true,
+                pattern: '^node_modules/',
+                reason: 'node_modules contains third-party code'
+            },
+            {
+                id: 'builtin-no-git-folder',
+                description: 'Never modify files in .git/',
+                enforcement: 'strict',
+                autoDetect: true,
+                pattern: '^\\.git/',
+                reason: '.git contains version control internals'
+            },
+            {
+                id: 'builtin-no-version-bump',
+                description: 'Do not change version numbers without explicit approval',
+                enforcement: 'warning',
+                autoDetect: false,
+                reason: 'Version changes have release implications'
+            }
+        ];
+
+        // SHOULD rules
+        const builtInShould: AgentRule[] = [
+            {
+                id: 'builtin-prefer-existing',
+                description: 'Prefer existing utilities and patterns over new implementations',
+                enforcement: 'suggestion',
+                autoDetect: false,
+                reason: 'Reduces code duplication and maintains consistency'
+            },
+            {
+                id: 'builtin-document-public',
+                description: 'Add documentation comments to public functions and classes',
+                enforcement: 'suggestion',
+                autoDetect: false,
+                reason: 'Documentation helps future maintainers'
+            }
+        ];
+
+        // Add built-in rules (avoid duplicates)
+        for (const rule of builtInMust) {
+            if (!constitution.agentConstraints.must.some(r => r.id === rule.id)) {
+                constitution.agentConstraints.must.push(rule);
+            }
+        }
+        for (const rule of builtInMustNot) {
+            if (!constitution.agentConstraints.mustNot.some(r => r.id === rule.id)) {
+                constitution.agentConstraints.mustNot.push(rule);
+            }
+        }
+        for (const rule of builtInShould) {
+            if (!constitution.agentConstraints.should.some(r => r.id === rule.id)) {
+                constitution.agentConstraints.should.push(rule);
+            }
+        }
+    }
+
+    /**
+     * Set corporate guidelines configuration
+     */
+    setGuidelinesConfig(config: Partial<CorporateGuidelinesConfig>): void {
+        this._guidelinesConfig = { ...this._guidelinesConfig, ...config };
+    }
+
+    /**
+     * Get corporate guidelines configuration
+     */
+    getGuidelinesConfig(): CorporateGuidelinesConfig {
+        return this._guidelinesConfig;
+    }
+
+    /**
+     * Parse markdown constitution into structured format
+     */
+    parseConstitutionToStructured(): ConstitutionV2 | null {
+        if (!this._constitution) {
+            return null;
+        }
+        
+        try {
+            return parseMarkdownConstitution(this._constitution, this._structuredConstitution || undefined);
+        } catch (error) {
+            console.warn('[SpecManager] Failed to parse constitution to structured format:', error);
+            return null;
+        }
+    }
+
+    /**
+     * Get constitution as agent prompt injection
+     * Returns a concise version suitable for system prompts
+     */
+    getConstitutionForPrompt(): string {
+        if (!this._constitution) {
+            return '';
+        }
+
+        // If we have a structured constitution, generate a concise version
+        if (this._structuredConstitution) {
+            return this.generateConcisePrompt(this._structuredConstitution);
+        }
+
+        // Otherwise, return the raw constitution (truncated if too long)
+        const maxLength = 4000; // Keep prompt injection reasonable
+        if (this._constitution.length > maxLength) {
+            return this._constitution.substring(0, maxLength) + '\n\n[Constitution truncated for brevity]';
+        }
+        return this._constitution;
+    }
+
+    /**
+     * Generate a concise prompt from structured constitution
+     */
+    private generateConcisePrompt(constitution: ConstitutionV2): string {
+        const lines: string[] = [
+            '=== WORKSPACE CONSTITUTION (Agent Rules) ===',
+            '',
+            `Project: ${constitution.identity.name} (${constitution.identity.type}, ${constitution.identity.primaryLanguage})`,
+            ''
+        ];
+
+        // Critical dependencies
+        if (constitution.criticalDependencies.length > 0) {
+            lines.push('CRITICAL DEPENDENCIES (do not modify):');
+            for (const dep of constitution.criticalDependencies.slice(0, 5)) {
+                lines.push(`- ${dep.name}@${dep.version} [${dep.riskLevel}]`);
+            }
+            lines.push('');
+        }
+
+        // Agent constraints
+        if (constitution.agentConstraints.must.length > 0) {
+            lines.push('MUST:');
+            for (const rule of constitution.agentConstraints.must.slice(0, 5)) {
+                lines.push(`- ${rule.description}`);
+            }
+            lines.push('');
+        }
+
+        if (constitution.agentConstraints.mustNot.length > 0) {
+            lines.push('MUST NOT:');
+            for (const rule of constitution.agentConstraints.mustNot.slice(0, 5)) {
+                lines.push(`- ${rule.description}`);
+            }
+            lines.push('');
+        }
+
+        if (constitution.agentConstraints.should.length > 0) {
+            lines.push('SHOULD:');
+            for (const rule of constitution.agentConstraints.should.slice(0, 3)) {
+                lines.push(`- ${rule.description}`);
+            }
+            lines.push('');
+        }
+
+        // Forbidden patterns
+        if (constitution.forbiddenPatterns.length > 0) {
+            lines.push('FORBIDDEN:');
+            for (const pattern of constitution.forbiddenPatterns.slice(0, 3)) {
+                lines.push(`- ${pattern.description}`);
+            }
+            lines.push('');
+        }
+
+        // Custom rules
+        if (constitution.customRules.length > 0) {
+            lines.push('CUSTOM RULES:');
+            for (const rule of constitution.customRules) {
+                lines.push(`- ${rule.description}`);
+            }
+            lines.push('');
+        }
+
+        lines.push('=== END CONSTITUTION ===');
+
+        return lines.join('\n');
     }
 
     /**

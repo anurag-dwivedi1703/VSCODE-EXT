@@ -6,7 +6,7 @@ import { GeminiClient } from '../ai/GeminiClient';
 import { ClaudeClient } from '../ai/ClaudeClient';
 import { CopilotClaudeClient } from '../ai/CopilotClaudeClient';
 import { FileLockManager } from '../services/FileLockManager';
-import { BrowserAutomationService } from '../services/BrowserAutomationService';
+import { BrowserAutomationService, LoginCheckpointCallback } from '../services/BrowserAutomationService';
 import { VisualComparisonService } from '../services/VisualComparisonService';
 import { detectSecrets, detectPII } from '../ai/SecurityInstructions';
 import { parseSearchReplaceBlocks, DiffLogContext } from '../utils/SearchReplaceParser';
@@ -27,12 +27,18 @@ export class AgentTools {
         private readonly onReloadBrowserCallback?: () => void,
         private readonly onNavigateBrowserCallback?: (url: string) => void,
         private readonly fileLockManager?: FileLockManager,
-        private readonly taskId?: string
+        private readonly taskId?: string,
+        private readonly loginCheckpointCallback?: LoginCheckpointCallback
     ) {
         // Initialize browser automation services if taskId is available
         if (this.taskId) {
             this.browserService = new BrowserAutomationService(this.taskId, this.worktreeRoot);
             this.visualService = new VisualComparisonService(this.worktreeRoot, this.taskId);
+            
+            // Set login checkpoint callback if provided
+            if (this.loginCheckpointCallback) {
+                this.browserService.setLoginCheckpointCallback(this.loginCheckpointCallback);
+            }
         }
     }
 

@@ -87,6 +87,31 @@
                     "type": "boolean",
                     "default": true,
                     "description": "Create a 'current' symlink pointing to the active mission folder for easy access"
+                },
+                "vibearchitect.corporateGuidelines.security": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable OWASP-inspired security guidelines in constitution (e.g., no hardcoded secrets, parameterized queries)"
+                },
+                "vibearchitect.corporateGuidelines.performance": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable performance best practices in constitution (e.g., avoid N+1 queries, use pagination)"
+                },
+                "vibearchitect.corporateGuidelines.maintainability": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Enable SOLID-inspired maintainability guidelines in constitution (e.g., single responsibility, DRY)"
+                },
+                "vibearchitect.corporateGuidelines.testing": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Enable testing best practices in constitution (e.g., independent tests, mock externals)"
+                },
+                "vibearchitect.corporateGuidelines.accessibility": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Enable WCAG accessibility guidelines in constitution (e.g., alt text, semantic HTML)"
                 }
             }
         }

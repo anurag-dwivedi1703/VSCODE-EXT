@@ -1800,6 +1800,145 @@
 }
 
 /* =========================================
+   LOGIN CHECKPOINT MODAL
+   ========================================= */
+
+.login-checkpoint-modal {
+    background: var(--vscode-editor-background);
+    border: 2px solid var(--vscode-inputValidation-infoBorder, #007acc);
+    width: 500px;
+    padding: 24px;
+    border-radius: 12px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+    animation: modalSlideIn 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.login-checkpoint-modal .modal-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 20px;
+}
+
+.login-checkpoint-modal .modal-icon {
+    font-size: 32px;
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.1); }
+}
+
+.login-checkpoint-modal .modal-header h3 {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--vscode-inputValidation-infoForeground, #007acc);
+}
+
+.login-checkpoint-modal .modal-body {
+    margin-bottom: 24px;
+}
+
+.login-instructions {
+    font-size: 13px;
+    color: var(--vscode-foreground);
+    margin-bottom: 20px;
+    line-height: 1.6;
+}
+
+.login-instructions code {
+    background: var(--vscode-textCodeBlock-background);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 12px;
+}
+
+.login-steps {
+    background: var(--vscode-textBlockQuote-background);
+    border-radius: 8px;
+    padding: 16px;
+}
+
+.login-steps .step {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.login-steps .step:last-child {
+    margin-bottom: 0;
+}
+
+.login-steps .step-number {
+    width: 28px;
+    height: 28px;
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 600;
+    font-size: 14px;
+    flex-shrink: 0;
+}
+
+.login-steps .step-text {
+    font-size: 13px;
+    color: var(--vscode-foreground);
+}
+
+.login-checkpoint-modal .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+}
+
+.cancel-btn {
+    padding: 10px 20px;
+    background: transparent;
+    color: var(--vscode-foreground);
+    border: 1px solid var(--vscode-button-border, var(--vscode-panel-border));
+    border-radius: 6px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.cancel-btn:hover {
+    background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.login-confirm-btn {
+    padding: 12px 28px;
+    background: #367c2b;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.login-confirm-btn:hover {
+    background: #2e6823;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(54, 124, 43, 0.4);
+}
+
+.login-confirm-btn:active {
+    transform: translateY(0);
+}
+
+/* =========================================
    CONSTITUTION REVIEW MODAL
    ========================================= */
 

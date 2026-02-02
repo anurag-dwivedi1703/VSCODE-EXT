@@ -22,6 +22,7 @@ import { DiffAggregator } from '../utils/DiffAggregator';
 import { TokenManager } from '../utils/TokenManager';
 import { MissionFolderManager } from '../utils/MissionFolderManager';
 import { getAttachmentProcessor, Attachment } from '../services/AttachmentProcessor';
+import { createRuleEnforcer, RuleEnforcer, FileEdit as RuleFileEdit } from '../services/RuleEnforcer';
 
 interface TaskContext {
     shadowRepo: ShadowRepository;
@@ -33,6 +34,7 @@ interface TaskContext {
     copilotGPT?: CopilotGPTClient;  // GPT-5-mini via Copilot
     diffAggregator?: DiffAggregator;  // Aggregates multiple diffs to same file
     tokenManager?: TokenManager;  // Unified token budget management
+    ruleEnforcer?: RuleEnforcer;  // Constitution rule enforcement
 }
 
 interface FileEdit {
@@ -60,7 +62,7 @@ interface AgentTask {
     fileEdits?: FileEdit[];
     // Pending approval state for Agent Decides mode
     awaitingApproval?: {
-        type: 'plan' | 'command' | 'constitution' | 'constitution-update' | 'constitution-drift' | 'prd';
+        type: 'plan' | 'command' | 'constitution' | 'constitution-update' | 'constitution-drift' | 'prd' | 'login-checkpoint';
         content: string;
         riskReason?: string;
     };
@@ -83,7 +85,7 @@ export class TaskRunner {
     public readonly onNavigateBrowser = this._onNavigateBrowser.event;
 
     // Approval events for Agent Decides mode and constitution review
-    private _onAwaitingApproval = new vscode.EventEmitter<{ taskId: string, type: 'plan' | 'command' | 'constitution' | 'constitution-update' | 'constitution-drift' | 'prd', content: string, riskReason?: string }>();
+    private _onAwaitingApproval = new vscode.EventEmitter<{ taskId: string, type: 'plan' | 'command' | 'constitution' | 'constitution-update' | 'constitution-drift' | 'prd' | 'login-checkpoint', content: string, riskReason?: string }>();
     public readonly onAwaitingApproval = this._onAwaitingApproval.event;
 
     private _onApprovalComplete = new vscode.EventEmitter<{ taskId: string }>();
@@ -198,6 +200,68 @@ export class TaskRunner {
         this.saveTask(task);
     }
 
+    /**
+     * Confirm that user has completed login in browser.
+     * Called when user clicks "I've Logged In" button.
+     */
+    public confirmLoginComplete(taskId: string) {
+        const task = this.tasks.get(taskId);
+        if (!task || task.awaitingApproval?.type !== 'login-checkpoint') { return; }
+
+        task.awaitingApproval = undefined;
+        task.status = 'executing';
+        task.logs.push(`> [Browser]: ✅ User confirmed login complete. Resuming automation...`);
+
+        // Resolve the waiting promise
+        const resolver = this._approvalResolvers.get(taskId);
+        if (resolver) {
+            resolver.resolve(true);
+            this._approvalResolvers.delete(taskId);
+        }
+        this._onApprovalComplete.fire({ taskId });
+        this._onTaskUpdate.fire({ taskId, task });
+        this.saveTask(task);
+    }
+
+    /**
+     * Cancel login checkpoint (user chose to skip/cancel).
+     */
+    public cancelLoginCheckpoint(taskId: string) {
+        const task = this.tasks.get(taskId);
+        if (!task) { return; }
+
+        task.awaitingApproval = undefined;
+        task.status = 'executing';
+        task.logs.push(`> [Browser]: ❌ Login cancelled by user. Skipping authentication...`);
+
+        const resolver = this._approvalResolvers.get(taskId);
+        if (resolver) {
+            resolver.resolve(false);
+            this._approvalResolvers.delete(taskId);
+        }
+        this._onApprovalComplete.fire({ taskId });
+        this._onTaskUpdate.fire({ taskId, task });
+        this.saveTask(task);
+    }
+
+    /**
+     * Request a login checkpoint - waits for user to confirm they've logged in.
+     * This is used by BrowserAutomationService when a login page is detected.
+     */
+    public async requestLoginCheckpoint(taskId: string, loginUrl: string, ssoProvider?: string): Promise<boolean> {
+        const providerText = ssoProvider ? ` (${ssoProvider})` : '';
+        const content = `🔐 **Authentication Required${providerText}**
+
+A login page has been detected at:
+\`${loginUrl}\`
+
+Please complete the login in the browser window, then click **"I've Logged In"** below to continue.
+
+*The automation is paused and will resume after you confirm.*`;
+
+        return this.waitForApproval(taskId, 'login-checkpoint', content);
+    }
+
     public async approvePrd(taskId: string) {
         const task = this.tasks.get(taskId);
         if (!task) { return; }
@@ -283,7 +347,7 @@ export class TaskRunner {
      */
     private async waitForApproval(
         taskId: string,
-        type: 'plan' | 'command' | 'constitution' | 'constitution-update' | 'constitution-drift' | 'prd',
+        type: 'plan' | 'command' | 'constitution' | 'constitution-update' | 'constitution-drift' | 'prd' | 'login-checkpoint',
         content: string,
         riskReason?: string
     ): Promise<boolean> {
@@ -320,6 +384,9 @@ export class TaskRunner {
                     break;
                 case 'command':
                     logMessage = 'High-risk command requires approval';
+                    break;
+                case 'login-checkpoint':
+                    logMessage = '🔐 Login Required - Please complete authentication in the browser window';
                     break;
                 default:
                     logMessage = 'Approval required';
@@ -1084,11 +1151,15 @@ ${originalPrompt}`;
             // Will be updated with actual VS Code LM API limits when AI client is initialized
             const tokenManager = TokenManager.fromModelId(task.model || 'default');
             
+            // Initialize RuleEnforcer for constitution rule validation
+            const ruleEnforcer = createRuleEnforcer();
+            
             const taskContext: TaskContext = {
                 shadowRepo,
                 revertManager,
                 diffAggregator,
-                tokenManager
+                tokenManager,
+                ruleEnforcer
             };
             this.taskContexts.set(taskId, taskContext);
 
@@ -1275,6 +1346,19 @@ ${contextData}
                 }
 
                 specManager.setPhase(SpecPhase.SPECIFICATION);
+                
+                // Set up RuleEnforcer with structured constitution
+                if (taskContext.ruleEnforcer && specManager.hasConstitution()) {
+                    const structuredConst = specManager.parseConstitutionToStructured();
+                    if (structuredConst) {
+                        taskContext.ruleEnforcer.setConstitution(structuredConst);
+                        task.logs.push(`> [Constitution]: Rule enforcer loaded with ${
+                            structuredConst.agentConstraints.must.length + 
+                            structuredConst.agentConstraints.mustNot.length +
+                            structuredConst.forbiddenPatterns.length
+                        } rules`);
+                    }
+                }
             } else {
                 task.logs.push(`> [Constitution]: Trivial request - skipping constitution check`);
             }
@@ -1331,7 +1415,10 @@ ${contextData}
                 () => { this._onReloadBrowser.fire(); },
                 (url: string) => { this._onNavigateBrowser.fire(url); },
                 FileLockManager.getInstance(), // Inject Lock Manager
-                taskId // Inject Task ID for locking
+                taskId, // Inject Task ID for locking
+                // Login checkpoint callback - shows "I've Logged In" button in UI
+                (checkpointTaskId: string, loginUrl: string, ssoProvider?: string) => 
+                    this.requestLoginCheckpoint(checkpointTaskId, loginUrl, ssoProvider)
             );
 
             // Step 3: Start Gemini Session
@@ -2107,6 +2194,42 @@ ${contextData}
                         }
                     }
 
+                    // ============================================
+                    // CONSTITUTION RULE ENFORCEMENT
+                    // Validate file edits against constitution rules
+                    // ============================================
+                    const enforceContext = this.taskContexts.get(taskId);
+                    if (enforceContext?.ruleEnforcer && task.fileEdits && task.fileEdits.length > 0) {
+                        // Get recent edits from this turn (last N edits based on recent timestamps)
+                        const recentEdits = task.fileEdits.slice(-10); // Check last 10 edits
+                        
+                        // Convert to RuleEnforcer format
+                        const editsToCheck: RuleFileEdit[] = recentEdits.map(edit => ({
+                            path: edit.path,
+                            type: edit.beforeContent === null ? 'create' : 'modify',
+                            content: edit.afterContent,
+                            previousContent: edit.beforeContent || undefined
+                        }));
+                        
+                        const violations = await enforceContext.ruleEnforcer.validateFileEdits(editsToCheck);
+                        
+                        if (violations.length > 0) {
+                            const logMsg = enforceContext.ruleEnforcer.generateLogMessage(violations);
+                            task.logs.push(logMsg);
+                            
+                            // Inject violations into next prompt so agent can fix them
+                            const violationPrompt = enforceContext.ruleEnforcer.formatViolationsForAgent(violations);
+                            if (violationPrompt) {
+                                toolParts.push({
+                                    functionResponse: {
+                                        name: 'constitution_check',
+                                        response: { content: violationPrompt }
+                                    }
+                                });
+                            }
+                        }
+                    }
+
                     currentPrompt = toolParts;
                     continue;
 
@@ -2551,7 +2674,8 @@ ${contextData}
                             }
                         );
                         
-                        taskContext = { shadowRepo, revertManager, diffAggregator };
+                        const ruleEnforcer = createRuleEnforcer();
+                        taskContext = { shadowRepo, revertManager, diffAggregator, ruleEnforcer };
                         this.taskContexts.set(taskId, taskContext);
                     }
 
@@ -2618,7 +2742,10 @@ ${contextData}
                         () => { this._onReloadBrowser.fire(); },
                         (url: string) => { this._onNavigateBrowser.fire(url); },
                         FileLockManager.getInstance(),
-                        taskId
+                        taskId,
+                        // Login checkpoint callback - shows "I've Logged In" button in UI
+                        (checkpointTaskId: string, loginUrl: string, ssoProvider?: string) => 
+                            this.requestLoginCheckpoint(checkpointTaskId, loginUrl, ssoProvider)
                     );
                     this.runExecutionLoop(taskId, session, tools);
                 } else {
@@ -2670,7 +2797,8 @@ ${contextData}
                     }
                 );
                 
-                taskContext = { shadowRepo, revertManager, diffAggregator };
+                const ruleEnforcer = createRuleEnforcer();
+                taskContext = { shadowRepo, revertManager, diffAggregator, ruleEnforcer };
                 this.taskContexts.set(taskId, taskContext);
 
             } else {
