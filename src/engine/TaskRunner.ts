@@ -288,6 +288,14 @@ Please complete the login in the browser window, then click **"I've Logged In"**
             return;
         }
 
+        // CRITICAL: Block input while refiner is working
+        if ((task as any)._refinerInProgress) {
+            task.logs.push(`\n⚠️ **Please wait** - The Refiner is currently drafting the PRD.`);
+            task.logs.push(`> Your input will be processed once the PRD draft is ready.`);
+            this._onTaskUpdate.fire({ taskId, task });
+            return;
+        }
+
         console.log(`[TaskRunner] Processing questionnaire submission for task ${taskId}, session ${sessionId}`);
 
         // Convert structured responses to a formatted message
@@ -1160,21 +1168,34 @@ ${originalPrompt}`;
                             }
                             critiqueMessage += '\n';
                         });
-                        critiqueMessage += `\n> Please address the issues above by replying with clarifications.`;
+                        
+                        // If confidence is >= 70, refiner will start automatically
+                        if (critique.confidenceScore >= 70) {
+                            critiqueMessage += `\n> **Note:** Score passed threshold (${critique.confidenceScore}%). Refiner will now generate the final PRD.`;
+                            critiqueMessage += `\n> ⏳ **Please wait** - you can request changes AFTER the PRD is ready.`;
+                        } else {
+                            critiqueMessage += `\n> Please address the issues above by replying with clarifications.`;
+                        }
                     } else if (!critique.passedValidation) {
                         critiqueMessage += `\n> The PRD needs more detail. The system will proceed with refinement using available information.`;
+                        critiqueMessage += `\n> ⏳ **Please wait** - Refiner is starting...`;
                     } else {
                         critiqueMessage += `\n> ✓ PRD looks good! Proceeding to final refinement.`;
+                        critiqueMessage += `\n> ⏳ **Please wait** - Refiner is starting...`;
                     }
                     
                     task.logs.push(critiqueMessage);
                 } else if (event.type === 'artifact-ready') {
+                    // Clear the refiner in progress flag - PRD is now ready
+                    delete (task as any)._refinerInProgress;
+                    
                     // Fire PRD review event to show in Context pane
                     const artifact = event.payload as any;
                     const prdContent = artifact?.rawMarkdown ||
                         (typeof event.payload === 'string' ? event.payload : JSON.stringify(event.payload, null, 2));
 
-                    task.logs.push(`\n**Final PRD Ready** - Review in the CONTEXT pane and click "Approve" or "Request Changes".`);
+                    task.logs.push(`\n✅ **Final PRD Ready** - Review in the CONTEXT pane and click "Approve" or "Request Changes".`);
+                    task.logs.push(`> You can now provide feedback or request changes to the PRD.`);
 
                     // Send to webview for review
                     this._onAwaitingApproval.fire({
@@ -1205,7 +1226,25 @@ ${originalPrompt}`;
                         });
                     }
                 } else if (event.type === 'state-change') {
-                    task.logs.push(`> [Refinement]: State → ${event.payload}`);
+                    const newState = event.payload as string;
+                    task.logs.push(`> [Refinement]: State → ${newState}`);
+                    
+                    // CRITICAL: When entering REFINING state, show active indicator and block input
+                    if (newState === 'REFINING') {
+                        task.logs.push(`\n⏳ **Refiner is drafting the PRD...**`);
+                        task.logs.push(`> Please wait while the final PRD is being generated. This may take 1-2 minutes.`);
+                        task.logs.push(`> ⚠️ **Do not send messages** until the PRD is ready for review.`);
+                        task.logs.push(`> You will be able to request changes once the draft is complete.\n`);
+                        
+                        // Set a flag to indicate refiner is working (block user input)
+                        (task as any)._refinerInProgress = true;
+                        
+                        // Update status to show user the system is busy
+                        this.updateStatus(taskId, 'executing', 60, '⏳ Refiner drafting PRD - please wait...');
+                    } else if (newState === 'AWAITING_USER') {
+                        // Clear the refiner in progress flag when we're ready for user input
+                        delete (task as any)._refinerInProgress;
+                    }
                 } else if (event.type === 'progress') {
                     task.logs.push(`> [Refinement]: ${event.payload}`);
                 } else if (event.type === 'error') {
@@ -2638,6 +2677,16 @@ ${contextData}
             // ========== REFINEMENT MODE REPLY HANDLING ==========
             // If task is awaiting-approval AND was started in refinement mode, route to RefinementManager
             if (task.status === 'awaiting-approval' && task.mode === 'refinement') {
+                // CRITICAL: Block input while refiner is working
+                if ((task as any)._refinerInProgress) {
+                    task.logs.push(`\n⚠️ **Please wait** - The Refiner is currently drafting the PRD.`);
+                    task.logs.push(`> Your message has been noted, but cannot be processed until the PRD is ready.`);
+                    task.logs.push(`> You'll be able to request changes once the draft is complete.\n`);
+                    this._onTaskUpdate.fire({ taskId, task });
+                    this.saveTask(task);
+                    return;
+                }
+                
                 console.log(`[TaskRunner] Routing reply to RefinementManager for task ${taskId}`);
                 const refinementManager = getRefinementManager();
 
