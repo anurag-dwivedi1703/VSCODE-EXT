@@ -397,8 +397,19 @@ export class MissionControlProvider {
     }
 
     /**
-     * Start a task with attachment processing
-     * Processes images (via vision) and documents (via text extraction) to enrich the prompt
+     * Start a task with attachment processing.
+     * 
+     * When attachments are present, uses DEFERRED task creation so the UI transitions 
+     * immediately (user sees the chat view right away with a "processing" indicator)
+     * while vision analysis runs in the background.
+     * 
+     * Flow WITH attachments:
+     *   1. Create task immediately (UI transitions) → show "Analyzing images..." 
+     *   2. Process attachments (intent extraction + vision) 
+     *   3. Update task prompt with enriched version → begin AI execution
+     * 
+     * Flow WITHOUT attachments:
+     *   Normal immediate start (no delay).
      */
     private async _startTaskWithAttachments(
         text: string,
@@ -408,34 +419,61 @@ export class MissionControlProvider {
         chatId: string,
         attachments: Attachment[]
     ): Promise<void> {
-        let enrichedPrompt = text;
+        const hasAttachments = attachments && attachments.length > 0;
+        const hasImageAttachments = hasAttachments && attachments.some(a => 
+            a.type === 'image' || (a.mimeType && a.mimeType.startsWith('image/'))
+        );
 
-        // Process attachments if any
-        if (attachments && attachments.length > 0) {
-            try {
-                console.log(`[MissionControl] Processing ${attachments.length} attachments...`);
-                
-                const processor = getAttachmentProcessor();
-                const processed = await processor.processAttachments(attachments, text);
-                const contextString = processor.generateContextString(processed);
-
-                if (contextString) {
-                    enrichedPrompt = text + contextString;
-                    console.log(`[MissionControl] Enriched prompt with ${processed.length} attachment analyses`);
-                }
-            } catch (error: any) {
-                console.error('[MissionControl] Attachment processing failed:', error);
-                // Continue with original prompt
+        // If no attachments, take the fast path (no delay)
+        if (!hasAttachments) {
+            if (this._phasedExecutionEnabled) {
+                await this._startTaskWithPhaseAnalysis(text, workspacePath, mode, model, chatId, text);
+            } else {
+                this._taskRunner.startTask(text, workspacePath, mode, model, chatId, text);
             }
+            return;
         }
 
-        // Use phase-aware task start if enabled
-        // Always pass original 'text' as displayPrompt so UI shows user's original message
-        if (this._phasedExecutionEnabled) {
-            await this._startTaskWithPhaseAnalysis(enrichedPrompt, workspacePath, mode, model, chatId, text);
+        // === DEFERRED START: Create task immediately for instant UI feedback ===
+        const taskId = this._taskRunner.startTaskDeferred(
+            text,           // Original prompt (will be updated after attachment processing)
+            workspacePath,
+            mode,
+            model,
+            chatId,
+            text            // displayPrompt = original user text (always shown in UI)
+        );
+
+        // Show processing indicator immediately in the chat
+        if (hasImageAttachments) {
+            this._taskRunner.updateStatus_public(taskId, 'pending', 0, 
+                '> Analyzing attached images... (extracting intent and running vision)');
         } else {
-            this._taskRunner.startTask(enrichedPrompt, workspacePath, mode, model, chatId, text);
+            this._taskRunner.updateStatus_public(taskId, 'pending', 0, 
+                '> Processing attached documents...');
         }
+
+        // === ASYNC: Process attachments while user sees the chat view ===
+        let enrichedPrompt = text;
+        try {
+            console.log(`[MissionControl] Processing ${attachments.length} attachments...`);
+            
+            const processor = getAttachmentProcessor();
+            const processed = await processor.processAttachments(attachments, text);
+            const contextString = processor.generateContextString(processed);
+
+            if (contextString) {
+                enrichedPrompt = text + contextString;
+                console.log(`[MissionControl] Enriched prompt with ${processed.length} attachment analyses`);
+            }
+        } catch (error: any) {
+            console.error('[MissionControl] Attachment processing failed:', error);
+            // Continue with original prompt
+        }
+
+        // === Update prompt and begin execution ===
+        this._taskRunner.updateTaskPrompt(taskId, enrichedPrompt);
+        this._taskRunner.beginTaskExecution(taskId);
     }
 
     /**

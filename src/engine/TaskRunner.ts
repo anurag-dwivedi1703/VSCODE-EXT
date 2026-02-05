@@ -843,6 +843,68 @@ Please complete the login in the browser window, then click **"I've Logged In"**
         return taskId;
     }
 
+    /**
+     * Create and register a task WITHOUT starting execution.
+     * Emits taskUpdate immediately so the UI transitions to the chat view right away.
+     * Use updateTaskPrompt() to set the enriched prompt, then beginTaskExecution() to start processing.
+     */
+    public startTaskDeferred(prompt: string, worktreePath?: string, mode: 'planning' | 'fast' | 'refinement' = 'planning', model: string = 'gemini-3-pro-preview', chatId?: string, displayPrompt?: string): string {
+        const taskId = `agent-${Date.now()}`;
+        const task: AgentTask = {
+            id: taskId,
+            prompt,
+            displayPrompt: displayPrompt || prompt,
+            status: 'pending',
+            progress: 0,
+            logs: [],
+            userMessages: [],
+            artifacts: [],
+            worktreePath: worktreePath,
+            mode,
+            model,
+            chatId
+        };
+        this.tasks.set(taskId, task);
+        this.saveTask(task);
+
+        // Emit immediately so UI transitions to the chat view
+        this._onTaskUpdate.fire({ taskId, task });
+
+        return taskId;
+    }
+
+    /**
+     * Update the task's execution prompt (e.g., after attachment processing enriches it).
+     * Does NOT affect displayPrompt (UI continues showing the original user text).
+     */
+    public updateTaskPrompt(taskId: string, enrichedPrompt: string): void {
+        const task = this.tasks.get(taskId);
+        if (task) {
+            task.prompt = enrichedPrompt;
+            this.saveTask(task);
+        }
+    }
+
+    /**
+     * Begin actual AI execution for a deferred task.
+     * Called after attachments have been processed and the prompt is enriched.
+     */
+    public beginTaskExecution(taskId: string): void {
+        const task = this.tasks.get(taskId);
+        if (task) {
+            this.processTask(taskId);
+        }
+    }
+
+    /**
+     * Public wrapper for updateStatus - allows MissionControlProvider to push
+     * visible log entries (e.g., "Analyzing attached images...") to the UI
+     * while attachment processing is in progress.
+     */
+    public updateStatus_public(taskId: string, status: AgentTask['status'], progress: number, log: string): void {
+        this.updateStatus(taskId, status, progress, log);
+    }
+
     // Change model mid-task - will take effect on next message exchange
     public changeModel(taskId: string, newModel: string) {
         const task = this.tasks.get(taskId);
@@ -2992,6 +3054,15 @@ ${contextData}
                 (a.path && /\.(pdf|txt|md|doc|docx)$/i.test(a.path)));
             
             if (imageAttachments.length > 0 || docAttachments.length > 0) {
+                // Show immediate feedback so user knows processing is happening
+                if (imageAttachments.length > 0) {
+                    this.updateStatus(taskId, task.status, task.progress, 
+                        '> Analyzing attached images... (extracting intent and running vision)');
+                } else {
+                    this.updateStatus(taskId, task.status, task.progress, 
+                        '> Processing attached documents...');
+                }
+
                 try {
                     const processor = getAttachmentProcessor();
                     const processed = await processor.processAttachments(normalizedAttachments, message);
