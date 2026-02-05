@@ -684,8 +684,215 @@ export function constitutionToMarkdown(constitution: ConstitutionV2): string {
 export function parseMarkdownConstitution(markdown: string, existingConstitution?: ConstitutionV2): ConstitutionV2 {
     const constitution = existingConstitution || createEmptyConstitution();
     
-    // Parse custom rules section
-    const customRulesMatch = markdown.match(/## 8\. Custom Rules[\s\S]*?(?=##|---|\Z)/);
+    // ========================================
+    // Section 1: Project Identity
+    // ========================================
+    const identityMatch = markdown.match(/## 1\. Project Identity[\s\S]*?(?=## \d|---|\Z)/i);
+    if (identityMatch) {
+        const section = identityMatch[0];
+        
+        const nameMatch = section.match(/\*\*Name\*\*:\s*([^\n]+)/i);
+        if (nameMatch) constitution.identity.name = nameMatch[1].trim();
+        
+        const typeMatch = section.match(/\*\*Type\*\*:\s*([^\n]+)/i);
+        if (typeMatch) {
+            const typeVal = typeMatch[1].trim().toLowerCase() as ProjectType;
+            if (['extension', 'webapp', 'api', 'library', 'cli', 'monorepo', 'unknown'].includes(typeVal)) {
+                constitution.identity.type = typeVal;
+            }
+        }
+        
+        const langMatch = section.match(/\*\*Primary Language\*\*:\s*([^\n]+)/i);
+        if (langMatch) {
+            const langVal = langMatch[1].trim().toLowerCase() as PrimaryLanguage;
+            if (['typescript', 'javascript', 'python', 'java', 'go', 'rust', 'csharp', 'other'].includes(langVal)) {
+                constitution.identity.primaryLanguage = langVal;
+            }
+        }
+        
+        const frameworkMatch = section.match(/\*\*Framework\*\*:\s*([^\n]+)/i);
+        if (frameworkMatch) constitution.identity.framework = frameworkMatch[1].trim();
+        
+        const descMatch = section.match(/\*\*Description\*\*:\s*([^\n]+)/i);
+        if (descMatch) constitution.identity.description = descMatch[1].trim();
+    }
+    
+    // ========================================
+    // Section 2: Critical Dependencies
+    // ========================================
+    const depsMatch = markdown.match(/## 2\. Critical Dependencies[\s\S]*?(?=## \d|---|\Z)/i);
+    if (depsMatch) {
+        const section = depsMatch[0];
+        const tableRows = section.match(/\|[^|\n]+\|[^|\n]+\|[^|\n]+\|[^|\n]+\|/g) || [];
+        
+        constitution.criticalDependencies = [];
+        
+        for (const row of tableRows) {
+            // Skip header and separator rows
+            if (row.includes('Package') || row.includes('---') || row.includes('Version')) continue;
+            
+            const cells = row.split('|').filter(c => c.trim()).map(c => c.trim());
+            if (cells.length >= 4) {
+                constitution.criticalDependencies.push({
+                    name: cells[0],
+                    version: cells[1],
+                    reason: cells[2],
+                    riskLevel: cells[3].toLowerCase() as 'critical' | 'high' | 'medium' | 'low'
+                });
+            }
+        }
+    }
+    
+    // ========================================
+    // Section 3: Architecture Rules
+    // ========================================
+    const archMatch = markdown.match(/## 3\. Architecture Rules[\s\S]*?(?=## \d|---|\Z)/i);
+    if (archMatch) {
+        const section = archMatch[0];
+        
+        const patternMatch = section.match(/\*\*Pattern\*\*:\s*([^\n]+)/i);
+        if (patternMatch) {
+            const patternVal = patternMatch[1].trim().toLowerCase().replace(/[^a-z-]/g, '') as ArchitecturePattern;
+            if (['mvc', 'hexagonal', 'clean', 'layered', 'feature-sliced', 'microservices', 'serverless', 'monolith', 'other'].includes(patternVal)) {
+                constitution.architectureRules.pattern = patternVal;
+            }
+        }
+        
+        const entryMatch = section.match(/\*\*Entry Point\*\*:\s*`?([^`\n]+)`?/i);
+        if (entryMatch) constitution.architectureRules.entryPoint = entryMatch[1].trim();
+        
+        // Parse module boundaries
+        const boundariesMatch = section.match(/### Module Boundaries[\s\S]*?(?=###|## \d|---|\Z)/i);
+        if (boundariesMatch) {
+            const boundarySection = boundariesMatch[0];
+            const boundaryLines = boundarySection.match(/\*\*([^*]+)\*\*:\s*([^\n]+)/g) || [];
+            
+            constitution.architectureRules.moduleBoundaries = [];
+            for (const line of boundaryLines) {
+                const match = line.match(/\*\*([^*]+)\*\*:\s*([^\n]+)/);
+                if (match) {
+                    constitution.architectureRules.moduleBoundaries.push({
+                        name: match[1].trim(),
+                        purpose: match[2].trim(),
+                        includes: [match[1].trim().toLowerCase()]
+                    });
+                }
+            }
+        }
+        
+        // Parse import rules
+        const importRulesMatch = section.match(/### Import Rules[\s\S]*?(?=###|## \d|---|\Z)/i);
+        if (importRulesMatch) {
+            const importSection = importRulesMatch[0];
+            const ruleLines = importSection.split('\n').filter(l => l.trim().startsWith('-'));
+            
+            constitution.architectureRules.importRules = [];
+            for (let i = 0; i < ruleLines.length; i++) {
+                const line = ruleLines[i].replace(/^-\s*/, '').trim();
+                if (line.includes('cannot import') || line.includes('should not import')) {
+                    constitution.architectureRules.importRules.push({
+                        id: `import-rule-${i}`,
+                        from: 'auto-detected',
+                        cannotImport: [],
+                        reason: line
+                    });
+                }
+            }
+        }
+    }
+    
+    // ========================================
+    // Section 5: Forbidden Patterns
+    // ========================================
+    const forbiddenMatch = markdown.match(/## 5\. Forbidden Patterns[\s\S]*?(?=## \d|---|\Z)/i);
+    if (forbiddenMatch) {
+        const section = forbiddenMatch[0];
+        const patterns = section.split(/(?=- ❌|\*\*[^*]+\*\*)/);
+        
+        constitution.forbiddenPatterns = [];
+        
+        for (const pattern of patterns) {
+            const descMatch = pattern.match(/(?:❌\s*)?(?:\*\*)?([^*\n]+)(?:\*\*)?/);
+            const reasonMatch = pattern.match(/Reason:\s*([^\n]+)/i);
+            const insteadMatch = pattern.match(/Instead:\s*([^\n]+)/i);
+            
+            if (descMatch && descMatch[1].trim() && !descMatch[1].includes('Forbidden Patterns')) {
+                constitution.forbiddenPatterns.push({
+                    id: `forbidden-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+                    description: descMatch[1].trim().replace(/^-\s*/, ''),
+                    reason: reasonMatch ? reasonMatch[1].trim() : 'Pattern forbidden by constitution',
+                    enforcement: 'warning',
+                    autoDetected: false,
+                    suggestion: insteadMatch ? insteadMatch[1].trim() : undefined
+                });
+            }
+        }
+    }
+    
+    // ========================================
+    // Section 6: Testing Requirements
+    // ========================================
+    const testingMatch = markdown.match(/## 6\. Testing Requirements[\s\S]*?(?=## \d|---|\Z)/i);
+    if (testingMatch) {
+        const section = testingMatch[0];
+        
+        const frameworkMatch = section.match(/\*\*Framework\*\*:\s*([^\n]+)/i);
+        if (frameworkMatch) {
+            const fw = frameworkMatch[1].trim().toLowerCase() as TestFramework;
+            if (['jest', 'mocha', 'vitest', 'playwright', 'cypress', 'pytest', 'junit', 'other'].includes(fw)) {
+                constitution.testingRequirements.framework = fw;
+            }
+        }
+        
+        const patternMatch = section.match(/\*\*Test Pattern\*\*:\s*`?([^`\n]+)`?/i);
+        if (patternMatch) constitution.testingRequirements.testFilePattern = patternMatch[1].trim();
+        
+        const coverageMatch = section.match(/\*\*Coverage Minimum\*\*:\s*(\d+)/i);
+        if (coverageMatch) constitution.testingRequirements.coverageMinimum = parseInt(coverageMatch[1], 10);
+        
+        const typesMatch = section.match(/\*\*Required Test Types\*\*:\s*([^\n]+)/i);
+        if (typesMatch) {
+            const types = typesMatch[1].split(/[,\s]+/).filter(t => t.trim());
+            constitution.testingRequirements.requiredTestTypes = types.map(t => t.toLowerCase().trim() as TestType);
+        }
+    }
+    
+    // ========================================
+    // Section 7: Agent Constraints
+    // ========================================
+    const constraintsMatch = markdown.match(/## 7\. Agent Constraints[\s\S]*?(?=## \d|---|\Z)/i);
+    if (constraintsMatch) {
+        const section = constraintsMatch[0];
+        
+        // Parse MUST rules
+        const mustMatch = section.match(/### MUST\b[\s\S]*?(?=###|## \d|---|\Z)/i);
+        if (mustMatch) {
+            const mustSection = mustMatch[0];
+            const rules = parseAgentRules(mustSection, 'strict');
+            constitution.agentConstraints.must = rules;
+        }
+        
+        // Parse MUST NOT rules
+        const mustNotMatch = section.match(/### MUST NOT\b[\s\S]*?(?=###|## \d|---|\Z)/i);
+        if (mustNotMatch) {
+            const mustNotSection = mustNotMatch[0];
+            const rules = parseAgentRules(mustNotSection, 'strict');
+            constitution.agentConstraints.mustNot = rules;
+        }
+        
+        // Parse SHOULD rules
+        const shouldMatch = section.match(/### SHOULD\b[\s\S]*?(?=###|## \d|---|\Z)/i);
+        if (shouldMatch) {
+            const shouldSection = shouldMatch[0];
+            const rules = parseAgentRules(shouldSection, 'suggestion');
+            constitution.agentConstraints.should = rules;
+        }
+    }
+    
+    // ========================================
+    // Section 8: Custom Rules
+    // ========================================
+    const customRulesMatch = markdown.match(/## 8\. Custom Rules[\s\S]*?(?=## \d|---|\Z)/);
     if (customRulesMatch) {
         const customRulesSection = customRulesMatch[0];
         const ruleLines = customRulesSection.split('\n').filter(line => line.trim().startsWith('- '));
@@ -709,7 +916,7 @@ export function parseMarkdownConstitution(markdown: string, existingConstitution
                 description = cleanLine.replace('SHOULD:', '').trim();
             }
             
-            if (description && !description.startsWith('[')) {
+            if (description && !description.startsWith('[') && !description.startsWith('*')) {
                 constitution.customRules.push({
                     id: `custom-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
                     description,
@@ -724,4 +931,278 @@ export function parseMarkdownConstitution(markdown: string, existingConstitution
     constitution.generatedAt = new Date().toISOString();
     
     return constitution;
+}
+
+/**
+ * Helper function to parse agent rules from a markdown section.
+ */
+function parseAgentRules(section: string, defaultEnforcement: EnforcementLevel): AgentRule[] {
+    const rules: AgentRule[] = [];
+    const lines = section.split('\n').filter(line => {
+        const trimmed = line.trim();
+        return trimmed.startsWith('-') || trimmed.startsWith('✅') || trimmed.startsWith('❌') || trimmed.startsWith('💡');
+    });
+    
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const cleanLine = line.replace(/^[-✅❌💡]\s*/, '').trim();
+        
+        if (cleanLine && !cleanLine.startsWith('[') && !cleanLine.startsWith('*')) {
+            // Check for reason on next line
+            let reason: string | undefined;
+            if (i + 1 < lines.length) {
+                const nextLine = lines[i + 1].trim();
+                if (nextLine.startsWith('*Reason:') || nextLine.startsWith('- *Reason:')) {
+                    reason = nextLine.replace(/^[-\s]*\*Reason:\s*/i, '').replace(/\*$/, '').trim();
+                }
+            }
+            
+            rules.push({
+                id: `rule-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+                description: cleanLine,
+                enforcement: defaultEnforcement,
+                autoDetect: false,
+                reason
+            });
+        }
+    }
+    
+    return rules;
+}
+
+// ============================================
+// CONSTITUTION VALIDATION
+// ============================================
+
+/**
+ * Validation result for a constitution
+ */
+export interface ConstitutionValidationResult {
+    /** Whether the constitution is valid */
+    isValid: boolean;
+    /** Validation errors (critical issues) */
+    errors: string[];
+    /** Validation warnings (non-critical issues) */
+    warnings: string[];
+    /** Detected sections */
+    detectedSections: string[];
+    /** Missing required sections */
+    missingSections: string[];
+}
+
+/**
+ * Required sections that must be present in a valid constitution
+ */
+const REQUIRED_SECTIONS = [
+    { pattern: /## 1\. Project Identity/i, name: 'Project Identity' },
+    { pattern: /## 7\. Agent Constraints/i, name: 'Agent Constraints' },
+];
+
+/**
+ * Optional but recommended sections
+ */
+const RECOMMENDED_SECTIONS = [
+    { pattern: /## 2\. Critical Dependencies/i, name: 'Critical Dependencies' },
+    { pattern: /## 3\. Architecture Rules/i, name: 'Architecture Rules' },
+    { pattern: /## 4\. Coding Standards/i, name: 'Coding Standards' },
+    { pattern: /## 5\. Forbidden Patterns/i, name: 'Forbidden Patterns' },
+    { pattern: /## 6\. Testing Requirements/i, name: 'Testing Requirements' },
+    { pattern: /## 8\. Custom Rules/i, name: 'Custom Rules' },
+];
+
+/**
+ * Validate a constitution markdown string.
+ * Checks for required sections, proper structure, and common issues.
+ * 
+ * @param markdown The constitution markdown content to validate
+ * @returns Validation result with errors, warnings, and detected sections
+ */
+export function validateConstitutionMarkdown(markdown: string): ConstitutionValidationResult {
+    const errors: string[] = [];
+    const warnings: string[] = [];
+    const detectedSections: string[] = [];
+    const missingSections: string[] = [];
+
+    // Basic validation
+    if (!markdown || markdown.trim().length === 0) {
+        return {
+            isValid: false,
+            errors: ['Constitution is empty'],
+            warnings: [],
+            detectedSections: [],
+            missingSections: REQUIRED_SECTIONS.map(s => s.name)
+        };
+    }
+
+    // Check minimum length (constitution should have meaningful content)
+    if (markdown.length < 200) {
+        errors.push('Constitution is too short (less than 200 characters). May be incomplete or malformed.');
+    }
+
+    // Check for title/header
+    if (!markdown.match(/^#\s+.*(Constitution|Rules|Guidelines)/im)) {
+        warnings.push('Constitution should start with a title header (e.g., "# Workspace Constitution")');
+    }
+
+    // Check required sections
+    for (const section of REQUIRED_SECTIONS) {
+        if (section.pattern.test(markdown)) {
+            detectedSections.push(section.name);
+        } else {
+            missingSections.push(section.name);
+            errors.push(`Missing required section: ${section.name}`);
+        }
+    }
+
+    // Check recommended sections
+    for (const section of RECOMMENDED_SECTIONS) {
+        if (section.pattern.test(markdown)) {
+            detectedSections.push(section.name);
+        } else {
+            warnings.push(`Missing recommended section: ${section.name}`);
+        }
+    }
+
+    // Check for Agent Constraints subsections (MUST/MUST NOT/SHOULD)
+    const hasAgentConstraints = /## 7\. Agent Constraints/i.test(markdown);
+    if (hasAgentConstraints) {
+        const hasMust = /### MUST\b/i.test(markdown);
+        const hasMustNot = /### MUST NOT\b/i.test(markdown);
+        const hasShould = /### SHOULD\b/i.test(markdown);
+
+        if (!hasMust && !hasMustNot && !hasShould) {
+            warnings.push('Agent Constraints section exists but has no MUST/MUST NOT/SHOULD subsections');
+        }
+
+        // Check for actual rules in the subsections
+        if (hasMust && !/### MUST\b[\s\S]*?-\s+[✅\w]/i.test(markdown)) {
+            warnings.push('MUST section exists but appears to have no rules');
+        }
+        if (hasMustNot && !/### MUST NOT\b[\s\S]*?-\s+[❌\w]/i.test(markdown)) {
+            warnings.push('MUST NOT section exists but appears to have no rules');
+        }
+    }
+
+    // Check for common formatting issues
+    if (markdown.includes('```json') && !markdown.includes('```')) {
+        warnings.push('Unclosed JSON code block detected');
+    }
+
+    // Check for malformed markdown tables
+    const tableHeaders = markdown.match(/\|[^|]+\|[^|]+\|/g) || [];
+    const tableSeparators = markdown.match(/\|[-:]+\|[-:]+\|/g) || [];
+    if (tableHeaders.length > 0 && tableSeparators.length === 0) {
+        warnings.push('Markdown table(s) detected without proper separator rows');
+    }
+
+    // Check for very long lines (may indicate malformed content)
+    const lines = markdown.split('\n');
+    const veryLongLines = lines.filter(line => line.length > 500);
+    if (veryLongLines.length > 0) {
+        warnings.push(`${veryLongLines.length} very long line(s) detected (>500 chars). May indicate malformed content.`);
+    }
+
+    // Check for duplicate section headers
+    const sectionHeaders = markdown.match(/^##\s+\d+\.\s+.+$/gm) || [];
+    const headerSet = new Set<string>();
+    for (const header of sectionHeaders) {
+        const normalized = header.toLowerCase().trim();
+        if (headerSet.has(normalized)) {
+            warnings.push(`Duplicate section header detected: ${header}`);
+        }
+        headerSet.add(normalized);
+    }
+
+    // Check for placeholder text that wasn't filled in
+    const placeholderPatterns = [
+        /\[your rule here\]/i,
+        /\[enter .+\]/i,
+        /\[placeholder\]/i,
+        /\[TODO\]/i,
+        /\[FILL IN\]/i
+    ];
+    for (const pattern of placeholderPatterns) {
+        if (pattern.test(markdown)) {
+            warnings.push('Constitution contains unfilled placeholder text');
+            break;
+        }
+    }
+
+    return {
+        isValid: errors.length === 0,
+        errors,
+        warnings,
+        detectedSections,
+        missingSections
+    };
+}
+
+/**
+ * Attempt to repair a malformed constitution by ensuring required sections exist.
+ * Returns the repaired markdown or the original if repair isn't needed.
+ * 
+ * @param markdown The potentially malformed constitution
+ * @param projectName Optional project name for fallback content
+ * @returns Repaired constitution markdown
+ */
+export function repairConstitutionMarkdown(markdown: string, projectName: string = 'Unknown Project'): string {
+    const validation = validateConstitutionMarkdown(markdown);
+    
+    // If already valid, return as-is
+    if (validation.isValid) {
+        return markdown;
+    }
+
+    let repaired = markdown;
+
+    // Add missing title if needed
+    if (!markdown.match(/^#\s+.*(Constitution|Rules|Guidelines)/im)) {
+        repaired = `# Workspace Constitution\n\n${repaired}`;
+    }
+
+    // Add missing Project Identity section
+    if (!validation.detectedSections.includes('Project Identity')) {
+        const identitySection = `
+## 1. Project Identity
+
+- **Name**: ${projectName}
+- **Type**: unknown
+- **Primary Language**: other
+
+`;
+        // Insert after title
+        const titleMatch = repaired.match(/^#\s+.+\n/);
+        if (titleMatch) {
+            const insertPos = titleMatch[0].length;
+            repaired = repaired.slice(0, insertPos) + '\n' + identitySection + repaired.slice(insertPos);
+        } else {
+            repaired = identitySection + repaired;
+        }
+    }
+
+    // Add missing Agent Constraints section
+    if (!validation.detectedSections.includes('Agent Constraints')) {
+        const constraintsSection = `
+## 7. Agent Constraints (ENFORCED)
+
+### MUST
+- ✅ Verify changes compile/lint before marking task complete
+
+### MUST NOT
+- ❌ Modify files in node_modules/ or .git/
+- ❌ Change version numbers without explicit approval
+
+### SHOULD
+- 💡 Prefer existing utilities over new implementations
+
+`;
+        // Append before Custom Rules or at end
+        if (repaired.includes('## 8. Custom Rules')) {
+            repaired = repaired.replace('## 8. Custom Rules', constraintsSection + '\n## 8. Custom Rules');
+        } else {
+            repaired = repaired + '\n' + constraintsSection;
+        }
+    }
+
+    return repaired;
 }

@@ -12,7 +12,7 @@
 import * as vscode from 'vscode';
 import { RefinementSession } from './RefinementSession';
 import { RefinementArtifact, RefinementEvent, RefinementState } from './RefinementTypes';
-import { getPersonaPrompt } from './RefinementPrompts';
+import { getPersonaPrompt, formatConstitutionForRefinement } from './RefinementPrompts';
 import { GeminiClient, ISession } from '../../ai/GeminiClient';
 import { ClaudeClient } from '../../ai/ClaudeClient';
 import { CopilotClaudeClient } from '../../ai/CopilotClaudeClient';
@@ -61,6 +61,7 @@ export class RefinementManager {
      * @param aiClient The AI client to use for LLM calls
      * @param workspaceRoot The workspace root to search for files (REQUIRED)
      * @param modelId Optional model identifier for token budget calculation
+     * @param constitution Optional workspace constitution content
      * @returns The session ID
      */
     public async startSessionWithSmartContext(
@@ -68,7 +69,8 @@ export class RefinementManager {
         userPrompt: string,
         aiClient: AIClient,
         workspaceRoot: string,
-        modelId?: string
+        modelId?: string,
+        constitution?: string
     ): Promise<string> {
         // Validate workspace root
         if (!workspaceRoot) {
@@ -91,6 +93,9 @@ export class RefinementManager {
         
         console.log(`[RefinementManager] Building smart context for workspace: ${workspaceRoot}`);
         console.log(`[RefinementManager] Prompt: "${userPrompt.slice(0, 100)}..."`);
+        if (constitution) {
+            console.log(`[RefinementManager] Constitution provided (${constitution.length} chars)`);
+        }
         
         // CRITICAL: Set the workspace root on the builder BEFORE building context
         this._smartContextBuilder.setWorkspaceRoot(workspaceRoot);
@@ -107,8 +112,8 @@ export class RefinementManager {
             payload: `Found ${smartContext.fullContentFiles} relevant files (${smartContext.keywords.slice(0, 5).join(', ')})`
         });
         
-        // Now start the session with the smart context
-        return this.startSession(taskId, userPrompt, aiClient, smartContext.content, modelId);
+        // Now start the session with the smart context and constitution
+        return this.startSession(taskId, userPrompt, aiClient, smartContext.content, modelId, constitution);
     }
 
     /**
@@ -118,6 +123,7 @@ export class RefinementManager {
      * @param aiClient The AI client to use for LLM calls
      * @param skeletonContext The codebase skeleton context (or smart context)
      * @param modelId Optional model identifier for token budget calculation
+     * @param constitution Optional workspace constitution content
      * @returns The session ID
      */
     public async startSession(
@@ -125,7 +131,8 @@ export class RefinementManager {
         userPrompt: string,
         aiClient: AIClient,
         skeletonContext: string,
-        modelId?: string
+        modelId?: string,
+        constitution?: string
     ): Promise<string> {
         const sessionId = `refine-${taskId}-${Date.now()}`;
 
@@ -142,13 +149,24 @@ export class RefinementManager {
 
         // Create an AI session with Analyst persona for initial interaction
         // IMPORTANT: Pass false for includeToolInstructions to prevent AI from using tools in Refinement Mode
-        const analystPrompt = getPersonaPrompt('analyst');
+        // Inject constitution context into the system prompt if available
+        const constitutionContext = formatConstitutionForRefinement(constitution);
+        const analystPrompt = constitutionContext 
+            ? `${constitutionContext}\n\n${getPersonaPrompt('analyst')}`
+            : getPersonaPrompt('analyst');
+        
+        if (constitutionContext) {
+            console.log(`[RefinementManager] Injected constitution context into analyst prompt (${constitutionContext.length} chars)`);
+        }
+        
         const aiSession = aiClient.startSession(analystPrompt, 'high', false);
         session.setAISession(aiSession);
 
-        // Store the session
+        // Store the session and constitution for later persona switches
         this._sessions.set(sessionId, session);
         this._aiClients.set(sessionId, aiClient);
+        // Store constitution for use when switching to critic/refiner personas
+        (session as any)._constitutionContext = constitutionContext;
 
         console.log(`[RefinementManager] Started session ${sessionId} for task ${taskId}`);
 

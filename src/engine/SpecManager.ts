@@ -1,11 +1,15 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as vscode from 'vscode';
 import {
     ConstitutionV2,
     WorkspaceAnalysis,
     createEmptyConstitution,
     constitutionToMarkdown,
     parseMarkdownConstitution,
+    validateConstitutionMarkdown,
+    repairConstitutionMarkdown,
+    ConstitutionValidationResult,
     CodingStandard,
     ProjectIdentity,
     CriticalDependency,
@@ -61,6 +65,16 @@ export class SpecManager {
     private _workspaceRoot: string = '';
     private _structuredConstitution: ConstitutionV2 | null = null;
     private _guidelinesConfig: CorporateGuidelinesConfig = DEFAULT_GUIDELINES_CONFIG;
+    
+    // File watcher for external constitution changes
+    private _watcher: vscode.FileSystemWatcher | null = null;
+    private _onConstitutionChanged = new vscode.EventEmitter<{ type: 'changed' | 'deleted'; content?: string }>();
+    
+    /**
+     * Event that fires when the constitution file is changed externally.
+     * Subscribe to this to reload the constitution in your components.
+     */
+    public readonly onConstitutionChanged = this._onConstitutionChanged.event;
 
     /**
      * Initialize the SpecManager for a workspace.
@@ -125,10 +139,46 @@ export class SpecManager {
 
     /**
      * Save constitution to disk.
-     * Creates the .specify/memory directory if it doesn't exist.
+     * Creates the .vibearchitect directory if it doesn't exist.
+     * Validates the constitution before saving.
+     * 
+     * @param content The constitution markdown content
+     * @param autoRepair If true, automatically repairs minor issues (default: true)
+     * @returns Validation result indicating any issues found
      */
-    async saveConstitution(content: string): Promise<void> {
+    async saveConstitution(content: string, autoRepair: boolean = true): Promise<ConstitutionValidationResult> {
         const dir = path.dirname(this._constitutionPath);
+
+        // Validate the constitution content
+        let validation = validateConstitutionMarkdown(content);
+        let finalContent = content;
+
+        // Auto-repair if enabled and there are errors
+        if (!validation.isValid && autoRepair) {
+            console.log(`[SpecManager] Constitution has validation errors, attempting repair...`);
+            const projectName = this._structuredConstitution?.identity.name || 
+                               path.basename(this._workspaceRoot) || 'Unknown';
+            finalContent = repairConstitutionMarkdown(content, projectName);
+            
+            // Re-validate after repair
+            const revalidation = validateConstitutionMarkdown(finalContent);
+            if (revalidation.isValid) {
+                console.log(`[SpecManager] Constitution repaired successfully`);
+                validation = revalidation;
+            } else {
+                console.warn(`[SpecManager] Constitution repair incomplete. Remaining errors:`, revalidation.errors);
+                validation = revalidation;
+            }
+        }
+
+        // Log validation results
+        if (validation.errors.length > 0) {
+            console.warn(`[SpecManager] Constitution validation errors:`, validation.errors);
+        }
+        if (validation.warnings.length > 0) {
+            console.log(`[SpecManager] Constitution validation warnings:`, validation.warnings);
+        }
+        console.log(`[SpecManager] Detected sections:`, validation.detectedSections);
 
         // Ensure directory exists
         if (!fs.existsSync(dir)) {
@@ -137,13 +187,133 @@ export class SpecManager {
         }
 
         try {
-            fs.writeFileSync(this._constitutionPath, content, 'utf-8');
-            this._constitution = content;
-            console.log(`[SpecManager] Saved constitution to ${this._constitutionPath}`);
+            fs.writeFileSync(this._constitutionPath, finalContent, 'utf-8');
+            this._constitution = finalContent;
+            console.log(`[SpecManager] Saved constitution to ${this._constitutionPath} (valid: ${validation.isValid})`);
         } catch (error) {
             console.error(`[SpecManager] Failed to save constitution:`, error);
             throw error;
         }
+
+        return validation;
+    }
+
+    /**
+     * Validate the current constitution without saving.
+     * Useful for checking user edits before approval.
+     */
+    validateCurrentConstitution(): ConstitutionValidationResult {
+        return validateConstitutionMarkdown(this._constitution);
+    }
+    
+    // ============================================
+    // FILE SYSTEM WATCHER
+    // ============================================
+    
+    /**
+     * Start watching the constitution file for external changes.
+     * Call this after initialize() to enable real-time sync.
+     */
+    startWatching(): void {
+        if (this._watcher) {
+            this._watcher.dispose();
+        }
+        
+        if (!this._constitutionPath) {
+            console.warn('[SpecManager] Cannot start watching - no constitution path set');
+            return;
+        }
+        
+        // Create a file watcher for the constitution file
+        const pattern = new vscode.RelativePattern(
+            path.dirname(this._constitutionPath),
+            path.basename(this._constitutionPath)
+        );
+        
+        this._watcher = vscode.workspace.createFileSystemWatcher(pattern);
+        
+        // Handle file changes
+        this._watcher.onDidChange(async (uri) => {
+            console.log(`[SpecManager] Constitution file changed externally: ${uri.fsPath}`);
+            await this.reloadConstitution();
+            this._onConstitutionChanged.fire({ type: 'changed', content: this._constitution });
+        });
+        
+        // Handle file deletion
+        this._watcher.onDidDelete((uri) => {
+            console.log(`[SpecManager] Constitution file deleted: ${uri.fsPath}`);
+            this._constitution = '';
+            this._structuredConstitution = null;
+            this._onConstitutionChanged.fire({ type: 'deleted' });
+        });
+        
+        // Handle file creation (if it didn't exist before)
+        this._watcher.onDidCreate(async (uri) => {
+            console.log(`[SpecManager] Constitution file created: ${uri.fsPath}`);
+            await this.reloadConstitution();
+            this._onConstitutionChanged.fire({ type: 'changed', content: this._constitution });
+        });
+        
+        console.log(`[SpecManager] Started watching constitution file: ${this._constitutionPath}`);
+    }
+    
+    /**
+     * Stop watching the constitution file.
+     * Call this when disposing the SpecManager.
+     */
+    stopWatching(): void {
+        if (this._watcher) {
+            this._watcher.dispose();
+            this._watcher = null;
+            console.log('[SpecManager] Stopped watching constitution file');
+        }
+    }
+    
+    /**
+     * Reload the constitution from disk.
+     * Called automatically by the file watcher on external changes.
+     */
+    async reloadConstitution(): Promise<boolean> {
+        if (!this._constitutionPath) {
+            return false;
+        }
+        
+        try {
+            if (fs.existsSync(this._constitutionPath)) {
+                const content = fs.readFileSync(this._constitutionPath, 'utf-8');
+                
+                // Only update if content actually changed
+                if (content !== this._constitution) {
+                    this._constitution = content;
+                    console.log(`[SpecManager] Reloaded constitution (${content.length} chars)`);
+                    
+                    // Validate the reloaded content
+                    const validation = validateConstitutionMarkdown(content);
+                    if (!validation.isValid) {
+                        console.warn('[SpecManager] Reloaded constitution has validation issues:', validation.errors);
+                    }
+                    
+                    return true;
+                }
+            } else {
+                // File was deleted
+                this._constitution = '';
+                this._structuredConstitution = null;
+                return true;
+            }
+        } catch (error) {
+            console.error('[SpecManager] Failed to reload constitution:', error);
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Dispose all resources including file watcher.
+     */
+    dispose(): void {
+        this.stopWatching();
+        this._onConstitutionChanged.dispose();
     }
 
     /**

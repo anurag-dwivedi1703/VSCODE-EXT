@@ -765,12 +765,46 @@ ${acceptanceCriteria || 'Not specified'}
      * Returns parsed questions or null if no valid questionnaire block found.
      */
     private parseQuestionnaireBlock(response: string): { questions: ClarifyingQuestion[], contextSummary?: string } | null {
-        // Look for ```questionnaire ... ``` block
-        const match = response.match(/```questionnaire\s*([\s\S]*?)```/);
-        if (!match) return null;
+        let jsonContent: string | null = null;
+        
+        // Method 1: Look for ```questionnaire ... ``` block
+        const questionnaireMatch = response.match(/```questionnaire\s*([\s\S]*?)```/);
+        if (questionnaireMatch) {
+            jsonContent = questionnaireMatch[1].trim();
+        }
+        
+        // Method 2: Look for ```json ... ``` block with questions array
+        if (!jsonContent) {
+            const jsonMatch = response.match(/```json\s*([\s\S]*?)```/);
+            if (jsonMatch) {
+                const possibleJson = jsonMatch[1].trim();
+                if (possibleJson.includes('"questions"')) {
+                    jsonContent = possibleJson;
+                }
+            }
+        }
+        
+        // Method 3: Look for bare JSON object with questions array (common AI response format)
+        if (!jsonContent) {
+            // Match JSON object that contains "questions" array
+            const bareJsonMatch = response.match(/\{\s*"(?:contextSummary|questions)"[\s\S]*?"questions"\s*:\s*\[[\s\S]*?\]\s*\}/);
+            if (bareJsonMatch) {
+                jsonContent = bareJsonMatch[0];
+            }
+        }
+        
+        // Method 4: Try to find any JSON block that might contain questions
+        if (!jsonContent) {
+            const anyJsonMatch = response.match(/\{[\s\S]*?"questions"\s*:\s*\[[\s\S]*?\][\s\S]*?\}/);
+            if (anyJsonMatch) {
+                jsonContent = anyJsonMatch[0];
+            }
+        }
+        
+        if (!jsonContent) return null;
 
         try {
-            const parsed = JSON.parse(match[1].trim());
+            const parsed = JSON.parse(jsonContent);
             if (!parsed.questions || !Array.isArray(parsed.questions)) {
                 return null;
             }
@@ -787,6 +821,8 @@ ${acceptanceCriteria || 'Not specified'}
                 required: q.required !== false  // Default to true
             })).filter((q: ClarifyingQuestion) => q.question.length > 0);
 
+            console.log(`[RefinementSession] parseQuestionnaireBlock: Found ${questions.length} questions`);
+            
             return {
                 questions,
                 contextSummary: parsed.contextSummary || undefined
@@ -801,8 +837,19 @@ ${acceptanceCriteria || 'Not specified'}
      * Get text content outside the questionnaire block for display.
      */
     private getResponseWithoutQuestionnaire(response: string): string {
-        // Remove the questionnaire block but keep the rest of the response
-        return response.replace(/```questionnaire\s*[\s\S]*?```/g, '').trim();
+        // Remove questionnaire blocks in various formats
+        let cleaned = response;
+        
+        // Remove ```questionnaire ... ``` blocks
+        cleaned = cleaned.replace(/```questionnaire\s*[\s\S]*?```/g, '');
+        
+        // Remove ```json ... ``` blocks that contain questions
+        cleaned = cleaned.replace(/```json\s*[\s\S]*?"questions"\s*:[\s\S]*?```/g, '');
+        
+        // Remove bare JSON objects with questions (be careful not to remove valid content)
+        cleaned = cleaned.replace(/\{\s*"(?:contextSummary|questions)"[\s\S]*?"questions"\s*:\s*\[[\s\S]*?\]\s*\}/g, '');
+        
+        return cleaned.trim();
     }
 
     private parseAnalystResponse(response: string): RefinementTurn {

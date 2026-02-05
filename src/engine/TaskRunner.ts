@@ -1114,6 +1114,121 @@ ${originalPrompt}`;
         // Get refinement manager
         const refinementManager = getRefinementManager();
 
+        // ========================================
+        // SPEC-KIT: Constitution Lifecycle for Refinement
+        // (Same logic as Planning Mode for consistency)
+        // ========================================
+        const specManager = new SpecManager();
+        await specManager.initialize(workspaceRoot);
+        let constitution: string | undefined;
+        
+        // Check if constitution exists, generate if not (for non-empty workspaces)
+        if (specManager.hasConstitution()) {
+            constitution = specManager.getConstitution();
+            task.logs.push(`> [Constitution]: Found existing constitution`);
+            this._onTaskUpdate.fire({ taskId, task });
+        } else if (!specManager.isWorkspaceEmpty()) {
+            // Generate constitution for first-time workspace
+            task.logs.push(`> [Constitution]: No constitution found, generating...`);
+            this.updateStatus(taskId, 'planning', 10, 'Generating workspace constitution...');
+            specManager.setPhase(SpecPhase.CONSTITUTION_GENERATION);
+
+            try {
+                const harvester = new ContextHarvester();
+                const contextData = await harvester.scanWorkspace(workspaceRoot);
+                console.log(`[TaskRunner] Refinement Constitution: Context data length: ${contextData.length}`);
+                console.log(`[TaskRunner] Refinement Constitution: Context preview: ${contextData.substring(0, 500)}...`);
+
+                // IMPORTANT: Use top-tier models for constitution - it's the "brain" document
+                // Same logic as Planning Mode for consistency
+                let constitutionAI: GeminiClient | ClaudeClient | CopilotClaudeClient | CopilotGPTClient;
+                if (modelId.startsWith('gpt')) {
+                    console.log(`[TaskRunner] Refinement Constitution: Using Copilot GPT for generation`);
+                    const gptClient = new CopilotGPTClient();
+                    const initialized = await gptClient.initialize();
+                    if (!initialized) { throw new Error('Failed to initialize Copilot GPT for constitution'); }
+                    constitutionAI = gptClient;
+                } else if (isClaudeModel && useCopilotForClaude) {
+                    console.log(`[TaskRunner] Refinement Constitution: Using Copilot Claude for generation`);
+                    const copilotClient = new CopilotClaudeClient();
+                    const initialized = await copilotClient.initialize();
+                    if (!initialized) { throw new Error('Failed to initialize Copilot Claude for constitution'); }
+                    constitutionAI = copilotClient;
+                } else if (isClaudeModel && claudeApiKey) {
+                    const CLAUDE_CONSTITUTION_MODEL = 'claude-opus-4-20250514';
+                    console.log(`[TaskRunner] Refinement Constitution: Using ${CLAUDE_CONSTITUTION_MODEL} for generation`);
+                    constitutionAI = new ClaudeClient(claudeApiKey, CLAUDE_CONSTITUTION_MODEL);
+                } else if (geminiApiKey) {
+                    const GEMINI_CONSTITUTION_MODEL = 'gemini-3-pro-preview';
+                    console.log(`[TaskRunner] Refinement Constitution: Using ${GEMINI_CONSTITUTION_MODEL} for generation`);
+                    constitutionAI = new GeminiClient(geminiApiKey, GEMINI_CONSTITUTION_MODEL);
+                } else {
+                    // Fallback: use the already-initialized AI client
+                    console.log(`[TaskRunner] Refinement Constitution: Using task AI client for generation`);
+                    constitutionAI = aiClient;
+                }
+
+                // Generate constitution using AI
+                let finalConstitution = '';
+                const constitutionPrompt = specManager.getConstitutionGenerationPrompt();
+                console.log('[TaskRunner] Refinement Constitution: Starting AI generation...');
+
+                const constitutionSession = constitutionAI.startSession(constitutionPrompt, 'high');
+                const result = await constitutionSession.sendMessage(`Here is the workspace context:\n\n${contextData}`);
+                const responseObj = await result.response;
+                const constitutionContent = responseObj.text();
+
+                if (constitutionContent && constitutionContent.trim().length > 0) {
+                    finalConstitution = constitutionContent;
+                    console.log(`[TaskRunner] Refinement Constitution: AI generated (${finalConstitution.length} chars)`);
+                } else {
+                    // Fallback if AI returns empty
+                    console.log('[TaskRunner] Refinement Constitution: Using fallback with context data');
+                    finalConstitution = `# Workspace Constitution
+
+Generated automatically for: ${path.basename(workspaceRoot)}
+
+This constitution defines the rules and patterns for this workspace.
+
+${contextData}
+
+---
+*Constitution auto-generated from workspace scan*`;
+                    task.logs.push(`> [Constitution]: Using auto-generated constitution from workspace scan`);
+                }
+
+                // Save constitution with validation
+                console.log(`[TaskRunner] Refinement Constitution: Saving (${finalConstitution.length} chars)...`);
+                await specManager.saveConstitution(finalConstitution);
+                task.logs.push(`> [Constitution]: Generated and saved to ${specManager.getConstitutionPath()}`);
+
+                // Wait for user approval
+                specManager.setPhase(SpecPhase.CONSTITUTION_REVIEW);
+                const approved = await this.waitForApproval(taskId, 'constitution', finalConstitution);
+                if (!approved) {
+                    task.logs.push(`> [Constitution]: Rejected by user - refinement cancelled`);
+                    task.status = 'failed';
+                    this._onTaskUpdate.fire({ taskId, task });
+                    this.saveTask(task);
+                    return;
+                }
+                
+                // Reload the constitution (user may have edited it during review)
+                await specManager.reloadConstitution();
+                constitution = specManager.getConstitution();
+                task.logs.push(`> [Constitution]: Approved by user`);
+                this._onTaskUpdate.fire({ taskId, task });
+            } catch (constitutionError: any) {
+                console.error('[TaskRunner] Refinement Constitution generation failed:', constitutionError);
+                task.logs.push(`> [Constitution]: Generation failed: ${constitutionError.message}`);
+                task.logs.push(`> [Constitution]: Proceeding without constitution...`);
+                this._onTaskUpdate.fire({ taskId, task });
+            }
+        } else {
+            task.logs.push(`> [Constitution]: Workspace is empty, skipping constitution`);
+            this._onTaskUpdate.fire({ taskId, task });
+        }
+
         // Generate a session ID we can use for event filtering
         const sessionId = `refine-${taskId}-${Date.now()}`;
 
@@ -1261,23 +1376,43 @@ ${originalPrompt}`;
                     }
                 } else if (event.type === 'state-change') {
                     const newState = event.payload as string;
-                    task.logs.push(`> [Refinement]: State → ${newState}`);
+                    console.log(`[TaskRunner] Refinement state-change: ${newState}`);
                     
-                    // CRITICAL: When entering REFINING state, show active indicator and block input
-                    if (newState === 'REFINING') {
-                        task.logs.push(`\n⏳ **Refiner is drafting the PRD...**`);
+                    // Update task status and add visible progress logs for each stage
+                    // The UI will show each stage as a new bubble, with the latest one active
+                    // Format: [RefinementStage:STATE] message - UI will parse this specially
+                    
+                    if (newState === 'ANALYZING') {
+                        task.status = 'executing';
+                        task.progress = 15;
+                        task.logs.push(`[RefinementStage:ANALYZING] 🔍 Analyzing your request and generating clarifying questions...`);
+                    } else if (newState === 'DRAFTING') {
+                        task.status = 'executing';
+                        task.progress = 40;
+                        task.logs.push(`[RefinementStage:DRAFTING] 📝 Drafting requirements based on your input...`);
+                    } else if (newState === 'CRITIQUING') {
+                        task.status = 'executing';
+                        task.progress = 50;
+                        task.logs.push(`[RefinementStage:CRITIQUING] 🔍 Critic is reviewing the draft...`);
+                    } else if (newState === 'REFINING') {
+                        task.status = 'executing';
+                        task.progress = 60;
+                        task.logs.push(`[RefinementStage:REFINING] ⏳ Refiner is generating the final PRD...`);
                         task.logs.push(`> Please wait while the final PRD is being generated. This may take 1-2 minutes.`);
                         task.logs.push(`> ⚠️ **Do not send messages** until the PRD is ready for review.`);
-                        task.logs.push(`> You will be able to request changes once the draft is complete.\n`);
                         
                         // Set a flag to indicate refiner is working (block user input)
                         (task as any)._refinerInProgress = true;
-                        
-                        // Update status to show user the system is busy
-                        this.updateStatus(taskId, 'executing', 60, '⏳ Refiner drafting PRD - please wait...');
                     } else if (newState === 'AWAITING_USER') {
                         // Clear the refiner in progress flag when we're ready for user input
                         delete (task as any)._refinerInProgress;
+                        
+                        // Set to awaiting-approval - this will show bubble as completed (correct when waiting)
+                        task.status = 'awaiting-approval';
+                        task.awaitingApproval = {
+                            type: 'plan',
+                            content: 'Refinement session in progress. Reply to provide clarifications or type "approve" to approve the PRD.'
+                        };
                     }
                 } else if (event.type === 'progress') {
                     task.logs.push(`> [Refinement]: ${event.payload}`);
@@ -1292,7 +1427,8 @@ ${originalPrompt}`;
 
         task.logs.push(`> [Refinement]: Starting session...`);
         task.logs.push('\n---\n');
-        task.logs.push('**Analyst**: Analyzing your request to ask clarifying questions...');
+        // Status will be updated to 'executing' when state-change events fire (ANALYZING, DRAFTING, etc.)
+        // Each state change will add a visible progress bubble
         this._onTaskUpdate.fire({ taskId, task });
 
         try {
@@ -1303,27 +1439,25 @@ ${originalPrompt}`;
             // 3. Provide full content for highly relevant files, skeleton for structure
             // 4. Stay within token budget
             // CRITICAL: Pass workspaceRoot to ensure we ONLY search the selected workspace
+            // Also pass constitution so PRD respects workspace rules
             const actualSessionId = await refinementManager.startSessionWithSmartContext(
                 taskId,
                 task.prompt,
                 aiClient,
                 workspaceRoot,  // CRITICAL: Only search within this workspace
-                task.model  // Pass model ID for token budget calculation
+                task.model,  // Pass model ID for token budget calculation
+                constitution  // Pass constitution for constraint-aware PRD generation
             );
 
-            task.logs.push(`> [Refinement]: Session ${actualSessionId} started with smart context for ${workspaceRoot}`);
-            this._onTaskUpdate.fire({ taskId, task });
+            // Log session start to console only - don't add to task.logs to keep content bubble as last log
+            console.log(`[TaskRunner] Refinement session ${actualSessionId} started with smart context for ${workspaceRoot}`);
             this.saveTask(task);
 
             // The session is now running - user replies will come through replyToTask
             // When approved, onRefinementComplete will fire and call transitionFromRefinementToPlanning
-            task.status = 'awaiting-approval';
-            task.awaitingApproval = {
-                type: 'plan',
-                content: 'Refinement session in progress. Reply to provide clarifications or type "approve" to approve the PRD.'
-            };
-            this._onTaskUpdate.fire({ taskId, task });
-            this.saveTask(task);
+            // NOTE: Status transitions are now handled by state-change events in the event handler above
+            // This keeps chat bubbles active (rainbow/pulse) during processing phases (ANALYZING, DRAFTING, etc.)
+            // and only shows them as completed when actually waiting for user input (AWAITING_USER state)
 
         } catch (error: any) {
             console.error('[TaskRunner] Refinement session failed:', error);
@@ -1578,6 +1712,9 @@ ${contextData}
                     if (!approved) {
                         throw new Error('Constitution rejected by user - mission cancelled');
                     }
+                    
+                    // Reload the constitution (user may have edited it during review)
+                    await specManager.reloadConstitution();
                     task.logs.push(`> [Constitution]: Approved by user`);
                 } else {
                     // Existing constitution - check for drift

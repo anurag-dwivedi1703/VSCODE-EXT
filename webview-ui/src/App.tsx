@@ -264,6 +264,40 @@ function parseLogs(
             systemGroup.details?.push(log);
         }
         // ========== REFINEMENT MODE LOGS ==========
+        // Refinement Stage Progress (e.g., [RefinementStage:ANALYZING] message)
+        // These show the current processing stage with active animations
+        else if (log.startsWith('[RefinementStage:')) {
+            commitStep();
+            commitSystem();
+            
+            // Parse stage and message: [RefinementStage:ANALYZING] 🔍 Analyzing...
+            const stageMatch = log.match(/^\[RefinementStage:(\w+)\]\s*(.*)$/);
+            const stage = stageMatch ? stageMatch[1] : 'PROCESSING';
+            const message = stageMatch ? stageMatch[2] : log;
+            
+            // Determine title based on stage
+            const stageTitle = stage === 'ANALYZING' ? '🔍 Analyzing Request' :
+                              stage === 'DRAFTING' ? '📝 Drafting Requirements' :
+                              stage === 'CRITIQUING' ? '🔍 Reviewing Draft' :
+                              stage === 'REFINING' ? '⏳ Generating Final PRD' :
+                              '⏳ Processing...';
+            
+            // This stage bubble should be 'running' if:
+            // 1. It's the last log AND
+            // 2. Agent is actively working
+            const isLastLog = i === logs.length - 1;
+            const shouldBeRunning = isLastLog && isAgentActivelyWorking;
+            
+            currentStep = {
+                type: 'step',
+                content: 'Refinement',
+                title: stageTitle,
+                markdown: message,
+                tools: [],
+                artifacts: [],
+                status: shouldBeRunning ? 'running' : 'completed'
+            };
+        }
         // Analyst/System responses (Refinement Mode)
         else if (log.match(/^\*\*(Analyst|System)\*\*:/i) || log.startsWith('**Analyst Questions:**') || log.startsWith('**Clarifying Questions:**') || log.startsWith('**Draft PRD:**') || log.startsWith('**Critic Feedback:**') || log.startsWith('**Critic Review:**') || log.startsWith('**Final PRD Ready**')) {
             commitStep();
@@ -300,33 +334,12 @@ function parseLogs(
         }
         // Refinement State/System Messages (e.g., > [Refinement]:)
         else if (log.startsWith('> [Refinement]') || log.startsWith('> [Context]:') || log.includes('[Refinement]')) {
-            // Check if this is a "processing" message - should show as running with animation
-            const isProcessing = log.includes('Processing') || log.includes('processing');
-            const isLastLog = i === logs.length - 1;
-            
-            if (isProcessing) {
-                commitStep();
-                commitSystem();
-                // Step should be 'running' if it's the last log AND agent is actively working
-                const shouldBeRunning = isLastLog && isAgentActivelyWorking;
-                
-                // Create a step with running status for processing messages
-                currentStep = {
-                    type: 'step',
-                    content: 'Refinement',
-                    title: '⏳ Processing...',
-                    markdown: log.replace(/^>\s*\[Refinement\]:\s*/i, ''),
-                    tools: [],
-                    artifacts: [],
-                    status: shouldBeRunning ? 'running' : 'completed'
-                };
-            } else {
-                commitStep();
-                if (!systemGroup) {
-                    systemGroup = { type: 'system', content: 'Refinement Mode', details: [] };
-                }
-                systemGroup.details?.push(log);
+            // These are system/debug logs - append to system group, don't create step bubbles
+            commitStep();
+            if (!systemGroup) {
+                systemGroup = { type: 'system', content: 'Refinement Mode', details: [] };
             }
+            systemGroup.details?.push(log);
         }
         // Generic markdown content - fallback for any unmatched content that looks like markdown
         else if (log.trim().length > 0 && (log.includes('**') || log.startsWith('##') || log.startsWith('#') || log.startsWith('- ') || log.startsWith('1.'))) {

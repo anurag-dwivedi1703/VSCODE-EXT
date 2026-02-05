@@ -2,12 +2,22 @@ import * as React from 'react';
 import { useState, useCallback, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 
+interface CorporateGuidelinesConfig {
+    security: boolean;
+    performance: boolean;
+    maintainability: boolean;
+    testing: boolean;
+    accessibility: boolean;
+}
+
 interface ConstitutionReviewModalProps {
     content: string;
     type: 'constitution' | 'constitution-update' | 'constitution-drift';
     taskId: string;
-    onApprove: (editedContent?: string) => void;
+    corporateGuidelines?: CorporateGuidelinesConfig;
+    onApprove: (editedContent?: string, guidelinesConfig?: CorporateGuidelinesConfig) => void;
     onReject: () => void;
+    onGuidelinesChange?: (config: CorporateGuidelinesConfig) => void;
 }
 
 // Rule templates for quick additions
@@ -120,17 +130,48 @@ const CUSTOM_RULE_PLACEHOLDERS = {
  * Modal component for reviewing and editing workspace constitution.
  * Enhanced with rule templates, quick-add buttons, and better UX.
  */
+// Default guidelines config
+const DEFAULT_GUIDELINES: CorporateGuidelinesConfig = {
+    security: true,
+    performance: true,
+    maintainability: false,
+    testing: false,
+    accessibility: false
+};
+
+// Guidelines info for display
+const GUIDELINES_INFO = {
+    security: { name: 'Security', icon: '🔒', description: 'OWASP-based security best practices', count: 8 },
+    performance: { name: 'Performance', icon: '⚡', description: 'Performance optimization patterns', count: 7 },
+    maintainability: { name: 'Maintainability', icon: '🧹', description: 'SOLID principles & clean code', count: 10 },
+    testing: { name: 'Testing', icon: '🧪', description: 'Testing best practices', count: 5 },
+    accessibility: { name: 'Accessibility', icon: '♿', description: 'WCAG accessibility guidelines', count: 4 }
+};
+
 export const ConstitutionReviewModal: React.FC<ConstitutionReviewModalProps> = ({
     content,
     type,
+    corporateGuidelines,
     onApprove,
-    onReject
+    onReject,
+    onGuidelinesChange
 }) => {
     const [isEditing, setIsEditing] = useState(false);
     const [editedContent, setEditedContent] = useState(content);
     const [showTemplates, setShowTemplates] = useState(false);
+    const [showGuidelines, setShowGuidelines] = useState(false);
     const [selectedCategory, setSelectedCategory] = useState<'MUST' | 'MUST NOT' | 'SHOULD'>('MUST');
     const [customRuleText, setCustomRuleText] = useState('');
+    const [guidelinesConfig, setGuidelinesConfig] = useState<CorporateGuidelinesConfig>(
+        corporateGuidelines || DEFAULT_GUIDELINES
+    );
+
+    // Update guidelines and notify parent
+    const toggleGuideline = useCallback((key: keyof CorporateGuidelinesConfig) => {
+        const newConfig = { ...guidelinesConfig, [key]: !guidelinesConfig[key] };
+        setGuidelinesConfig(newConfig);
+        onGuidelinesChange?.(newConfig);
+    }, [guidelinesConfig, onGuidelinesChange]);
 
     const getTitle = () => {
         switch (type) {
@@ -211,11 +252,14 @@ export const ConstitutionReviewModal: React.FC<ConstitutionReviewModalProps> = (
 
     const handleApprove = () => {
         if (isEditing) {
-            onApprove(editedContent);
+            onApprove(editedContent, guidelinesConfig);
         } else {
-            onApprove();
+            onApprove(undefined, guidelinesConfig);
         }
     };
+
+    // Count enabled guidelines
+    const enabledGuidelinesCount = Object.values(guidelinesConfig).filter(Boolean).length;
 
     // Calculate rule counts for stats display
     const ruleStats = useMemo(() => {
@@ -311,6 +355,49 @@ export const ConstitutionReviewModal: React.FC<ConstitutionReviewModalProps> = (
                     </div>
                 )}
 
+                {/* Corporate Guidelines Panel */}
+                {showGuidelines && (
+                    <div className="constitution-guidelines-panel">
+                        <div className="guidelines-header">
+                            <h3>Corporate Guidelines</h3>
+                            <span className="guidelines-subtitle">
+                                Industry best practices applied to agent constraints
+                            </span>
+                        </div>
+                        
+                        <div className="guidelines-grid">
+                            {(Object.keys(GUIDELINES_INFO) as Array<keyof typeof GUIDELINES_INFO>).map(key => {
+                                const info = GUIDELINES_INFO[key];
+                                const isEnabled = guidelinesConfig[key];
+                                
+                                return (
+                                    <button
+                                        key={key}
+                                        className={`guideline-btn ${isEnabled ? 'enabled' : 'disabled'}`}
+                                        onClick={() => toggleGuideline(key)}
+                                        title={info.description}
+                                    >
+                                        <div className="guideline-icon">{info.icon}</div>
+                                        <div className="guideline-content">
+                                            <span className="guideline-name">{info.name}</span>
+                                            <span className="guideline-count">{info.count} rules</span>
+                                        </div>
+                                        <div className="guideline-toggle">
+                                            {isEnabled ? '✓' : '○'}
+                                        </div>
+                                    </button>
+                                );
+                            })}
+                        </div>
+                        
+                        <div className="guidelines-footer">
+                            <span className="guidelines-note">
+                                {enabledGuidelinesCount} guideline set{enabledGuidelinesCount !== 1 ? 's' : ''} enabled
+                            </span>
+                        </div>
+                    </div>
+                )}
+
                 {/* Main Content */}
                 <div className="constitution-modal-content">
                     {isEditing ? (
@@ -333,9 +420,15 @@ export const ConstitutionReviewModal: React.FC<ConstitutionReviewModalProps> = (
                     <div className="actions-left">
                         <button
                             className="constitution-btn constitution-btn-templates"
-                            onClick={() => setShowTemplates(!showTemplates)}
+                            onClick={() => { setShowTemplates(!showTemplates); setShowGuidelines(false); }}
                         >
                             {showTemplates ? '📋 Hide Templates' : '📋 Add Rules'}
+                        </button>
+                        <button
+                            className="constitution-btn constitution-btn-guidelines"
+                            onClick={() => { setShowGuidelines(!showGuidelines); setShowTemplates(false); }}
+                        >
+                            {showGuidelines ? '🏢 Hide Guidelines' : `🏢 Guidelines (${enabledGuidelinesCount})`}
                         </button>
                         <button
                             className="constitution-btn constitution-btn-edit"
@@ -523,6 +616,103 @@ export const ConstitutionReviewModal: React.FC<ConstitutionReviewModalProps> = (
                 
                 .constitution-btn-templates:hover {
                     background: var(--vscode-button-secondaryHoverBackground);
+                }
+                
+                .constitution-btn-guidelines {
+                    background: var(--vscode-button-secondaryBackground);
+                    color: var(--vscode-button-secondaryForeground);
+                }
+                
+                .constitution-btn-guidelines:hover {
+                    background: var(--vscode-button-secondaryHoverBackground);
+                }
+                
+                .constitution-guidelines-panel {
+                    border-bottom: 1px solid var(--vscode-panel-border);
+                    padding: 16px;
+                    background: var(--vscode-editor-inactiveSelectionBackground);
+                }
+                
+                .guidelines-header {
+                    margin-bottom: 12px;
+                }
+                
+                .guidelines-header h3 {
+                    margin: 0 0 4px 0;
+                    font-size: 14px;
+                    font-weight: 500;
+                }
+                
+                .guidelines-subtitle {
+                    font-size: 12px;
+                    opacity: 0.7;
+                }
+                
+                .guidelines-grid {
+                    display: grid;
+                    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+                    gap: 8px;
+                    margin-bottom: 12px;
+                }
+                
+                .guideline-btn {
+                    display: flex;
+                    align-items: center;
+                    gap: 10px;
+                    padding: 10px 12px;
+                    border: 1px solid var(--vscode-panel-border);
+                    background: var(--vscode-editor-background);
+                    color: var(--vscode-foreground);
+                    border-radius: 6px;
+                    cursor: pointer;
+                    transition: all 0.2s;
+                    text-align: left;
+                }
+                
+                .guideline-btn:hover {
+                    border-color: var(--vscode-focusBorder);
+                    background: var(--vscode-list-hoverBackground);
+                }
+                
+                .guideline-btn.enabled {
+                    border-color: var(--vscode-inputValidation-infoBorder);
+                    background: var(--vscode-inputValidation-infoBackground);
+                }
+                
+                .guideline-icon {
+                    font-size: 20px;
+                }
+                
+                .guideline-content {
+                    flex: 1;
+                    display: flex;
+                    flex-direction: column;
+                    gap: 2px;
+                }
+                
+                .guideline-name {
+                    font-weight: 500;
+                    font-size: 13px;
+                }
+                
+                .guideline-count {
+                    font-size: 11px;
+                    opacity: 0.7;
+                }
+                
+                .guideline-toggle {
+                    font-size: 14px;
+                    width: 20px;
+                    text-align: center;
+                }
+                
+                .guideline-btn.enabled .guideline-toggle {
+                    color: var(--vscode-charts-green);
+                }
+                
+                .guidelines-footer {
+                    font-size: 12px;
+                    opacity: 0.7;
                 }
                 
                 .constitution-editor {

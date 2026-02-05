@@ -6,7 +6,105 @@
  * - Maieutic Prompting (Socratic questioning)
  * - Design Parameter Validation Matrix
  * - Markdown PRD + Gherkin hybrid output format
+ * - Constitution-aware requirement generation
  */
+
+// ========================================
+// CONSTITUTION CONTEXT INJECTION
+// ========================================
+
+/**
+ * Format constitution content for injection into refinement prompts.
+ * This ensures PRDs respect workspace rules and constraints.
+ */
+export function formatConstitutionForRefinement(constitution?: string): string {
+    if (!constitution || constitution.trim().length === 0) {
+        return '';
+    }
+
+    // Extract key sections from constitution for refinement context
+    // We want a concise summary, not the full constitution
+    const sections: string[] = [];
+
+    // Extract MUST rules
+    const mustMatch = constitution.match(/### MUST[\s\S]*?(?=###|## \d|$)/i);
+    if (mustMatch) {
+        const mustRules = mustMatch[0]
+            .split('\n')
+            .filter(line => line.trim().startsWith('-') || line.trim().startsWith('✅'))
+            .slice(0, 5)
+            .map(line => line.replace(/^[-✅]\s*/, '- '))
+            .join('\n');
+        if (mustRules.trim()) {
+            sections.push(`**MUST follow:**\n${mustRules}`);
+        }
+    }
+
+    // Extract MUST NOT rules
+    const mustNotMatch = constitution.match(/### MUST NOT[\s\S]*?(?=###|## \d|$)/i);
+    if (mustNotMatch) {
+        const mustNotRules = mustNotMatch[0]
+            .split('\n')
+            .filter(line => line.trim().startsWith('-') || line.trim().startsWith('❌'))
+            .slice(0, 5)
+            .map(line => line.replace(/^[-❌]\s*/, '- '))
+            .join('\n');
+        if (mustNotRules.trim()) {
+            sections.push(`**MUST NOT do:**\n${mustNotRules}`);
+        }
+    }
+
+    // Extract critical dependencies
+    const depsMatch = constitution.match(/## 2\. Critical Dependencies[\s\S]*?(?=## \d|$)/i);
+    if (depsMatch) {
+        const depsTable = depsMatch[0]
+            .split('\n')
+            .filter(line => line.includes('|') && !line.includes('---') && !line.includes('Package'))
+            .slice(0, 3)
+            .join('\n');
+        if (depsTable.trim()) {
+            sections.push(`**Critical Dependencies (do not modify):**\n${depsTable}`);
+        }
+    }
+
+    // Extract forbidden patterns
+    const forbiddenMatch = constitution.match(/## 5\. Forbidden Patterns[\s\S]*?(?=## \d|$)/i);
+    if (forbiddenMatch) {
+        const forbidden = forbiddenMatch[0]
+            .split('\n')
+            .filter(line => line.trim().startsWith('-') || line.trim().startsWith('❌'))
+            .slice(0, 3)
+            .map(line => line.replace(/^[-❌]\s*/, '- '))
+            .join('\n');
+        if (forbidden.trim()) {
+            sections.push(`**Forbidden patterns:**\n${forbidden}`);
+        }
+    }
+
+    // Extract architecture pattern
+    const archMatch = constitution.match(/\*\*Pattern\*\*:\s*([^\n]+)/i);
+    if (archMatch) {
+        sections.push(`**Architecture:** ${archMatch[1].trim()}`);
+    }
+
+    if (sections.length === 0) {
+        return '';
+    }
+
+    return `
+═══════════════════════════════════════════════════════════════════════════════
+🔒 WORKSPACE CONSTITUTION - Requirements MUST respect these constraints
+═══════════════════════════════════════════════════════════════════════════════
+
+${sections.join('\n\n')}
+
+⚠️ Any requirements you generate MUST NOT violate these rules. If the user
+requests something that conflicts with the constitution, point out the conflict
+and suggest alternatives that comply with the established patterns.
+
+═══════════════════════════════════════════════════════════════════════════════
+`;
+}
 
 /**
  * The Analyst persona - elicits requirements using Maieutic Prompting.
@@ -46,9 +144,9 @@ export const ANALYST_SYSTEM_PROMPT = `You are an expert Technical Product Manage
    - Non-Functional Requirements
    - Acceptance Criteria
 
-## Question Format
+## Question Format - CRITICAL
 
-When asking clarifying questions, output them in a structured JSON block that enables interactive UI:
+⚠️ **MANDATORY FORMAT**: When asking clarifying questions, you MUST use EXACTLY this format with the \`\`\`questionnaire code fence. Other formats (bare JSON, \`\`\`json, etc.) will NOT be recognized by the UI.
 
 \`\`\`questionnaire
 {
@@ -59,7 +157,7 @@ When asking clarifying questions, output them in a structured JSON block that en
       "question": "What authentication method should be used?",
       "category": "technical",
       "options": ["OAuth 2.0", "JWT tokens", "Session-based", "Other"],
-      "allowMultiple": false,
+      "inputType": "select",
       "required": true
     },
     {
@@ -67,7 +165,7 @@ When asking clarifying questions, output them in a structured JSON block that en
       "question": "Should this support multiple file uploads simultaneously?",
       "category": "requirement",
       "options": ["Yes, batch upload", "No, single file only"],
-      "allowMultiple": false,
+      "inputType": "select",
       "required": true
     },
     {
@@ -81,6 +179,8 @@ When asking clarifying questions, output them in a structured JSON block that en
   ]
 }
 \`\`\`
+
+⚠️ IMPORTANT: The opening fence MUST be exactly \`\`\`questionnaire (not \`\`\`json or bare JSON).
 
 Question format guidelines:
 - **id**: Unique identifier like "q1", "q2", etc.
@@ -268,6 +368,8 @@ ${skeletonContext}
 4. If you need more context about specific files, include that in your questions (e.g., "Could you share the implementation of AuthService.ts so I can understand the current authentication flow?")
 5. If enough information exists, draft an initial PRD.
 
+⚠️ REMINDER: When asking questions, you MUST use the \`\`\`questionnaire code fence format (NOT \`\`\`json or bare JSON). This is required for the UI to display the questions correctly.
+
 Begin by asking the most critical clarifying questions.`;
 }
 
@@ -349,13 +451,14 @@ NOTE: If you need implementation details of specific files to properly analyze, 
    - Functional Requirements (numbered list)
    - Non-Functional Requirements (bullet points)
 
-## Question Format
-Output questions in structured JSON:
+## Question Format - MANDATORY
+⚠️ You MUST use EXACTLY this format with \`\`\`questionnaire fence (NOT \`\`\`json or bare JSON):
+
 \`\`\`questionnaire
 {
   "contextSummary": "Brief analysis summary",
   "questions": [
-    {"id": "q1", "question": "Question text?", "category": "technical|requirement|constraint|preference", "options": ["Option A", "Option B"], "required": true},
+    {"id": "q1", "question": "Question text?", "category": "technical", "options": ["Option A", "Option B"], "inputType": "select", "required": true},
     {"id": "q2", "question": "Open question?", "category": "constraint", "inputType": "text", "placeholder": "hint...", "required": false}
   ]
 }
