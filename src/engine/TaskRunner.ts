@@ -3,6 +3,7 @@ import { GeminiClient, ISession } from '../ai/GeminiClient';
 import { ClaudeClient } from '../ai/ClaudeClient';
 import { CopilotClaudeClient } from '../ai/CopilotClaudeClient';
 import { CopilotGPTClient } from '../ai/CopilotGPTClient';
+import { CopilotGeminiClient } from '../ai/CopilotGeminiClient';
 import { Part } from '@google/generative-ai';
 import { WorktreeManager } from './WorktreeManager';
 import { AgentTools } from './AgentTools';
@@ -31,7 +32,8 @@ interface TaskContext {
     gemini?: GeminiClient;
     claude?: ClaudeClient;
     copilotClaude?: CopilotClaudeClient;
-    copilotGPT?: CopilotGPTClient;  // GPT-5-mini via Copilot
+    copilotGPT?: CopilotGPTClient;  // GPT models via Copilot
+    copilotGemini?: CopilotGeminiClient;  // Gemini models via Copilot
     diffAggregator?: DiffAggregator;  // Aggregates multiple diffs to same file
     tokenManager?: TokenManager;  // Unified token budget management
     ruleEnforcer?: RuleEnforcer;  // Constitution rule enforcement
@@ -338,6 +340,54 @@ Please complete the login in the browser window, then click **"I've Logged In"**
             } catch (error: any) {
                 console.error('[TaskRunner] Error handling questionnaire submission:', error);
                 task.logs.push(`> [Error]: Failed to process answers: ${error.message}`);
+                this._onTaskUpdate.fire({ taskId, task });
+            }
+        } else {
+            console.error(`[TaskRunner] No refinement session found for task ${taskId}`);
+            task.logs.push(`> [Error]: Refinement session not found. Please try again.`);
+            this._onTaskUpdate.fire({ taskId, task });
+        }
+    }
+
+    /**
+     * Handle questionnaire skip - user chose "Skip for Now".
+     * Sends a skip message to the refinement session so it proceeds without answers.
+     */
+    public async handleQuestionnaireSkip(taskId: string, sessionId: string): Promise<void> {
+        const task = this.tasks.get(taskId);
+        if (!task) {
+            console.error(`[TaskRunner] handleQuestionnaireSkip: Task not found: ${taskId}`);
+            return;
+        }
+
+        // CRITICAL: Block input while refiner is working
+        if ((task as any)._refinerInProgress) {
+            task.logs.push(`\n⚠️ **Please wait** - The Refiner is currently drafting the PRD.`);
+            this._onTaskUpdate.fire({ taskId, task });
+            return;
+        }
+
+        console.log(`[TaskRunner] User skipped questionnaire for task ${taskId}, session ${sessionId}`);
+
+        const message = `User skipped the clarifying questions. Proceed with the information you already have from the codebase context and the original request. Generate a PRD draft based on your best analysis. Make reasonable assumptions where needed and note them in the PRD.`;
+
+        // Log the skip
+        task.logs.push(`\n**System**: User skipped clarifying questions - proceeding with available information.`);
+        this._onTaskUpdate.fire({ taskId, task });
+
+        // Route to refinement manager
+        const refinementManager = getRefinementManager();
+        const actualSessionId = refinementManager.getSessionForTask(taskId);
+
+        if (actualSessionId) {
+            try {
+                task.logs.push('\n> [Refinement]: Proceeding without additional clarification...');
+                this._onTaskUpdate.fire({ taskId, task });
+
+                await refinementManager.handleUserMessage(actualSessionId, message);
+            } catch (error: any) {
+                console.error('[TaskRunner] Error handling questionnaire skip:', error);
+                task.logs.push(`> [Error]: Failed to proceed: ${error.message}`);
                 this._onTaskUpdate.fire({ taskId, task });
             }
         } else {
@@ -806,38 +856,18 @@ Please complete the login in the browser window, then click **"I've Logged In"**
         task.logs.push(`**System**: Model changed from ${oldModel} to ${newModel}`);
 
         // Re-initialize client for the new model in the TASK CONTEXT
-        const config = vscode.workspace.getConfiguration('vibearchitect');
-        const isClaudeModel = newModel.startsWith('claude');
-        const useCopilotForClaude = config.get<boolean>('useCopilotForClaude') || false;
-
         const context = this.taskContexts.get(taskId);
         if (!context) {
-            // Should not happen if task is running, but if it is paused/zombie, we might strictly need it?
-            // If context is missing, we can't really update the client instance.
-            // But we can clear the old session.
             console.warn(`[TaskRunner] Context missing for task ${taskId} during model change.`);
         } else {
-            // Reset clients in context
+            // Reset ALL clients in context - the execution loop will recreate with the new model
             context.gemini = undefined;
             context.claude = undefined;
             context.copilotClaude = undefined;
+            context.copilotGPT = undefined;
+            context.copilotGemini = undefined;
 
-            if (isClaudeModel) {
-                if (useCopilotForClaude) {
-                    // Copilot Claude
-                    task.logs.push(`**System**: Switching to Claude via Copilot...`);
-                    // initialized later
-                } else {
-                    const claudeApiKey = config.get<string>('claudeApiKey') || '';
-                    if (!claudeApiKey) {
-                        task.logs.push(`**System**: Error - Claude API key not configured`);
-                    } else {
-                        // We can't really set specific client here easily without async init for Copilot
-                        // So we just clear it, and processTask loop will recreate it if needed?
-                        // Actually changeModel is sync.
-                    }
-                }
-            }
+            task.logs.push(`**System**: Switching to ${newModel}...`);
         }
 
         // Clear old session so next message creates new one with new model
@@ -1075,15 +1105,16 @@ ${originalPrompt}`;
         const claudeApiKey = config.get<string>('claudeApiKey') || '';
         const useCopilotForClaude = config.get<boolean>('useCopilotForClaude') || false;
 
-        let aiClient: GeminiClient | ClaudeClient | CopilotClaudeClient | CopilotGPTClient;
+        let aiClient: GeminiClient | ClaudeClient | CopilotClaudeClient | CopilotGPTClient | CopilotGeminiClient;
         const isClaudeModel = modelId.startsWith('claude');
         const isGPTModel = modelId.startsWith('gpt');
+        const isGeminiCopilotModel = modelId.startsWith('gemini');
 
         if (isClaudeModel) {
             if (useCopilotForClaude) {
                 console.log('[TaskRunner] Initializing CopilotClaudeClient for Refinement Mode...');
                 aiClient = new CopilotClaudeClient();
-                const initialized = await aiClient.initialize();
+                const initialized = await aiClient.initialize(modelId);
                 if (!initialized) {
                     task.logs.push('> [Error]: Failed to initialize Copilot Claude. Ensure GitHub Copilot is installed and you have an active subscription.');
                     task.status = 'failed';
@@ -1098,7 +1129,7 @@ ${originalPrompt}`;
         } else if (isGPTModel) {
             console.log('[TaskRunner] Initializing CopilotGPTClient for Refinement Mode...');
             aiClient = new CopilotGPTClient();
-            const initialized = await aiClient.initialize();
+            const initialized = await aiClient.initialize(modelId);
             if (!initialized) {
                 task.logs.push('> [Error]: Failed to initialize Copilot GPT. Ensure GitHub Copilot is installed and you have an active subscription.');
                 task.status = 'failed';
@@ -1107,6 +1138,18 @@ ${originalPrompt}`;
                 return;
             }
             console.log('[TaskRunner] CopilotGPTClient initialized successfully');
+        } else if (isGeminiCopilotModel) {
+            console.log('[TaskRunner] Initializing CopilotGeminiClient for Refinement Mode...');
+            aiClient = new CopilotGeminiClient();
+            const initialized = await aiClient.initialize(modelId);
+            if (!initialized) {
+                task.logs.push('> [Error]: Failed to initialize Copilot Gemini. Ensure GitHub Copilot is installed and you have an active subscription.');
+                task.status = 'failed';
+                this._onTaskUpdate.fire({ taskId, task });
+                this.saveTask(task);
+                return;
+            }
+            console.log('[TaskRunner] CopilotGeminiClient initialized successfully');
         } else {
             aiClient = new GeminiClient(geminiApiKey, modelId);
         }
@@ -1141,17 +1184,32 @@ ${originalPrompt}`;
 
                 // IMPORTANT: Use top-tier models for constitution - it's the "brain" document
                 // Same logic as Planning Mode for consistency
-                let constitutionAI: GeminiClient | ClaudeClient | CopilotClaudeClient | CopilotGPTClient;
+                let constitutionAI: GeminiClient | ClaudeClient | CopilotClaudeClient | CopilotGPTClient | CopilotGeminiClient;
                 if (modelId.startsWith('gpt')) {
                     console.log(`[TaskRunner] Refinement Constitution: Using Copilot GPT for generation`);
                     const gptClient = new CopilotGPTClient();
-                    const initialized = await gptClient.initialize();
+                    const initialized = await gptClient.initialize(modelId);
                     if (!initialized) { throw new Error('Failed to initialize Copilot GPT for constitution'); }
                     constitutionAI = gptClient;
+                } else if (modelId.startsWith('gemini')) {
+                    console.log(`[TaskRunner] Refinement Constitution: Using Copilot Gemini for generation`);
+                    const geminiCopilotClient = new CopilotGeminiClient();
+                    const initialized = await geminiCopilotClient.initialize(modelId);
+                    if (!initialized) {
+                        // Fallback to API Gemini if available
+                        if (geminiApiKey) {
+                            console.log(`[TaskRunner] Refinement Constitution: Falling back to Gemini API`);
+                            constitutionAI = new GeminiClient(geminiApiKey, modelId);
+                        } else {
+                            throw new Error('Failed to initialize Copilot Gemini for constitution');
+                        }
+                    } else {
+                        constitutionAI = geminiCopilotClient;
+                    }
                 } else if (isClaudeModel && useCopilotForClaude) {
                     console.log(`[TaskRunner] Refinement Constitution: Using Copilot Claude for generation`);
                     const copilotClient = new CopilotClaudeClient();
-                    const initialized = await copilotClient.initialize();
+                    const initialized = await copilotClient.initialize(modelId);
                     if (!initialized) { throw new Error('Failed to initialize Copilot Claude for constitution'); }
                     constitutionAI = copilotClient;
                 } else if (isClaudeModel && claudeApiKey) {
@@ -1510,11 +1568,14 @@ ${contextData}
             // Select AI client based on model
             const modelId = task.model || 'gemini-3-pro-preview';
             const isClaudeModel = modelId.startsWith('claude');
+            const isGPTModel = modelId.startsWith('gpt');
+            const isGeminiCopilotModel = modelId.startsWith('gemini');
             const useCopilotForClaude = config.get<boolean>('useCopilotForClaude') || false;
 
             // Client initialization moved down to use TaskContext
 
-            this.updateStatus(taskId, 'planning', 5, `Initializing ${isClaudeModel ? 'Claude' : 'Gemini'} Agent...`);
+            const modelLabel = isClaudeModel ? 'Claude' : isGPTModel ? 'GPT' : isGeminiCopilotModel ? 'Gemini' : 'AI';
+            this.updateStatus(taskId, 'planning', 5, `Initializing ${modelLabel} Agent...`);
 
             // Step 1: Determine Workspace
             // Priority: Explicitly provided path > Active VS Code Workspace > Error
@@ -1629,33 +1690,43 @@ ${contextData}
 
                     // We need an AI client to generate the constitution
                     // IMPORTANT: Always use top-tier models for constitution - it's the "brain" document
-                    let constitutionAI: GeminiClient | ClaudeClient | CopilotClaudeClient | CopilotGPTClient;
-                    if (modelId.startsWith('gpt')) {
-                        // User selected GPT-5-mini via Copilot
+                    let constitutionAI: GeminiClient | ClaudeClient | CopilotClaudeClient | CopilotGPTClient | CopilotGeminiClient;
+                    if (isGPTModel) {
                         console.log(`[TaskRunner] Constitution: Using Copilot GPT for generation`);
                         const gptClient = new CopilotGPTClient();
-                        const initialized = await gptClient.initialize();
+                        const initialized = await gptClient.initialize(modelId);
                         if (!initialized) { throw new Error('Failed to initialize Copilot GPT for constitution'); }
                         constitutionAI = gptClient;
+                    } else if (isGeminiCopilotModel) {
+                        console.log(`[TaskRunner] Constitution: Using Copilot Gemini for generation`);
+                        const geminiCopilotClient = new CopilotGeminiClient();
+                        const initialized = await geminiCopilotClient.initialize(modelId);
+                        if (!initialized) {
+                            if (geminiApiKey) {
+                                console.log(`[TaskRunner] Constitution: Falling back to Gemini API`);
+                                constitutionAI = new GeminiClient(geminiApiKey, modelId);
+                            } else {
+                                throw new Error('Failed to initialize Copilot Gemini for constitution');
+                            }
+                        } else {
+                            constitutionAI = geminiCopilotClient;
+                        }
                     } else if (isClaudeModel && useCopilotForClaude) {
-                        // User selected Claude via Copilot
                         console.log(`[TaskRunner] Constitution: Using Copilot Claude for generation`);
                         const copilotClient = new CopilotClaudeClient();
-                        const initialized = await copilotClient.initialize();
+                        const initialized = await copilotClient.initialize(modelId);
                         if (!initialized) { throw new Error('Failed to initialize Copilot Claude for constitution'); }
                         constitutionAI = copilotClient;
                     } else if (isClaudeModel && claudeApiKey) {
-                        // User selected Claude with API key - use Claude Opus 4
                         const CLAUDE_CONSTITUTION_MODEL = 'claude-opus-4-20250514';
                         console.log(`[TaskRunner] Constitution: Using ${CLAUDE_CONSTITUTION_MODEL} for generation`);
                         constitutionAI = new ClaudeClient(claudeApiKey, CLAUDE_CONSTITUTION_MODEL);
                     } else if (geminiApiKey) {
-                        // Use Gemini 3 Pro for constitution
                         const GEMINI_CONSTITUTION_MODEL = 'gemini-3-pro-preview';
                         console.log(`[TaskRunner] Constitution: Using ${GEMINI_CONSTITUTION_MODEL} for generation`);
                         constitutionAI = new GeminiClient(geminiApiKey, GEMINI_CONSTITUTION_MODEL);
                     } else {
-                        throw new Error('No API key available for constitution generation. Configure Claude API key, enable Copilot Claude/GPT, or add Gemini API key.');
+                        throw new Error('No API key available for constitution generation. Configure Claude API key, enable Copilot Claude/GPT/Gemini, or add Gemini API key.');
                     }
 
                     // Generate constitution using AI with proper error handling
@@ -1726,16 +1797,27 @@ ${contextData}
                     const currentContext = await harvester.scanWorkspace(workspaceRoot);
 
                     // Create a temporary AI client for drift detection
-                    let driftAI: GeminiClient | ClaudeClient | CopilotClaudeClient | CopilotGPTClient;
-                    if (modelId.startsWith('gpt')) {
-                        // GPT-5-mini via Copilot
+                    let driftAI: GeminiClient | ClaudeClient | CopilotClaudeClient | CopilotGPTClient | CopilotGeminiClient;
+                    if (isGPTModel) {
                         const gptClient = new CopilotGPTClient();
-                        const initialized = await gptClient.initialize();
+                        const initialized = await gptClient.initialize(modelId);
                         if (!initialized) { throw new Error('Failed to initialize Copilot GPT for drift detection'); }
                         driftAI = gptClient;
+                    } else if (isGeminiCopilotModel) {
+                        const geminiCopilotClient = new CopilotGeminiClient();
+                        const initialized = await geminiCopilotClient.initialize(modelId);
+                        if (!initialized) {
+                            if (geminiApiKey) {
+                                driftAI = new GeminiClient(geminiApiKey, modelId);
+                            } else {
+                                throw new Error('Failed to initialize Copilot Gemini for drift detection');
+                            }
+                        } else {
+                            driftAI = geminiCopilotClient;
+                        }
                     } else if (isClaudeModel && useCopilotForClaude) {
                         const copilotClient = new CopilotClaudeClient();
-                        const initialized = await copilotClient.initialize();
+                        const initialized = await copilotClient.initialize(modelId);
                         if (!initialized) { throw new Error('Failed to initialize Copilot Claude for drift detection'); }
                         driftAI = copilotClient;
                     } else if (isClaudeModel && claudeApiKey) {
@@ -1743,7 +1825,7 @@ ${contextData}
                     } else if (geminiApiKey) {
                         driftAI = new GeminiClient(geminiApiKey, modelId);
                     } else {
-                        throw new Error('No API key available for drift detection. Configure Claude API key, enable Copilot Claude, or add Gemini API key.');
+                        throw new Error('No API key available for drift detection. Configure Claude API key, enable Copilot Claude/GPT/Gemini, or add Gemini API key.');
                     }
 
                     // Check for drift
@@ -1802,20 +1884,33 @@ ${contextData}
             // Actually, we haven't assigned clients to context yet.
 
             // Let's instantiate the correct client FIRST.
-            const isGPTModel = modelId.startsWith('gpt');
-
             if (isGPTModel) {
-                // GPT-5-mini via Copilot
-                task.logs.push(`> [System]: Using GPT-5-mini via GitHub Copilot subscription`);
+                task.logs.push(`> [System]: Using ${modelId} via GitHub Copilot subscription`);
                 const gptClient = new CopilotGPTClient();
-                const initialized = await gptClient.initialize();
+                const initialized = await gptClient.initialize(modelId);
                 if (!initialized) { throw new Error('Failed to init Copilot GPT'); }
                 taskContext.copilotGPT = gptClient;
+            } else if (isGeminiCopilotModel) {
+                task.logs.push(`> [System]: Using ${modelId} via GitHub Copilot subscription`);
+                const geminiCopilotClient = new CopilotGeminiClient();
+                const initialized = await geminiCopilotClient.initialize(modelId);
+                if (!initialized) {
+                    // Fallback to API Gemini if key exists
+                    if (geminiApiKey) {
+                        console.log('[TaskRunner] Copilot Gemini failed, falling back to Gemini API');
+                        task.logs.push(`> [System]: Copilot Gemini unavailable, using Gemini API`);
+                        taskContext.gemini = new GeminiClient(geminiApiKey, modelId);
+                    } else {
+                        throw new Error('Failed to init Copilot Gemini');
+                    }
+                } else {
+                    taskContext.copilotGemini = geminiCopilotClient;
+                }
             } else if (isClaudeModel) {
                 if (useCopilotForClaude) {
-                    task.logs.push(`> [System]: Using Claude via GitHub Copilot subscription`);
+                    task.logs.push(`> [System]: Using ${modelId} via GitHub Copilot subscription`);
                     const copilotClient = new CopilotClaudeClient();
-                    const initialized = await copilotClient.initialize();
+                    const initialized = await copilotClient.initialize(modelId);
                     if (!initialized) { throw new Error('Failed to init Copilot Claude'); }
                     taskContext.copilotClaude = copilotClient;
                 } else {
@@ -1840,12 +1935,15 @@ ${contextData}
                                     task.prompt.substring(0, 40) || 
                                     `Task-${taskId.substring(0, 8)}`;
             
+            // Pass whichever Copilot client is active (they all share the same research/vision interface)
+            const activeCopilotClient = taskContext.copilotClaude || taskContext.copilotGPT || taskContext.copilotGemini;
+            
             const tools = new AgentTools(
                 workspaceRoot,
                 terminalManager,
                 searchClient,
                 taskContext.claude,
-                taskContext.copilotClaude,
+                activeCopilotClient,
                 () => { this._onReloadBrowser.fire(); },
                 (url: string) => { this._onNavigateBrowser.fire(url); },
                 FileLockManager.getInstance(), // Inject Lock Manager
@@ -1995,6 +2093,8 @@ ${contextData}
 
             if (isGPTModel && taskContext.copilotGPT) {
                 chat = taskContext.copilotGPT.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
+            } else if (isGeminiCopilotModel && taskContext.copilotGemini) {
+                chat = taskContext.copilotGemini.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
             } else if (isClaudeModel && useCopilotForClaude && taskContext.copilotClaude) {
                 chat = taskContext.copilotClaude.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
             } else if (isClaudeModel && taskContext.claude) {
@@ -2120,14 +2220,41 @@ ${contextData}
                     const modelId = task.model || 'gemini-3-pro-preview';
                     console.log(`[TaskRunner] Recreating session with modelId: ${modelId}`);
                     const isClaudeModel = modelId.startsWith('claude');
+                    const isGPTModel = modelId.startsWith('gpt');
+                    const isGeminiCopilotModel = modelId.startsWith('gemini');
                     const useCopilotForClaude = config.get<boolean>('useCopilotForClaude') || false;
 
                     // Rebuild system prompt (simplified version for continuation)
                     const continuationPrompt = `You are continuing a task. Previous context is included. ${task.prompt}`;
 
-                    if (isClaudeModel && useCopilotForClaude) {
+                    if (isGPTModel) {
+                        const gptClient = new CopilotGPTClient();
+                        await gptClient.initialize(modelId);
+                        if (this.taskContexts.has(taskId)) {
+                            this.taskContexts.get(taskId)!.copilotGPT = gptClient;
+                        }
+                        activeChat = gptClient.startSession(continuationPrompt, task.mode === 'planning' ? 'high' : 'low');
+                    } else if (isGeminiCopilotModel) {
+                        const geminiCopilotClient = new CopilotGeminiClient();
+                        const initialized = await geminiCopilotClient.initialize(modelId);
+                        if (initialized) {
+                            if (this.taskContexts.has(taskId)) {
+                                this.taskContexts.get(taskId)!.copilotGemini = geminiCopilotClient;
+                            }
+                            activeChat = geminiCopilotClient.startSession(continuationPrompt, task.mode === 'planning' ? 'high' : 'low');
+                        } else {
+                            // Fallback to API Gemini
+                            const geminiApiKey = config.get<string>('geminiApiKey') || '';
+                            if (!geminiApiKey) { throw new Error('Gemini not available via Copilot or API key'); }
+                            const geminiClient = new GeminiClient(geminiApiKey, modelId);
+                            if (this.taskContexts.has(taskId)) {
+                                this.taskContexts.get(taskId)!.gemini = geminiClient;
+                            }
+                            activeChat = geminiClient.startSession(continuationPrompt, 'high');
+                        }
+                    } else if (isClaudeModel && useCopilotForClaude) {
                         const copilotClient = new CopilotClaudeClient();
-                        await copilotClient.initialize();
+                        await copilotClient.initialize(modelId);
                         if (this.taskContexts.has(taskId)) {
                             this.taskContexts.get(taskId)!.copilotClaude = copilotClient;
                         }
@@ -2159,7 +2286,9 @@ ${contextData}
 
                 if (text) {
                     // Use model-aware prefix for log parsing (Gemini or Claude)
-                    const modelPrefix = (task.model || '').startsWith('claude') ? '**Claude**' : '**Gemini**';
+                    const modelPrefix = (task.model || '').startsWith('claude') ? '**Claude**' : 
+                        (task.model || '').startsWith('gpt') ? '**GPT**' : 
+                        (task.model || '').startsWith('gemini') ? '**Gemini**' : '**AI**';
                     task.logs.push(`${modelPrefix}: ${text} `);
 
                     // Add debug logging for summary extraction
@@ -2374,7 +2503,8 @@ ${contextData}
 
                                     // Get model source for logging
                                     const modelSource = (task.model || '').startsWith('claude') ? 'CopilotClaude' :
-                                        (task.model || '').startsWith('gpt') ? 'CopilotGPT' : 'Gemini';
+                                        (task.model || '').startsWith('gpt') ? 'CopilotGPT' : 
+                                        (task.model || '').startsWith('gemini') ? 'CopilotGemini' : 'Gemini';
 
                                     // Get or create diff aggregator from task context
                                     const taskContext = this.taskContexts.get(taskId);
@@ -2719,11 +2849,28 @@ ${contextData}
                             const claudeApiKey = config.get<string>('claudeApiKey') || '';
                             const geminiApiKey = config.get<string>('geminiApiKey') || '';
 
-                            // Create AI client for review - prioritize Copilot Claude if that's what we're using
-                            let reviewAI: GeminiClient | ClaudeClient | CopilotClaudeClient;
-                            if (isClaudeModel && useCopilotForClaude) {
+                            // Create AI client for review - use same model family the user selected
+                            let reviewAI: GeminiClient | ClaudeClient | CopilotClaudeClient | CopilotGPTClient | CopilotGeminiClient;
+                            if (modelId.startsWith('gpt')) {
+                                const gptClient = new CopilotGPTClient();
+                                const initialized = await gptClient.initialize(modelId);
+                                if (!initialized) { throw new Error('Failed to initialize Copilot GPT for constitution review'); }
+                                reviewAI = gptClient;
+                            } else if (modelId.startsWith('gemini')) {
+                                const geminiCopilotClient = new CopilotGeminiClient();
+                                const initialized = await geminiCopilotClient.initialize(modelId);
+                                if (!initialized) {
+                                    if (geminiApiKey) {
+                                        reviewAI = new GeminiClient(geminiApiKey, modelId);
+                                    } else {
+                                        throw new Error('Failed to initialize Copilot Gemini for constitution review');
+                                    }
+                                } else {
+                                    reviewAI = geminiCopilotClient;
+                                }
+                            } else if (isClaudeModel && useCopilotForClaude) {
                                 const copilotClient = new CopilotClaudeClient();
-                                const initialized = await copilotClient.initialize();
+                                const initialized = await copilotClient.initialize(modelId);
                                 if (!initialized) {
                                     throw new Error('Failed to initialize Copilot Claude for constitution review');
                                 }
@@ -3073,27 +3220,43 @@ ${contextData}
                     }
 
 
-                    if (isClaudeModel && useCopilotForClaude) {
-                        task.logs.push('> [System]: Resuming with Claude via Copilot...');
-                        const copilotClient = new CopilotClaudeClient();
-                        const initialized = await copilotClient.initialize();
-                        if (!initialized) {
-                            task.logs.push('> [Error]: Failed to initialize Claude via Copilot');
-                            return;
-                        }
-                        taskContext.copilotClaude = copilotClient;
-                        session = copilotClient.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
-                    } else if (modelId.startsWith('gpt')) {
-                        // GPT-5-mini via Copilot
-                        task.logs.push('> [System]: Resuming with GPT-5-mini via Copilot...');
+                    if (modelId.startsWith('gpt')) {
+                        task.logs.push(`> [System]: Resuming with ${modelId} via Copilot...`);
                         const gptClient = new CopilotGPTClient();
-                        const initialized = await gptClient.initialize();
+                        const initialized = await gptClient.initialize(modelId);
                         if (!initialized) {
                             task.logs.push('> [Error]: Failed to initialize GPT via Copilot');
                             return;
                         }
                         taskContext.copilotGPT = gptClient;
                         session = gptClient.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
+                    } else if (modelId.startsWith('gemini')) {
+                        task.logs.push(`> [System]: Resuming with ${modelId} via Copilot...`);
+                        const geminiCopilotClient = new CopilotGeminiClient();
+                        const initialized = await geminiCopilotClient.initialize(modelId);
+                        if (initialized) {
+                            taskContext.copilotGemini = geminiCopilotClient;
+                            session = geminiCopilotClient.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
+                        } else {
+                            const geminiApiKey = config.get<string>('geminiApiKey') || '';
+                            if (!geminiApiKey) {
+                                task.logs.push('> [Error]: Gemini not available via Copilot or API key');
+                                return;
+                            }
+                            const geminiClient = new GeminiClient(geminiApiKey, modelId);
+                            taskContext.gemini = geminiClient;
+                            session = geminiClient.startSession(systemPrompt, 'high');
+                        }
+                    } else if (isClaudeModel && useCopilotForClaude) {
+                        task.logs.push(`> [System]: Resuming with ${modelId} via Copilot...`);
+                        const copilotClient = new CopilotClaudeClient();
+                        const initialized = await copilotClient.initialize(modelId);
+                        if (!initialized) {
+                            task.logs.push('> [Error]: Failed to initialize Claude via Copilot');
+                            return;
+                        }
+                        taskContext.copilotClaude = copilotClient;
+                        session = copilotClient.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
                     } else if (isClaudeModel) {
                         const claudeApiKey = config.get<string>('claudeApiKey') || '';
                         if (!claudeApiKey) {
@@ -3131,12 +3294,16 @@ ${contextData}
                                             task.prompt.substring(0, 40) || 
                                             `Task-${taskId.substring(0, 8)}`;
                     
+                    // Pass whichever Copilot client is active (they all share the same research/vision interface)
+                    const replyTaskContext = this.taskContexts.get(taskId);
+                    const replyActiveCopilotClient = replyTaskContext?.copilotClaude || replyTaskContext?.copilotGPT || replyTaskContext?.copilotGemini;
+                    
                     const tools = new AgentTools(
                         worktreePath,
                         terminalManager,
                         searchClient,
-                        this.taskContexts.get(taskId)?.claude,
-                        this.taskContexts.get(taskId)?.copilotClaude,
+                        replyTaskContext?.claude,
+                        replyActiveCopilotClient,
                         () => { this._onReloadBrowser.fire(); },
                         (url: string) => { this._onNavigateBrowser.fire(url); },
                         FileLockManager.getInstance(),

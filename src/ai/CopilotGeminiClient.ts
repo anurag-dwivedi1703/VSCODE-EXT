@@ -2,10 +2,10 @@ import * as vscode from 'vscode';
 import { ISession } from './GeminiClient';
 
 /**
- * Claude client using VS Code's Language Model API (vscode.lm)
- * This leverages the user's GitHub Copilot subscription for Claude access
+ * Gemini client using VS Code's Language Model API (vscode.lm)
+ * This leverages the user's GitHub Copilot subscription for Gemini access
  */
-export class CopilotClaudeClient {
+export class CopilotGeminiClient {
     private model: vscode.LanguageModelChat | undefined;
 
     constructor() {
@@ -38,7 +38,7 @@ export class CopilotClaudeClient {
 
             return allModels;
         } catch (error: any) {
-            console.error('[CopilotClaudeClient] Error discovering models:', error.message);
+            console.error('[CopilotGeminiClient] Error discovering models:', error.message);
             return [];
         }
     }
@@ -65,12 +65,12 @@ export class CopilotClaudeClient {
             }
 
             if (geminiModel) {
-                console.log(`[CopilotClaudeClient] Found Gemini vision model: ${geminiModel.id}`);
+                console.log(`[CopilotGeminiClient] Found Gemini vision model: ${geminiModel.id}`);
             }
 
             return geminiModel;
         } catch (error: any) {
-            console.error('[CopilotClaudeClient] Error finding Gemini model:', error.message);
+            console.error('[CopilotGeminiClient] Error finding Gemini model:', error.message);
             return undefined;
         }
     }
@@ -78,7 +78,7 @@ export class CopilotClaudeClient {
     public async initialize(targetModelId?: string): Promise<boolean> {
         try {
             // Log all available models for discovery
-            const allModels = await CopilotClaudeClient.discoverModels();
+            const allModels = await CopilotGeminiClient.discoverModels();
 
             // If a specific model was requested, find it by matching ID
             if (targetModelId) {
@@ -89,56 +89,64 @@ export class CopilotClaudeClient {
                 );
                 if (exactMatch) {
                     this.model = exactMatch;
-                    console.log(`[CopilotClaudeClient] ✓ Selected requested model: ${this.model.id} (${this.model.name})`);
+                    console.log(`[CopilotGeminiClient] ✓ Selected requested model: ${this.model.id} (${this.model.name})`);
                     return true;
                 }
-                console.warn(`[CopilotClaudeClient] Requested model '${targetModelId}' not found, falling back to default selection`);
+                console.warn(`[CopilotGeminiClient] Requested model '${targetModelId}' not found, falling back to default selection`);
             }
 
-            // Default: Try to find Claude model - prefer opus, then sonnet
-            let claudeModel = allModels.find(m =>
-                m.id.toLowerCase().includes('claude-opus-4') ||
-                m.id.toLowerCase().includes('claude-4-opus')
+            // Default: Try to find Gemini model - prefer Gemini 3 Pro, then 2.5 Pro
+            let geminiModel = allModels.find(m =>
+                m.id.toLowerCase().includes('gemini-3-pro') ||
+                m.id.toLowerCase().includes('gemini-pro-3')
             );
 
-            // Try Claude Sonnet 4.5
-            if (!claudeModel) {
-                claudeModel = allModels.find(m =>
-                    m.id.toLowerCase().includes('claude-sonnet-4') ||
-                    m.id.toLowerCase().includes('claude-4-sonnet')
+            // Try Gemini 2.5 Pro
+            if (!geminiModel) {
+                geminiModel = allModels.find(m =>
+                    m.id.toLowerCase().includes('gemini-2.5-pro') ||
+                    m.id.toLowerCase().includes('gemini-2-5-pro')
                 );
             }
 
-            // Fallback to any Claude model
-            if (!claudeModel) {
-                claudeModel = allModels.find(m =>
-                    m.id.toLowerCase().includes('claude') ||
-                    m.name.toLowerCase().includes('claude') ||
-                    m.family.toLowerCase().includes('claude')
+            // Try Gemini 3 Flash
+            if (!geminiModel) {
+                geminiModel = allModels.find(m =>
+                    m.id.toLowerCase().includes('gemini-3-flash') ||
+                    m.id.toLowerCase().includes('gemini-flash-3')
                 );
             }
 
-            if (claudeModel) {
-                this.model = claudeModel;
-                console.log(`[CopilotClaudeClient] ✓ Selected Claude model: ${this.model.id} (${this.model.name})`);
+            // Fallback to any Gemini model
+            if (!geminiModel) {
+                geminiModel = allModels.find(m =>
+                    m.id.toLowerCase().includes('gemini') ||
+                    m.name.toLowerCase().includes('gemini') ||
+                    m.family.toLowerCase().includes('gemini')
+                );
+            }
+
+            if (geminiModel) {
+                this.model = geminiModel;
+                console.log(`[CopilotGeminiClient] ✓ Selected Gemini model: ${this.model.id} (${this.model.name})`);
                 return true;
             }
 
             // Fallback: try specific family filters that might work
-            const familyAttempts = ['claude', 'anthropic', 'claude-3', 'claude-opus', 'claude-sonnet'];
+            const familyAttempts = ['gemini', 'google', 'gemini-pro', 'gemini-flash'];
             for (const family of familyAttempts) {
                 const models = await vscode.lm.selectChatModels({ family });
                 if (models.length > 0) {
                     this.model = models[0];
-                    console.log(`[CopilotClaudeClient] ✓ Found Claude model via family '${family}': ${this.model.id}`);
+                    console.log(`[CopilotGeminiClient] ✓ Found Gemini model via family '${family}': ${this.model.id}`);
                     return true;
                 }
             }
 
-            console.error('[CopilotClaudeClient] ✗ No Claude models found. Available:', allModels.map(m => m.id).join(', '));
+            console.error('[CopilotGeminiClient] ✗ No Gemini models found. Available:', allModels.map(m => m.id).join(', '));
             return false;
         } catch (error: any) {
-            console.error('[CopilotClaudeClient] Error initializing:', error.message);
+            console.error('[CopilotGeminiClient] Error initializing:', error.message);
             return false;
         }
     }
@@ -300,7 +308,7 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
                         // Warn if approaching context limit (>80% usage)
                         const utilizationPct = Math.round((estimatedTokensUsed / (maxTokens - responseReserve)) * 100);
                         if (utilizationPct > 80) {
-                            console.warn(`[CopilotClaudeClient] ⚠️ Token usage at ${utilizationPct}% (${estimatedTokensUsed}/${maxTokens - responseReserve})`);
+                            console.warn(`[CopilotGeminiClient] ⚠️ Token usage at ${utilizationPct}% (${estimatedTokensUsed}/${maxTokens - responseReserve})`);
                         }
                         
                         // Truncate message if it would exceed available tokens
@@ -309,7 +317,7 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
                             const maxChars = available * 4;
                             userMessage = userMessage.slice(0, maxChars - 100) + 
                                 '\n\n[MESSAGE TRUNCATED - context limit reached. Please complete current work before reading more files.]';
-                            console.warn(`[CopilotClaudeClient] Truncated message from ${messageTokens} to ${estimateTokens(userMessage)} tokens`);
+                            console.warn(`[CopilotGeminiClient] Truncated message from ${messageTokens} to ${estimateTokens(userMessage)} tokens`);
                         }
                         
                         messages.push(vscode.LanguageModelChatMessage.User(userMessage));
@@ -332,7 +340,7 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
                     // ==================== TRUNCATION RECOVERY ====================
                     // Check if response was truncated (incomplete code block, SEARCH/REPLACE, etc.)
                     if (this.detectTruncation(responseText)) {
-                        console.log('[CopilotClaudeClient] Truncation detected! Initiating recovery...');
+                        console.log('[CopilotGeminiClient] Truncation detected! Initiating recovery...');
 
                         // Add truncated response to history so model has context
                         messages.push(vscode.LanguageModelChatMessage.Assistant(responseText));
@@ -345,7 +353,7 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
                         const continuation = await this.continueGeneration(model, messages, cancellationToken, 0);
                         responseText = this.stitchResponses(responseText, continuation);
 
-                        console.log(`[CopilotClaudeClient] Recovery complete. Total response: ${responseText.length} chars`);
+                        console.log(`[CopilotGeminiClient] Recovery complete. Total response: ${responseText.length} chars`);
                     }
                     // ==================== END TRUNCATION RECOVERY ====================
 
@@ -355,7 +363,7 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
                     estimatedTokensUsed += responseTokens;
                     
                     const finalUtilization = Math.round((estimatedTokensUsed / (maxTokens - responseReserve)) * 100);
-                    console.log(`[CopilotClaudeClient] Context: ${estimatedTokensUsed} tokens used (${finalUtilization}% of ${maxTokens})`);
+                    console.log(`[CopilotGeminiClient] Context: ${estimatedTokensUsed} tokens used (${finalUtilization}% of ${maxTokens})`);
                     
                     messages.push(vscode.LanguageModelChatMessage.Assistant(responseText));
 
@@ -369,7 +377,7 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
                     // Combine: text diffs take priority (they're more reliable)
                     const functionCalls = [...textDiffs, ...jsonToolCalls];
 
-                    console.log(`[CopilotClaudeClient] Parsed ${textDiffs.length} text diffs, ${jsonToolCalls.length} JSON tool calls`);
+                    console.log(`[CopilotGeminiClient] Parsed ${textDiffs.length} text diffs, ${jsonToolCalls.length} JSON tool calls`);
 
                     // Strip tool call blocks AND text diff blocks from text to avoid showing in UI
                     let cleanedText = this.stripToolCallsFromText(responseText);
@@ -382,7 +390,7 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
                         }
                     };
                 } catch (error: any) {
-                    console.error('[CopilotClaudeClient] API Error:', error.message);
+                    console.error('[CopilotGeminiClient] API Error:', error.message);
 
                     // Check for consent error
                     if (error.message?.includes('consent') || error.message?.includes('permission')) {
@@ -438,10 +446,10 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
                         name: parsed.name,
                         args: parsed.args || parsed.arguments || {}
                     });
-                    console.log(`[CopilotClaudeClient] Parsed fenced tool call: ${parsed.name}`);
+                    console.log(`[CopilotGeminiClient] Parsed fenced tool call: ${parsed.name}`);
                 }
             } catch (e: any) {
-                console.warn('[CopilotClaudeClient] Failed to parse fenced tool call:', e.message);
+                console.warn('[CopilotGeminiClient] Failed to parse fenced tool call:', e.message);
             }
         }
 
@@ -454,9 +462,9 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
                     const name = match[1];
                     const args = JSON.parse(match[2]);
                     calls.push({ name, args });
-                    console.log(`[CopilotClaudeClient] Parsed inline tool call: ${name}`);
+                    console.log(`[CopilotGeminiClient] Parsed inline tool call: ${name}`);
                 } catch (e) {
-                    console.warn('[CopilotClaudeClient] Failed to parse inline tool call');
+                    console.warn('[CopilotGeminiClient] Failed to parse inline tool call');
                 }
             }
         }
@@ -469,14 +477,14 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
                     const name = match[1];
                     const args = JSON.parse(match[2]);
                     calls.push({ name, args });
-                    console.log(`[CopilotClaudeClient] Parsed nested tool call: ${name}`);
+                    console.log(`[CopilotGeminiClient] Parsed nested tool call: ${name}`);
                 } catch (e) {
                     // Skip malformed
                 }
             }
         }
 
-        console.log(`[CopilotClaudeClient] Total tool calls found: ${calls.length}`);
+        console.log(`[CopilotGeminiClient] Total tool calls found: ${calls.length}`);
         return calls;
     }
 
@@ -494,7 +502,7 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
 
         // The model likely output literal newlines inside string values
         // Need to find and fix them
-        console.log('[CopilotClaudeClient] Attempting robust JSON parse for multi-line content...');
+        console.log('[CopilotGeminiClient] Attempting robust JSON parse for multi-line content...');
 
         try {
             // Strategy: Extract the diff content separately, parse the structure, then recombine
@@ -545,7 +553,7 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
                 }
             }
         } catch (e: any) {
-            console.warn('[CopilotClaudeClient] Robust parse also failed:', e.message);
+            console.warn('[CopilotGeminiClient] Robust parse also failed:', e.message);
         }
 
         return null;
@@ -595,12 +603,12 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
                         diff: diffContent
                     }
                 });
-                console.log(`[CopilotClaudeClient] Parsed text-based apply_diff for: ${filePath}`);
+                console.log(`[CopilotGeminiClient] Parsed text-based apply_diff for: ${filePath}`);
             }
         }
 
         if (calls.length > 0) {
-            console.log(`[CopilotClaudeClient] Found ${calls.length} text-based diff blocks`);
+            console.log(`[CopilotGeminiClient] Found ${calls.length} text-based diff blocks`);
         }
 
         return calls;
@@ -630,26 +638,26 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
 
         // Check for incomplete tool_call JSON (most critical for apply_diff)
         if (trimmed.includes('```tool_call') && !trimmed.endsWith('```')) {
-            console.log('[CopilotClaudeClient] Truncation: Incomplete tool_call block');
+            console.log('[CopilotGeminiClient] Truncation: Incomplete tool_call block');
             return true;
         }
 
         // Check for incomplete code blocks (odd number of ```)
         const codeBlockStarts = (trimmed.match(/```/g) || []).length;
         if (codeBlockStarts % 2 !== 0) {
-            console.log('[CopilotClaudeClient] Truncation: Odd number of code fences');
+            console.log('[CopilotGeminiClient] Truncation: Odd number of code fences');
             return true;
         }
 
         // Check for incomplete SEARCH/REPLACE (critical for apply_diff)
         if (trimmed.includes('<<<<<<< SEARCH') && !trimmed.includes('>>>>>>> REPLACE')) {
-            console.log('[CopilotClaudeClient] Truncation: Incomplete SEARCH/REPLACE block');
+            console.log('[CopilotGeminiClient] Truncation: Incomplete SEARCH/REPLACE block');
             return true;
         }
 
         // Check for incomplete text-based [APPLY_DIFF:]...[END_DIFF] block
         if (trimmed.includes('[APPLY_DIFF:') && !trimmed.includes('[END_DIFF]')) {
-            console.log('[CopilotClaudeClient] Truncation: Incomplete [APPLY_DIFF:] block');
+            console.log('[CopilotGeminiClient] Truncation: Incomplete [APPLY_DIFF:] block');
             return true;
         }
 
@@ -658,7 +666,7 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
             const lastDiff = trimmed.lastIndexOf('"diff":');
             const afterDiff = trimmed.slice(lastDiff);
             if (afterDiff.includes('<<<<<<< SEARCH') && !afterDiff.includes('>>>>>>> REPLACE')) {
-                console.log('[CopilotClaudeClient] Truncation: Incomplete diff in tool call');
+                console.log('[CopilotGeminiClient] Truncation: Incomplete diff in tool call');
                 return true;
             }
         }
@@ -669,7 +677,7 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
             const lastLine = trimmed.slice(lastNewline + 1);
             // If last line is short and doesn't end with proper terminator, likely truncated
             if (lastLine.length < 10 && !/[.!?:}\])"'`]$/.test(lastLine)) {
-                console.log('[CopilotClaudeClient] Truncation: Suspicious line ending');
+                console.log('[CopilotGeminiClient] Truncation: Suspicious line ending');
                 return true;
             }
         }
@@ -692,7 +700,7 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
             cleaned = cleaned.replace(pattern, '');
         }
 
-        console.log('[CopilotClaudeClient] Stitched continuation:', cleaned.substring(0, 100) + '...');
+        console.log('[CopilotGeminiClient] Stitched continuation:', cleaned.substring(0, 100) + '...');
         return first + cleaned;
     }
 
@@ -706,7 +714,7 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
         depth: number
     ): Promise<string> {
         if (depth >= 5) {
-            console.warn('[CopilotClaudeClient] Max continuation depth (5) reached, stopping');
+            console.warn('[CopilotGeminiClient] Max continuation depth (5) reached, stopping');
             return '';
         }
 
@@ -717,7 +725,7 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
                 text += fragment;
             }
 
-            console.log(`[CopilotClaudeClient] Continuation ${depth + 1} received: ${text.length} chars`);
+            console.log(`[CopilotGeminiClient] Continuation ${depth + 1} received: ${text.length} chars`);
 
             // Check if this continuation also got truncated
             if (this.detectTruncation(text)) {
@@ -729,7 +737,7 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
 
             return text;
         } catch (error: any) {
-            console.error(`[CopilotClaudeClient] Continuation error at depth ${depth}:`, error.message);
+            console.error(`[CopilotGeminiClient] Continuation error at depth ${depth}:`, error.message);
             return '';
         }
     }
@@ -810,7 +818,7 @@ Provide a detailed, helpful response based on your training data. If you're unce
             //fs.writeFileSync(tempPath, imageBuffer);
 
             //const imageUri = vscode.Uri.file(tempPath);
-            //console.log(`[CopilotClaudeClient] Vision analysis: saved temp image to ${tempPath}`);
+            //console.log(`[CopilotGeminiClient] Vision analysis: saved temp image to ${tempPath}`);
 
             const prompt = `You are a UI testing expert. Analyze this screenshot and determine if it matches the expected design.
 
@@ -856,7 +864,7 @@ Respond ONLY with the JSON, no other text.`;
                 fs.unlinkSync(tempPath);
             } catch { /* ignore cleanup errors */ }
 
-            console.log(`[CopilotClaudeClient] Vision response: ${responseText.substring(0, 100)}...`);
+            console.log(`[CopilotGeminiClient] Vision response: ${responseText.substring(0, 100)}...`);
 
             // Parse the JSON response
             try {
@@ -889,7 +897,7 @@ Respond ONLY with the JSON, no other text.`;
                 };
             }
         } catch (error: any) {
-            console.error('[CopilotClaudeClient] Vision analysis failed:', error.message);
+            console.error('[CopilotGeminiClient] Vision analysis failed:', error.message);
 
             // Check if it's a "not supported" error - fall back gracefully
             if (error.message?.includes('image') || error.message?.includes('multimodal') || error.message?.includes('content')) {

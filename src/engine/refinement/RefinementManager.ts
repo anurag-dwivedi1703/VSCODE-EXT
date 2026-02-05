@@ -17,13 +17,14 @@ import { GeminiClient, ISession } from '../../ai/GeminiClient';
 import { ClaudeClient } from '../../ai/ClaudeClient';
 import { CopilotClaudeClient } from '../../ai/CopilotClaudeClient';
 import { CopilotGPTClient } from '../../ai/CopilotGPTClient';
+import { CopilotGeminiClient } from '../../ai/CopilotGeminiClient';
 import { SmartContextBuilder, SmartContext } from './SmartContextBuilder';
 import { RefinementTokenManager } from './RefinementTokenManager';
 
 /**
  * AI Client type union for flexibility.
  */
-type AIClient = GeminiClient | ClaudeClient | CopilotClaudeClient | CopilotGPTClient;
+type AIClient = GeminiClient | ClaudeClient | CopilotClaudeClient | CopilotGPTClient | CopilotGeminiClient;
 
 export class RefinementManager {
     private _sessions: Map<string, RefinementSession> = new Map();
@@ -351,7 +352,10 @@ export class RefinementManager {
             return 'claude-sonnet-4';
         }
         if (client instanceof CopilotGPTClient) {
-            return 'gpt-4o';
+            return 'gpt-5-mini';
+        }
+        if (client instanceof CopilotGeminiClient) {
+            return 'gemini-2.5-pro';
         }
         if (client instanceof ClaudeClient) {
             return 'claude-3-5-sonnet';

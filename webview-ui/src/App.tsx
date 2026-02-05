@@ -109,10 +109,10 @@ function parseLogs(
                 status: 'running'
             };
         }
-        // Agent Message (matches **Gemini**: or **Claude**: or similar variations)
-        else if (log.match(/^\*{0,2}\s*(Gemini|Claude)\s*\*{0,2}:/i)) {
+        // Agent Message (matches **Gemini**: or **Claude**: or **GPT**: or **AI**: or similar variations)
+        else if (log.match(/^\*{0,2}\s*(Gemini|Claude|GPT|AI)\s*\*{0,2}:/i)) {
             commitSystem();
-            const text = log.replace(/^\*{0,2}\s*(Gemini|Claude)\s*\*{0,2}:\s*/i, '').trim();
+            const text = log.replace(/^\*{0,2}\s*(Gemini|Claude|GPT|AI)\s*\*{0,2}:\s*/i, '').trim();
 
             // FIX: Create new bubble when agent sends a new substantial response
             // after tool execution (not just appending everything together)
@@ -674,7 +674,7 @@ function App() {
     const activeAgents = dynamicAgents;
     // State for New Agent Composer
     const [composerMode, setComposerMode] = useState<'planning' | 'fast' | 'refinement'>('planning');
-    const [composerModel, setComposerModel] = useState<string>('claude-opus-4-5-20251101');
+    const [composerModel, setComposerModel] = useState<string>('claude-opus-4.6');
     // Track if refinement mode has been used in this chat (prevents reuse in replyToTask)
     const [refinementUsed, setRefinementUsed] = useState(false);
     
@@ -827,7 +827,15 @@ function App() {
     };
 
     const handleQuestionnaireCancel = () => {
-        setQuestionnaireData(null);  // Just hide the questionnaire
+        // Notify backend to proceed without answers
+        if (questionnaireData) {
+            vscode.postMessage({
+                command: 'skipQuestionnaire',
+                taskId: questionnaireData.taskId,
+                sessionId: questionnaireData.sessionId
+            });
+        }
+        setQuestionnaireData(null);
     };
 
     const handleAgentModeChange = (newMode: 'auto' | 'review-enabled') => {
@@ -1515,16 +1523,34 @@ function App() {
                                         </button>
                                         <select
                                             className="model-dropdown"
-                                            value={activeAgent.model || 'claude-opus-4-5-20251101'}
+                                            value={activeAgent.model || 'claude-opus-4.6'}
                                             onChange={(e) => vscode.postMessage({
                                                 command: 'changeModel',
                                                 taskId: activeAgent.id,
                                                 model: e.target.value
                                             })}
                                         >
-                                            <option value="claude-opus-4-5-20251101">Claude Opus 4.5</option>
-                                            <option value="claude-sonnet-4-5-20251101">Claude Sonnet 4.5</option>
-                                            <option value="gpt-5-mini">GPT-5-mini (Copilot)</option>
+                                            <optgroup label="Claude">
+                                                <option value="claude-opus-4.6">Claude Opus 4.6</option>
+                                                <option value="claude-opus-4.5">Claude Opus 4.5</option>
+                                                <option value="claude-sonnet-4.5">Claude Sonnet 4.5</option>
+                                                <option value="claude-sonnet-4">Claude Sonnet 4</option>
+                                                <option value="claude-haiku-4.5">Claude Haiku 4.5</option>
+                                            </optgroup>
+                                            <optgroup label="GPT">
+                                                <option value="gpt-5-mini">GPT-5 mini</option>
+                                                <option value="gpt-5.1">GPT-5.1</option>
+                                                <option value="gpt-5.1-codex">GPT-5.1 Codex</option>
+                                                <option value="gpt-5.1-codex-max">GPT-5.1 Codex Max</option>
+                                                <option value="gpt-5.1-codex-mini">GPT-5.1 Codex Mini</option>
+                                                <option value="gpt-5.2">GPT-5.2</option>
+                                                <option value="gpt-5.2-codex">GPT-5.2 Codex</option>
+                                            </optgroup>
+                                            <optgroup label="Gemini">
+                                                <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+                                                <option value="gemini-3-flash">Gemini 3 Flash</option>
+                                                <option value="gemini-3-pro">Gemini 3 Pro</option>
+                                            </optgroup>
                                         </select>
                                         {/* Submit or Stop Button */}
                                         {activeAgent.status === 'executing' || activeAgent.status === 'planning' ? (
@@ -1624,9 +1650,27 @@ function App() {
                                             value={composerModel}
                                             onChange={(e) => setComposerModel(e.target.value)}
                                         >
-                                            <option value="claude-opus-4-5-20251101">Claude Opus 4.5 (Thinking)</option>
-                                            <option value="claude-sonnet-4-5-20251101">Claude Sonnet 4.5 (Fast)</option>
-                                            <option value="gpt-5-mini">GPT-5-mini (Vision)</option>
+                                            <optgroup label="Claude">
+                                                <option value="claude-opus-4.6">Claude Opus 4.6</option>
+                                                <option value="claude-opus-4.5">Claude Opus 4.5</option>
+                                                <option value="claude-sonnet-4.5">Claude Sonnet 4.5</option>
+                                                <option value="claude-sonnet-4">Claude Sonnet 4</option>
+                                                <option value="claude-haiku-4.5">Claude Haiku 4.5</option>
+                                            </optgroup>
+                                            <optgroup label="GPT">
+                                                <option value="gpt-5-mini">GPT-5 mini</option>
+                                                <option value="gpt-5.1">GPT-5.1</option>
+                                                <option value="gpt-5.1-codex">GPT-5.1 Codex</option>
+                                                <option value="gpt-5.1-codex-max">GPT-5.1 Codex Max</option>
+                                                <option value="gpt-5.1-codex-mini">GPT-5.1 Codex Mini</option>
+                                                <option value="gpt-5.2">GPT-5.2</option>
+                                                <option value="gpt-5.2-codex">GPT-5.2 Codex</option>
+                                            </optgroup>
+                                            <optgroup label="Gemini">
+                                                <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+                                                <option value="gemini-3-flash">Gemini 3 Flash</option>
+                                                <option value="gemini-3-pro">Gemini 3 Pro</option>
+                                            </optgroup>
                                         </select>
                                     </div>
                                 </div>

@@ -12,12 +12,27 @@ export class CopilotGPTClient {
         // Model will be selected when session starts
     }
 
-    public async initialize(): Promise<boolean> {
+    public async initialize(targetModelId?: string): Promise<boolean> {
         try {
             // Log all available models for discovery
             const allModels = await vscode.lm.selectChatModels({});
 
-            // Try to find GPT-5-mini model
+            // If a specific model was requested, find it by matching ID
+            if (targetModelId) {
+                const targetLower = targetModelId.toLowerCase();
+                const exactMatch = allModels.find(m =>
+                    m.id.toLowerCase().includes(targetLower) ||
+                    m.family.toLowerCase().includes(targetLower)
+                );
+                if (exactMatch) {
+                    this.model = exactMatch;
+                    console.log(`[CopilotGPTClient] ✓ Selected requested model: ${this.model.id} (${this.model.name})`);
+                    return true;
+                }
+                console.warn(`[CopilotGPTClient] Requested model '${targetModelId}' not found, falling back to default selection`);
+            }
+
+            // Default: Try to find GPT-5-mini model
             let gptModel = allModels.find(m =>
                 m.id.toLowerCase().includes('gpt-5-mini') ||
                 m.family.toLowerCase().includes('gpt-5-mini')

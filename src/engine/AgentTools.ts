@@ -5,6 +5,8 @@ import { TerminalManager } from './TerminalManager';
 import { GeminiClient } from '../ai/GeminiClient';
 import { ClaudeClient } from '../ai/ClaudeClient';
 import { CopilotClaudeClient } from '../ai/CopilotClaudeClient';
+import { CopilotGPTClient } from '../ai/CopilotGPTClient';
+import { CopilotGeminiClient } from '../ai/CopilotGeminiClient';
 import { FileLockManager } from '../services/FileLockManager';
 import { BrowserAutomationService, LoginCheckpointCallback } from '../services/BrowserAutomationService';
 import { VisualComparisonService } from '../services/VisualComparisonService';
@@ -26,7 +28,7 @@ export class AgentTools {
         private readonly terminalManager?: TerminalManager,
         private readonly geminiClient?: GeminiClient,
         private readonly claudeClient?: ClaudeClient,
-        private readonly copilotClaudeClient?: CopilotClaudeClient,
+        private readonly copilotClaudeClient?: CopilotClaudeClient | CopilotGPTClient | CopilotGeminiClient,
         private readonly onReloadBrowserCallback?: () => void,
         private readonly onNavigateBrowserCallback?: (url: string) => void,
         private readonly fileLockManager?: FileLockManager,

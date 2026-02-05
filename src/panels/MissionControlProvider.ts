@@ -783,6 +783,12 @@ export class MissionControlProvider {
                             message.responses
                         );
                         return;
+                    case 'skipQuestionnaire':
+                        this._taskRunner.handleQuestionnaireSkip(
+                            message.taskId,
+                            message.sessionId
+                        );
+                        return;
                     // Constitution Review Handlers
                     case 'approveConstitution':
                         this._taskRunner.approveReview(message.taskId, message.feedback);
