@@ -282,11 +282,9 @@ function parseLogs(
                               stage === 'REFINING' ? '⏳ Generating Final PRD' :
                               '⏳ Processing...';
             
-            // This stage bubble should be 'running' if:
-            // 1. It's the last log AND
-            // 2. Agent is actively working
+            // Last AI bubble stays active visually until next bubble appears
             const isLastLog = i === logs.length - 1;
-            const shouldBeRunning = isLastLog && isAgentActivelyWorking;
+            const shouldBeRunning = isLastLog;
             
             currentStep = {
                 type: 'step',
@@ -309,11 +307,8 @@ function parseLogs(
             const isLastLog = i === logs.length - 1;
             const isFinalPRD = log.startsWith('**Final PRD Ready**');
             
-            // Step should be 'running' if:
-            // 1. It's the last log AND
-            // 2. Not a final PRD AND
-            // 3. Agent is actively working (not waiting for user input)
-            const shouldBeRunning = isLastLog && !isFinalPRD && isAgentActivelyWorking;
+            // Last AI bubble stays active visually (except for Final PRD which is a terminal state)
+            const shouldBeRunning = isLastLog && !isFinalPRD;
             
             currentStep = {
                 type: 'step',
@@ -374,6 +369,22 @@ function parseLogs(
 
     commitStep();
     commitSystem();
+
+    // POST-PARSE: Mark the last 'step' group as 'running' so it always shows
+    // the active animation (rainbow/pulse). This ensures the last AI bubble
+    // stays visually active regardless of task status or what system/debug
+    // logs may have been appended after it. Only exception: Final PRD and
+    // mission complete are terminal states that should show as completed.
+    for (let g = groups.length - 1; g >= 0; g--) {
+        if (groups[g].type === 'step') {
+            const isFinal = groups[g].title?.includes('Final PRD') || 
+                           groups[g].title?.includes('Mission Complete');
+            if (!isFinal && groups[g].status !== 'failed') {
+                groups[g].status = 'running';
+            }
+            break; // Only affect the last step group
+        }
+    }
 
     return groups;
 }
