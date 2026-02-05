@@ -125,28 +125,78 @@ export class AttachmentProcessor {
     }
 
     /**
-     * Build a context-aware vision prompt based on the user's message.
-     * This ensures the vision model focuses on what the user actually cares about.
+     * Step 1 of two-step vision: Extract the user's specific intent about the image.
+     * Uses a fast text-only AI call to distill the user's prompt into a focused
+     * instruction for the vision model, so vision analysis is laser-targeted.
+     * 
+     * Priority: uses whichever Copilot model is available (cheapest first).
      */
-    private buildContextAwareVisionPrompt(userPrompt: string): { description: string; objective: string } {
+    private async extractUserIntent(userPrompt: string): Promise<string | null> {
+        // Find any available Copilot model for a text-only call
+        const textModel = this.copilotGeminiClient?.['model'] 
+            || this.copilotGPTClient?.['model'] 
+            || this.copilotClaudeClient?.['model'];
+
+        if (!textModel) {
+            console.log('[AttachmentProcessor] No text model available for intent extraction');
+            return null;
+        }
+
+        try {
+            console.log('[AttachmentProcessor] Step 1: Extracting user intent from prompt...');
+
+            const messages = [
+                vscode.LanguageModelChatMessage.User(
+`You are an intent extraction assistant. The user has attached an image along with a text message. Your job is to understand EXACTLY what the user wants to know about the image and produce a focused instruction for a vision model.
+
+USER'S MESSAGE: "${userPrompt}"
+
+Based on the user's message above, produce a CLEAR, SPECIFIC instruction (2-3 sentences max) that tells a vision model exactly what to look for and extract from the image. 
+
+Examples:
+- If user says "can you analyze this screenshot for me" → "Describe the UI layout, all visible elements, text labels, data values, and any notable visual patterns or issues in this screenshot."
+- If user says "there's a bug in this form, the submit button is misaligned" → "Focus on the form area and the submit button. Identify any alignment issues, spacing problems, or visual inconsistencies with the button positioning relative to other form elements."
+- If user says "what are the sales numbers in this chart" → "Extract all numerical data, labels, and values visible in the chart. Report exact numbers, axis labels, legends, and any trends shown."
+- If user says "implement this UI design" → "Describe the complete UI design in detail: layout structure, component hierarchy, colors, typography, spacing, icons, and all visual elements needed to recreate this design in code."
+
+Reply with ONLY the focused instruction, nothing else.`)
+            ];
+
+            const response = await textModel.sendRequest(
+                messages,
+                {},
+                new vscode.CancellationTokenSource().token
+            );
+
+            let intent = '';
+            for await (const fragment of response.text) {
+                intent += fragment;
+            }
+
+            intent = intent.trim();
+            if (intent.length > 0) {
+                console.log(`[AttachmentProcessor] Extracted intent: "${intent.substring(0, 120)}..."`);
+                return intent;
+            }
+        } catch (e: any) {
+            console.log(`[AttachmentProcessor] Intent extraction failed: ${e.message}`);
+        }
+
+        return null;
+    }
+
+    /**
+     * Build a fallback vision prompt when intent extraction is unavailable.
+     * Only used when no text model is available for the two-step flow.
+     */
+    private buildFallbackVisionPrompt(userPrompt: string): { description: string; objective: string } {
         if (userPrompt && userPrompt.trim().length > 0) {
             return {
-                description: `The user said: "${userPrompt}"
-
-Analyze this image in the context of the user's message above. Focus on extracting information that is DIRECTLY RELEVANT to what the user is asking or describing.
-
-Guidelines:
-- If the user mentions specific data, numbers, or text in the image, extract and report that data accurately.
-- If the user is asking about a UI bug or visual issue, describe the problem in detail.
-- If the user refers to a design or layout, focus on those design elements.
-- If the user is asking about specific elements (buttons, tables, forms, etc.), focus your analysis on those.
-- Include any text/labels/values visible in the image that relate to the user's query.
-- Be specific and detailed about the aspects the user cares about rather than giving a generic overview.`,
-                objective: `Extract information from this image that directly addresses what the user is asking about: "${userPrompt.substring(0, 200)}"`
+                description: `The user said: "${userPrompt}". Analyze this image focusing on what is directly relevant to the user's message. Be specific about the aspects the user cares about.`,
+                objective: `Extract information from this image that addresses the user's request: "${userPrompt.substring(0, 200)}"`
             };
         }
 
-        // Fallback: generic analysis when no user prompt is available
         return {
             description: 'Analyze this image in detail. Describe all visible elements including: UI components, text/labels, data/values, layout structure, colors, icons, and any notable visual information. Be thorough and specific.',
             objective: 'Extract all relevant information from this image to provide comprehensive context.'
@@ -197,7 +247,13 @@ Guidelines:
     }
 
     /**
-     * Process an image attachment using vision APIs with context-aware prompts.
+     * Process an image attachment using TWO-STEP vision analysis:
+     *   Step 1: AI extracts the user's intent from their text prompt (text-only call)
+     *   Step 2: Vision model analyzes the image with the focused intent
+     * 
+     * This ensures vision analysis directly addresses what the user is asking about,
+     * rather than producing a generic image description.
+     * 
      * Vision priority: Gemini Flash (Copilot) > Claude (Copilot) > GPT (Copilot) > Gemini API > Claude API
      */
     private async processImage(attachment: Attachment, userPrompt: string): Promise<ProcessedAttachment> {
@@ -225,8 +281,36 @@ Guidelines:
             throw new Error('No image data or path provided');
         }
 
-        // Build context-aware vision prompt based on user's message
-        const { description: visionDescription, objective: visionObjective } = this.buildContextAwareVisionPrompt(userPrompt);
+        // ============ TWO-STEP VISION ANALYSIS ============
+        // Step 1: Extract user intent (text-only AI call)
+        // Step 2: Use focused intent for vision analysis
+        // ==================================================
+
+        let visionDescription: string;
+        let visionObjective: string;
+
+        if (userPrompt && userPrompt.trim().length > 0) {
+            // Step 1: Extract focused intent from user's prompt
+            const extractedIntent = await this.extractUserIntent(userPrompt);
+
+            if (extractedIntent) {
+                // Step 2 will use the AI-extracted focused intent
+                visionDescription = extractedIntent;
+                visionObjective = `Analyze this image following these specific instructions: ${extractedIntent.substring(0, 300)}`;
+                console.log('[AttachmentProcessor] Step 2: Running vision with AI-extracted intent');
+            } else {
+                // Fallback: intent extraction failed, use basic prompt
+                console.log('[AttachmentProcessor] Intent extraction unavailable, using fallback vision prompt');
+                const fallback = this.buildFallbackVisionPrompt(userPrompt);
+                visionDescription = fallback.description;
+                visionObjective = fallback.objective;
+            }
+        } else {
+            // No user prompt at all - generic analysis
+            const fallback = this.buildFallbackVisionPrompt('');
+            visionDescription = fallback.description;
+            visionObjective = fallback.objective;
+        }
 
         // Try vision analysis with available clients (best-vision-first priority)
         let analysis: string | undefined;

@@ -366,7 +366,8 @@ export class MissionControlProvider {
         workspacePath: string,
         mode: 'planning' | 'fast' | 'refinement',
         model: string,
-        chatId: string
+        chatId: string,
+        displayPrompt?: string
     ): Promise<void> {
         try {
             // Generate a temporary task ID for phase analysis
@@ -385,13 +386,13 @@ export class MissionControlProvider {
             }
 
             // Start the task with potentially modified prompt
-            // Pass original 'text' as displayPrompt so UI shows user's original request
-            // while 'modifiedPrompt' (with phase context) is used for AI execution
-            this._taskRunner.startTask(modifiedPrompt, workspacePath, mode, model, chatId, text);
+            // Pass displayPrompt (original user text) so UI shows the user's original request
+            // while 'modifiedPrompt' (with phase context + attachment enrichment) is used for AI execution
+            this._taskRunner.startTask(modifiedPrompt, workspacePath, mode, model, chatId, displayPrompt || text);
         } catch (error) {
             console.error('[MissionControl] Failed to start task with phase analysis:', error);
             // Fallback to regular start
-            this._taskRunner.startTask(text, workspacePath, mode, model, chatId, text);
+            this._taskRunner.startTask(text, workspacePath, mode, model, chatId, displayPrompt || text);
         }
     }
 
@@ -429,8 +430,9 @@ export class MissionControlProvider {
         }
 
         // Use phase-aware task start if enabled
+        // Always pass original 'text' as displayPrompt so UI shows user's original message
         if (this._phasedExecutionEnabled) {
-            await this._startTaskWithPhaseAnalysis(enrichedPrompt, workspacePath, mode, model, chatId);
+            await this._startTaskWithPhaseAnalysis(enrichedPrompt, workspacePath, mode, model, chatId, text);
         } else {
             this._taskRunner.startTask(enrichedPrompt, workspacePath, mode, model, chatId, text);
         }
