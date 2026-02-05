@@ -34,7 +34,14 @@ interface LogGroup {
     status?: 'running' | 'completed' | 'failed';
 }
 
-function parseLogs(logs: string[], checkpoints: { id: string, message: string }[] = []): LogGroup[] {
+function parseLogs(
+    logs: string[], 
+    checkpoints: { id: string, message: string }[] = [],
+    options: { agentStatus?: string; isWaitingForUserInput?: boolean } = {}
+): LogGroup[] {
+    const { agentStatus, isWaitingForUserInput } = options;
+    // Determine if the agent is actively working (not waiting for user)
+    const isAgentActivelyWorking = (agentStatus === 'executing' || agentStatus === 'planning') && !isWaitingForUserInput;
     const groups: LogGroup[] = [];
     let currentStep: LogGroup | null = null;
     let systemGroup: LogGroup | null = null;
@@ -258,7 +265,7 @@ function parseLogs(logs: string[], checkpoints: { id: string, message: string }[
         }
         // ========== REFINEMENT MODE LOGS ==========
         // Analyst/System responses (Refinement Mode)
-        else if (log.match(/^\*\*(Analyst|System)\*\*:/i) || log.startsWith('**Analyst Questions:**') || log.startsWith('**Draft PRD:**') || log.startsWith('**Critic Feedback:**') || log.startsWith('**Final PRD Ready**')) {
+        else if (log.match(/^\*\*(Analyst|System)\*\*:/i) || log.startsWith('**Analyst Questions:**') || log.startsWith('**Clarifying Questions:**') || log.startsWith('**Draft PRD:**') || log.startsWith('**Critic Feedback:**') || log.startsWith('**Critic Review:**') || log.startsWith('**Final PRD Ready**')) {
             commitStep();
             commitSystem();
             // Create a step for Analyst/Refinement content
@@ -268,19 +275,27 @@ function parseLogs(logs: string[], checkpoints: { id: string, message: string }[
             const isLastLog = i === logs.length - 1;
             const isFinalPRD = log.startsWith('**Final PRD Ready**');
             
+            // Step should be 'running' if:
+            // 1. It's the last log AND
+            // 2. Not a final PRD AND
+            // 3. Agent is actively working (not waiting for user input)
+            const shouldBeRunning = isLastLog && !isFinalPRD && isAgentActivelyWorking;
+            
             currentStep = {
                 type: 'step',
                 content: 'Refinement',
-                title: log.startsWith('**Analyst Questions:**') ? '🎯 Analyst Questions' :
+                title: log.startsWith('**Analyst Questions:**') ? '📋 Analyst Questions' :
+                    log.startsWith('**Clarifying Questions:**') ? '📋 Clarifying Questions' :
                     log.startsWith('**Draft PRD:**') ? '📝 Draft PRD' :
                         log.startsWith('**Critic Feedback:**') ? '🔍 Critic Feedback' :
+                            log.startsWith('**Critic Review:**') ? '🔍 Critic Review' :
                             log.startsWith('**Final PRD Ready**') ? '✅ Final PRD' :
-                                '🧠 Analyst Response',
+                                '💬 Analyst Response',
                 markdown: log,  // Keep the full markdown including the header
                 tools: [],
                 artifacts: [],
-                // Set to 'running' for animations if this is the last log and not final PRD
-                status: isLastLog && !isFinalPRD ? 'running' : 'completed'
+                // Set to 'running' for animations if agent is actively working
+                status: shouldBeRunning ? 'running' : 'completed'
             };
         }
         // Refinement State/System Messages (e.g., > [Refinement]:)
@@ -292,6 +307,9 @@ function parseLogs(logs: string[], checkpoints: { id: string, message: string }[
             if (isProcessing) {
                 commitStep();
                 commitSystem();
+                // Step should be 'running' if it's the last log AND agent is actively working
+                const shouldBeRunning = isLastLog && isAgentActivelyWorking;
+                
                 // Create a step with running status for processing messages
                 currentStep = {
                     type: 'step',
@@ -300,7 +318,7 @@ function parseLogs(logs: string[], checkpoints: { id: string, message: string }[
                     markdown: log.replace(/^>\s*\[Refinement\]:\s*/i, ''),
                     tools: [],
                     artifacts: [],
-                    status: isLastLog ? 'running' : 'completed'
+                    status: shouldBeRunning ? 'running' : 'completed'
                 };
             } else {
                 commitStep();
@@ -370,7 +388,7 @@ function App() {
     const [diffContent, setDiffContent] = useState<{ path: string, before: string | null, after: string } | null>(null);
 
     // Agent Mode State (Global - applies to all missions)
-    const [agentMode, setAgentMode] = useState<'auto' | 'agent-decides'>('auto');
+    const [agentMode, setAgentMode] = useState<'auto' | 'review-enabled'>('auto');
 
     // Chat ID for mission folder isolation (generated once per webview session)
     const [chatId] = useState<string>(() => {
@@ -380,7 +398,7 @@ function App() {
         return Array.from(array, byte => byte.toString(16).padStart(2, '0')).join('');
     });
 
-    // Pending Approval State (for Agent Decides mode, Refinement Mode, and Login Checkpoints)
+    // Pending Approval State (for Review Enabled mode, Refinement Mode, and Login Checkpoints)
     const [pendingApproval, setPendingApproval] = useState<{
         type: 'plan' | 'command' | 'prd' | 'login-checkpoint';
         content: string;
@@ -511,7 +529,7 @@ function App() {
                 });
                 setRightPaneTab('context');
             }
-            // Handle approval requests from backend (Agent Decides mode)
+            // Handle approval requests from backend (Review Enabled mode)
             if (message.command === 'awaitingApproval') {
                 setPendingApproval({
                     type: 'plan',
@@ -714,7 +732,7 @@ function App() {
         vscode.postMessage({ command: 'addWorkspace' });
     };
 
-    // Approval handlers for Agent Decides mode
+    // Approval handlers for Review Enabled mode
     const handleApproveReview = () => {
         if (!pendingApproval) return;
         vscode.postMessage({
@@ -788,7 +806,7 @@ function App() {
         setQuestionnaireData(null);  // Just hide the questionnaire
     };
 
-    const handleAgentModeChange = (newMode: 'auto' | 'agent-decides') => {
+    const handleAgentModeChange = (newMode: 'auto' | 'review-enabled') => {
         setAgentMode(newMode);
         vscode.postMessage({
             command: 'setAgentMode',
@@ -817,7 +835,18 @@ function App() {
     };
 
     const activeAgent = activeAgents.find(a => a.id === expandedAgentId) || activeAgents[0];
-    const logGroups = activeAgent ? parseLogs(activeAgent.logs, activeAgent.checkpoints || []) : [];
+    
+    // Determine if we're waiting for user input (questionnaire or pending approval)
+    const isWaitingForUserInput = !!(questionnaireData || pendingApproval);
+    
+    const logGroups = activeAgent ? parseLogs(
+        activeAgent.logs, 
+        activeAgent.checkpoints || [],
+        { 
+            agentStatus: activeAgent.status, 
+            isWaitingForUserInput 
+        }
+    ) : [];
 
     // Helper to start new chat
     const handleNewChat = () => {
@@ -840,17 +869,17 @@ function App() {
                             Auto
                         </button>
                         <button
-                            className={`mode-toggle-btn ${agentMode === 'agent-decides' ? 'active' : ''}`}
-                            onClick={() => handleAgentModeChange('agent-decides')}
+                            className={`mode-toggle-btn ${agentMode === 'review-enabled' ? 'active' : ''}`}
+                            onClick={() => handleAgentModeChange('review-enabled')}
                             title="Agent pauses for review after plans and before high-risk commands"
                         >
                             <span className="mode-icon">🛡️</span>
-                            Agent Decides
+                            Review Enabled
                         </button>
                     </div>
                 </div>
                 <div className="settings-bar-right">
-                    {agentMode === 'agent-decides' && (
+                    {agentMode === 'review-enabled' && (
                         <span className="mode-indicator">
                             <span className="indicator-dot"></span>
                             Review mode active

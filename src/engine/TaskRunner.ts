@@ -106,23 +106,23 @@ export class TaskRunner {
     private _approvalResolvers: Map<string, { resolve: (approved: boolean) => void, feedback?: string }> = new Map();
 
     // Global agent mode (applies to all missions)
-    private _globalAgentMode: 'auto' | 'agent-decides' = 'auto';
+    private _globalAgentMode: 'auto' | 'review-enabled' = 'auto';
 
     public getTasks(): AgentTask[] {
         return Array.from(this.tasks.values());
     }
 
     // Get/Set global agent mode
-    public getAgentMode(): 'auto' | 'agent-decides' {
+    public getAgentMode(): 'auto' | 'review-enabled' {
         return this._globalAgentMode;
     }
 
-    public setAgentMode(mode: 'auto' | 'agent-decides') {
+    public setAgentMode(mode: 'auto' | 'review-enabled') {
         this._globalAgentMode = mode;
         console.log(`[TaskRunner] Agent mode set to: ${mode}`);
     }
 
-    // Approval control methods for Agent Decides mode
+    // Approval control methods for Review Enabled mode
     public approveReview(taskId: string, feedback?: string) {
         const task = this.tasks.get(taskId);
         if (!task || task.status !== 'awaiting-approval') { return; }
@@ -1152,19 +1152,47 @@ ${originalPrompt}`;
                 } else if (event.type === 'critique-ready') {
                     // Format critique in a user-friendly way
                     const critique = event.payload as { confidenceScore: number; passedValidation: boolean; issues: any[] };
-                    const scoreEmoji = critique.confidenceScore >= 70 ? '✅' : critique.confidenceScore >= 50 ? '⚠️' : '❌';
+                    const scoreEmoji = critique.confidenceScore >= 70 ? '✅' : critique.confidenceScore >= 50 ? '🟡' : '🔴';
                     
                     let critiqueMessage = `\n**Critic Review:**\n`;
                     critiqueMessage += `${scoreEmoji} **Confidence Score:** ${critique.confidenceScore}%\n`;
                     critiqueMessage += `**Validation:** ${critique.passedValidation ? 'Passed' : 'Needs Improvement'}\n`;
                     
-                    if (critique.issues && critique.issues.length > 0) {
+                    // Sanitize and filter issues before display
+                    // This provides an additional layer of protection against malformed data
+                    const validIssues = (critique.issues || []).filter((issue: any) => {
+                        const desc = (issue.description || '').trim();
+                        // Skip issues with very short descriptions
+                        if (desc.length < 10) return false;
+                        // Skip issues that look like table rows (multiple pipes)
+                        if ((desc.match(/\|/g) || []).length >= 2) return false;
+                        // Skip issues that are just status words
+                        if (/^\s*(complete|passed|failed|yes|no|done|ok)\s*$/i.test(desc)) return false;
+                        return true;
+                    });
+                    
+                    if (validIssues.length > 0) {
                         critiqueMessage += `\n**Issues Found:**\n`;
-                        critique.issues.forEach((issue: any, i: number) => {
+                        validIssues.forEach((issue: any, i: number) => {
+                            // Clean the description before display
+                            let desc = (issue.description || '').trim();
+                            // Remove leading/trailing quotes, dashes, commas
+                            desc = desc.replace(/^["'\-,\s]+|["'\-,\s]+$/g, '');
+                            // Truncate very long descriptions
+                            if (desc.length > 200) {
+                                desc = desc.substring(0, 200) + '...';
+                            }
+                            
                             const severityIcon = issue.severity === 'high' ? '🔴' : issue.severity === 'medium' ? '🟡' : '🟢';
-                            critiqueMessage += `${i + 1}. ${severityIcon} [${issue.type || 'issue'}] ${issue.description}`;
+                            critiqueMessage += `${i + 1}. ${severityIcon} [${issue.type || 'issue'}] ${desc}`;
                             if (issue.suggestion) {
-                                critiqueMessage += `\n   💡 *${issue.suggestion}*`;
+                                // Also clean suggestion
+                                let suggestion = (issue.suggestion || '').trim();
+                                suggestion = suggestion.replace(/^["'\-,\s]+|["'\-,\s]+$/g, '');
+                                if (suggestion.length > 150) {
+                                    suggestion = suggestion.substring(0, 150) + '...';
+                                }
+                                critiqueMessage += `\n   💡 *${suggestion}*`;
                             }
                             critiqueMessage += '\n';
                         });
@@ -1176,11 +1204,17 @@ ${originalPrompt}`;
                         } else {
                             critiqueMessage += `\n> Please address the issues above by replying with clarifications.`;
                         }
+                    } else if (critique.issues && critique.issues.length > 0) {
+                        // Had issues but all were filtered out - show "no significant issues" message
+                        critiqueMessage += `\n> ✅ No significant issues found after validation.`;
+                        if (critique.confidenceScore >= 70) {
+                            critiqueMessage += `\n> ⏳ **Please wait** - Refiner is generating the final PRD...`;
+                        }
                     } else if (!critique.passedValidation) {
                         critiqueMessage += `\n> The PRD needs more detail. The system will proceed with refinement using available information.`;
                         critiqueMessage += `\n> ⏳ **Please wait** - Refiner is starting...`;
                     } else {
-                        critiqueMessage += `\n> ✓ PRD looks good! Proceeding to final refinement.`;
+                        critiqueMessage += `\n> ✅ PRD looks good! Proceeding to final refinement.`;
                         critiqueMessage += `\n> ⏳ **Please wait** - Refiner is starting...`;
                     }
                     
@@ -1682,7 +1716,9 @@ ${contextData}
                 // Login checkpoint callback - shows "I've Logged In" button in UI
                 (checkpointTaskId: string, loginUrl: string, ssoProvider?: string) => 
                     this.requestLoginCheckpoint(checkpointTaskId, loginUrl, ssoProvider),
-                taskDisplayName // Task name for terminal display
+                taskDisplayName, // Task name for terminal display
+                this._globalAgentMode, // Agent mode for plan-first enforcement
+                taskContext.ruleEnforcer // Constitution rule enforcement
             );
 
             // Step 3: Start Gemini Session
@@ -1792,7 +1828,7 @@ ${contextData}
 
 
             // Use the unified workflow from buildModeWorkflow()
-            const modeWorkflow = this.buildModeWorkflow(task.mode || 'planning', false);
+            const modeWorkflow = this.buildModeWorkflow(task.mode || 'planning', false, this._globalAgentMode === 'review-enabled');
             systemPrompt += `\n${modeWorkflow}\n`;
 
             // Inject constitution into system prompt if available
@@ -2160,12 +2196,24 @@ ${contextData}
                                         task.logs.push(`[Artifact Created]: ${args.path} `);
                                     }
 
-                                    // AGENT DECIDES MODE: Pause for review after creating implementation_plan.md
-                                    if (this._globalAgentMode === 'agent-decides') {
-                                        const baseName = filePath.split(/[\\/]/).pop()?.toLowerCase();
+                                    // REVIEW ENABLED MODE: Pause for review after creating implementation_plan.md
+                                    if (this._globalAgentMode === 'review-enabled') {
+                                        const baseName = filePath.split(/[\\\/]/).pop()?.toLowerCase();
                                         if (baseName === 'implementation_plan.md') {
-                                            task.logs.push(`> [Agent Decides]: Implementation plan created. Pausing for user review...`);
-                                            const approved = await this.waitForApproval(taskId, 'plan', afterContent);
+                                            // Try to read task.md to show both files in the review
+                                            let combinedPlanContent = '';
+                                            try {
+                                                const taskMdContent = await tools.readFile('.vibearchitect/task.md');
+                                                if (!taskMdContent.startsWith('Error')) {
+                                                    combinedPlanContent = `## Task Checklist (task.md)\n\n${taskMdContent}\n\n---\n\n`;
+                                                }
+                                            } catch {
+                                                // task.md might not exist yet, continue with just implementation_plan
+                                            }
+                                            combinedPlanContent += `## Implementation Plan\n\n${afterContent}`;
+                                            
+                                            task.logs.push(`> [Review Enabled]: Implementation plan created. Pausing for user review...`);
+                                            const approved = await this.waitForApproval(taskId, 'plan', combinedPlanContent);
                                             if (!approved) {
                                                 toolResult += '\n> [System]: User rejected the plan. Mission cancelled.';
                                                 // Update task status back to executing before throwing
@@ -2235,11 +2283,11 @@ ${contextData}
                                     // Extract timeout from args, default to 15s, cap at 10min
                                     const waitTimeoutMs = Math.min((args.waitTimeoutMs as number) || 15000, 600000);
 
-                                    // AGENT DECIDES MODE: Check for high-risk commands
-                                    if (this._globalAgentMode === 'agent-decides') {
+                                    // REVIEW ENABLED MODE: Check for high-risk commands
+                                    if (this._globalAgentMode === 'review-enabled') {
                                         const riskCheck = this.isHighRiskCommand(cmd);
                                         if (riskCheck.isRisk) {
-                                            task.logs.push(`> [Agent Decides]: High-risk command detected. Requesting approval...`);
+                                            task.logs.push(`> [Review Enabled]: High-risk command detected. Requesting approval...`);
                                             const approved = await this.waitForApproval(taskId, 'command', cmd, riskCheck.reason);
                                             if (!approved) {
                                                 toolResult = `> [System]: Command skipped by user: ${cmd}`;
@@ -2791,7 +2839,7 @@ ${contextData}
                     // CRITICAL: For substantial work, ALWAYS use planning mode regardless of original task.mode
                     // This ensures code changes get proper task.md / implementation_plan.md / validation
                     const effectiveMode = (isSubstantialWork && !isTrivial) ? 'planning' : (task.mode || 'planning');
-                    const modeWorkflow = this.buildModeWorkflow(effectiveMode, isTrivial);
+                    const modeWorkflow = this.buildModeWorkflow(effectiveMode, isTrivial, this._globalAgentMode === 'review-enabled');
 
                     // Check if the previous task was completed
                     const wasCompleted = task.status === 'completed';
@@ -3323,7 +3371,7 @@ ${contextData}
      * Build mode-specific workflow instructions for the AI agent.
      * Used by both processTask() and replyToTask() for consistency.
      */
-    private buildModeWorkflow(mode: 'planning' | 'fast' | 'refinement', isTrivial: boolean): string {
+    private buildModeWorkflow(mode: 'planning' | 'fast' | 'refinement', isTrivial: boolean, reviewEnabled: boolean = false): string {
         // Trivial requests skip planning regardless of mode
         if (isTrivial) {
             return `
@@ -3395,112 +3443,170 @@ CORE WORKFLOW (FAST MODE):
 
         // PLANNING MODE (default for substantial requests)
         return `
-CORE WORKFLOW (PLANNING MODE):
-1. **CHECK FOR PRD** (Refinement Mode Output):
-   - First, check if a PRD file exists. Try these locations IN ORDER:
-     1. '.vibearchitect/prd.md' (primary backup location)
-     2. '.vibearchitect/current/prd.md' (symlink location)
-   - Use read_file to check each location until you find the PRD.
-   - If a PRD exists, READ IT FIRST - this is the APPROVED specification from refinement mode.
-   - You MUST implement the PRD requirements exactly as specified.
-   - Your task.md and implementation_plan.md MUST implement the PRD requirements.
-   - If no PRD exists in any location, proceed to EXPLORE.
+WORKFLOW PHASES (STRICT ORDER - CANNOT SKIP):
+
+═══════════════════════════════════════════════════════════════════════════════
+PHASE 1: DISCOVERY (Read-Only)
+═══════════════════════════════════════════════════════════════════════════════
+Purpose: Understand the codebase before planning
+Allowed tools: read_file, list_files ONLY
+Forbidden: write_file, apply_diff, run_command (until Phase 2/3)
+
+Steps:
+1a. **CHECK FOR PRD** (Refinement Mode Output):
+    - Check if PRD exists at '.vibearchitect/prd.md' or '.vibearchitect/current/prd.md'
+    - If PRD exists: READ IT FIRST - this is the APPROVED specification
+    - Your plans MUST implement the PRD requirements exactly
 
 1b. **CHECK FOR EXISTING PLAN** (Phased Implementation):
-   - Check if '.vibearchitect/task.md' or '.vibearchitect/implementation_plan.md' exists.
-   - If they exist: This is a PHASED IMPLEMENTATION in progress - READ and CONTINUE!
-   - Look for "Phase X" markers and checkboxes to determine current progress.
-   - Do NOT create new plans - continue the existing one.
+    - Check if '.vibearchitect/task.md' or '.vibearchitect/implementation_plan.md' exists
+    - If they exist: This is a PHASED IMPLEMENTATION in progress - READ and CONTINUE!
+    - Look for "Phase X" markers and checkboxes to determine progress
+    - Do NOT create new plans - continue the existing one
 
-⚠️ CRITICAL - IGNORE MISSION SUMMARIES ONLY:
-   - NEVER read 'mission_summary.md' - it means a PREVIOUS mission is done, not yours!
+1c. **EXPLORE CODEBASE**:
+    - Use list_files / read_file to understand the project structure
+    - Read as many files as needed to create a comprehensive plan
+    - No artificial limits on exploration
+
+⚠️ CRITICAL - IGNORE MISSION SUMMARIES:
+   - NEVER read 'mission_summary.md' - it means a PREVIOUS mission is done!
    - If you find mission_summary.md, IGNORE it completely
-   - However, DO use existing task.md and implementation_plan.md if present (phased work)
+   - However, DO use existing task.md and implementation_plan.md if present
 
-2. EXPLORE: Use list_files / read_file to understand the codebase.
+Exit Phase 1: When you have enough context to create a comprehensive plan
 
-3. PLAN (Mandatory):
-   - Create '.vibearchitect/task.md' - a Markdown checklist of implementation steps.
-   - If PRD exists: Derive steps DIRECTLY from the PRD's functional requirements and acceptance criteria.
-   - Create '.vibearchitect/implementation_plan.md' - your technical approach.
-   - If PRD exists: Your plan MUST reference and align with the PRD specifications.
-   - ⚠️ MUST include a "Testing & Verification" section in implementation_plan.md
+═══════════════════════════════════════════════════════════════════════════════
+PHASE 2: PLANNING (Mandatory - Cannot Skip) ⛔
+═══════════════════════════════════════════════════════════════════════════════
+Purpose: Document your approach BEFORE any code changes
+Allowed tools: write_file ONLY to these paths:
+  - .vibearchitect/task.md
+  - .vibearchitect/implementation_plan.md
+Forbidden: write_file to ANY other path, apply_diff, run_command
 
-4. ACT: Use write_file / run_command to implement the plan.
+Steps:
+2a. Create '.vibearchitect/task.md' - a Markdown checklist of implementation steps
+    - If PRD exists: Derive steps DIRECTLY from PRD requirements
+2b. Create '.vibearchitect/implementation_plan.md' - your technical approach
+    - MUST include a "Testing & Verification" section
+    - If PRD exists: Plan MUST reference and align with PRD specifications
 
-5. UPDATE: After completing a step, OVERWRITE '.vibearchitect/task.md' to mark items done (e.g., "- [x] Step 1").
+⚠️ FIRST WRITE CONSTRAINT:
+Your FIRST write_file or apply_diff call MUST be to:
+  - .vibearchitect/task.md OR
+  - .vibearchitect/implementation_plan.md
+If your first file modification is to ANY other path, you are VIOLATING the workflow.
+${reviewEnabled ? `
+⛔ AUTOMATIC PAUSE (Review Enabled Mode):
+   - After creating BOTH plan files, the system will automatically pause
+   - Your plan will appear in the Review Pane for user approval
+   - User will Approve, Reject, or provide feedback via the UI
+   - If feedback is provided, you will receive it and must revise the plan
+   - Execution continues ONLY after user approves via the UI
+` : ''}
+═══════════════════════════════════════════════════════════════════════════════
+PHASE 3: IMPLEMENTATION (Only After Planning Complete${reviewEnabled ? ' AND User Approval' : ''})
+═══════════════════════════════════════════════════════════════════════════════
+${reviewEnabled ? 'Entry Condition: User clicked "Approve" in the Review Pane' : 'Entry Condition: Both task.md and implementation_plan.md exist'}
+Allowed tools: All tools (write_file, apply_diff, run_command, etc.)
 
-6. ⚠️ TEST & VERIFY (MANDATORY - CANNOT SKIP):
-   
-   📋 **STEP 6a: ENVIRONMENT SETUP (MUST DO FIRST)**
-   - **Check for environment requirements**:
-     a) Look for .env.example, .env.template, or README mentioning environment variables
-     b) If environment variables are needed but .env doesn't exist:
-        → ASK USER: "I found that this project needs environment variables: [list them]. Please create a .env file or tell me the values to use."
-        → WAIT for user response before proceeding
-     c) Check for requirements.txt (Python) or package.json (Node)
-   
-   - **Python Projects - venv setup (MANDATORY)**:
-     a) Check if 'venv' or '.venv' folder exists
-     b) If NOT exists: Create it with 'python -m venv venv'
-     c) Install dependencies: 
-        - Windows: 'venv\\Scripts\\pip install -r requirements.txt'
-        - Unix: './venv/bin/pip install -r requirements.txt'
-     d) ALWAYS run the app using venv python:
-        - Windows: 'venv\\Scripts\\python app.py'
-        - Unix: './venv/bin/python app.py'
-   
-   - **Node.js Projects - dependency setup (MANDATORY)**:
-     a) Check if 'node_modules' exists
-     b) If NOT exists: Run 'npm install'
-     c) Use the project's actual start script from package.json
+Steps:
+3a. Implement changes according to the approved plan
+3b. Update task.md checkboxes as you complete steps (e.g., "- [x] Step 1")
 
-   📋 **STEP 6b: START THE APPLICATION**
-   - **USE EXISTING INFRASTRUCTURE** - Do NOT create minimal test setups!
-   - Look for EXISTING server scripts: package.json scripts, run.py, app.py, manage.py, etc.
-   - If server already running: Call 'reload_browser()' to refresh
-   - If server not running: Use the PROJECT'S actual start command
-   - Check config files for the correct port
-   
-   📋 **STEP 6c: VERIFY WITH BROWSER (MANDATORY FOR WEB APPS)**
-   - Call 'browser_verify_ui("page-name", "description of expected UI elements")'
-   - This provides AI-powered visual verification
-   - NEVER say "verified" unless browser_verify_ui returned PASS
-   
-   📋 **STEP 6d: SELF-HEALING LOOP (MANDATORY)**
-   - If browser_verify_ui returns FAIL or finds issues:
-     a) READ the specific issues reported
-     b) FIX the code based on the issues
-     c) Reload the browser
-     d) Call browser_verify_ui AGAIN
-     e) REPEAT until PASS or user intervention needed
-   - This self-healing loop is CRITICAL - do not skip it!
-   - If stuck after 3 attempts: ASK USER for guidance
-   
-   📋 **STEP 6e: VERIFY PRD CRITERIA (if PRD exists)**
-   - Go through EACH acceptance criterion from the PRD
-   - Test EACH one systematically
-   - Document which criteria PASS and which FAIL
-   - Fix any failures before proceeding
+═══════════════════════════════════════════════════════════════════════════════
+PHASE 4: TEST & VERIFY (MANDATORY - Cannot Skip) ⚠️
+═══════════════════════════════════════════════════════════════════════════════
 
-   ❌ **YOU CANNOT SAY "MISSION COMPLETE" WITHOUT COMPLETING STEP 6**
-   ❌ **SKIPPING TESTING IS NOT ALLOWED - IT IS A REQUIRED STEP**
+📋 **STEP 4a: ENVIRONMENT SETUP (MUST DO FIRST)**
+- **Check for environment requirements**:
+  a) Look for .env.example, .env.template, or README mentioning environment variables
+  b) If environment variables are needed but .env doesn't exist:
+     → ASK USER: "I found that this project needs environment variables: [list them]. Please create a .env file or tell me the values to use."
+     → WAIT for user response before proceeding
+  c) Check for requirements.txt (Python) or package.json (Node)
 
-7. FINISH (ONLY WHEN 100% DONE AND TESTED):
-   - Create ".vibearchitect/mission_summary.md".
-   - Write a detailed summary including:
-     a) Changes made
-     b) TESTING RESULTS with browser_verify_ui outcomes
-     c) If PRD was used: Checklist of which PRD requirements were verified
-     d) Any issues found and fixed during self-healing
-   - Answer with "MISSION COMPLETE" only after creating this file.
+- **Python Projects - venv setup (MANDATORY)**:
+  a) Check if 'venv' or '.venv' folder exists
+  b) If NOT exists: Create it with 'python -m venv venv'
+  c) Install dependencies: 
+     - Windows: 'venv\\Scripts\\pip install -r requirements.txt'
+     - Unix: './venv/bin/pip install -r requirements.txt'
+  d) ALWAYS run the app using venv python:
+     - Windows: 'venv\\Scripts\\python app.py'
+     - Unix: './venv/bin/python app.py'
+
+- **Node.js Projects - dependency setup (MANDATORY)**:
+  a) Check if 'node_modules' exists
+  b) If NOT exists: Run 'npm install'
+  c) Use the project's actual start script from package.json
+
+📋 **STEP 4b: START THE APPLICATION**
+- **USE EXISTING INFRASTRUCTURE** - Do NOT create minimal test setups!
+- Look for EXISTING server scripts: package.json scripts, run.py, app.py, manage.py, etc.
+- If server already running: Call 'reload_browser()' to refresh
+- If server not running: Use the PROJECT'S actual start command
+- Check config files for the correct port
+
+📋 **STEP 4c: VERIFY WITH BROWSER (MANDATORY FOR WEB APPS)**
+- Call 'browser_verify_ui("page-name", "description of expected UI elements")'
+- This provides AI-powered visual verification
+- NEVER say "verified" unless browser_verify_ui returned PASS
+
+📋 **STEP 4d: SELF-HEALING LOOP (MANDATORY)**
+- If browser_verify_ui returns FAIL or finds issues:
+  a) READ the specific issues reported
+  b) FIX the code based on the issues
+  c) Reload the browser
+  d) Call browser_verify_ui AGAIN
+  e) REPEAT until PASS or user intervention needed
+- This self-healing loop is CRITICAL - do not skip it!
+- If stuck after 3 attempts: ASK USER for guidance
+
+📋 **STEP 4e: VERIFY PRD CRITERIA (if PRD exists)**
+- Go through EACH acceptance criterion from the PRD
+- Test EACH one systematically
+- Document which criteria PASS and which FAIL
+- Fix any failures before proceeding
+
+❌ **YOU CANNOT SAY "MISSION COMPLETE" WITHOUT COMPLETING PHASE 4**
+❌ **SKIPPING TESTING IS NOT ALLOWED - IT IS A REQUIRED STEP**
+
+═══════════════════════════════════════════════════════════════════════════════
+PHASE 5: FINISH (Only When 100% Done AND Tested)
+═══════════════════════════════════════════════════════════════════════════════
+- Create ".vibearchitect/mission_summary.md"
+- Write a detailed summary including:
+  a) Changes made
+  b) TESTING RESULTS with browser_verify_ui outcomes
+  c) If PRD was used: Checklist of which PRD requirements were verified
+  d) Any issues found and fixed during self-healing
+- Answer with "MISSION COMPLETE" only after creating this file
 
 ⚠️ CRITICAL OUTPUT RULES:
-   - NEVER say "MISSION COMPLETE" until ALL tasks are finished AND TESTED
-   - NEVER skip Step 6 (Testing) - it is MANDATORY
-   - NEVER output "Mission Summary" or wrap-up text mid-work
-   - Each response should describe current work, NOT summarize the whole mission
-   - Summary and "MISSION COMPLETE" appear ONLY ONCE at the very end
+- NEVER say "MISSION COMPLETE" until ALL phases are finished AND TESTED
+- NEVER skip Phase 4 (Testing) - it is MANDATORY
+- NEVER output "Mission Summary" or wrap-up text mid-work
+- Each response should describe current work, NOT summarize the whole mission
+- Summary and "MISSION COMPLETE" appear ONLY ONCE at the very end
+${reviewEnabled ? `
+═══════════════════════════════════════════════════════════════════════════════
+⚠️ REVIEW ENABLED MODE - APPROVAL GATES
+═══════════════════════════════════════════════════════════════════════════════
+
+📋 PLAN APPROVAL (Active - Handled by UI):
+- After creating task.md AND implementation_plan.md → System auto-pauses
+- Plan appears in Review Pane for user approval
+- User can: Approve | Reject | Provide feedback
+- If feedback provided: You receive it as input and must revise the plan
+- Implementation begins ONLY after user clicks "Approve"
+
+🔒 COMMAND REVIEW (Active - Separate from Plan Approval):
+- High-risk terminal commands (rm, delete, drop, etc.) require approval
+- This is checked DURING implementation, not during planning
+- Separate from plan approval
+` : ''}
         `.trim();
     }
 }

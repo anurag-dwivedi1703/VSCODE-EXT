@@ -22,14 +22,44 @@ Example of expected output:
 - Run npm test
 `;
 
+/**
+ * Formats the constitution content for injection into the system prompt.
+ * Places it at HIGH PRIORITY position so the agent sees it first.
+ */
+function formatConstitutionBlock(constitution?: string): string {
+    if (!constitution || constitution.trim().length === 0) {
+        return '';
+    }
+    
+    return `
+═══════════════════════════════════════════════════════════════════════════════
+⚠️ WORKSPACE CONSTITUTION - MANDATORY RULES
+═══════════════════════════════════════════════════════════════════════════════
+
+The following rules are MANDATORY for this workspace. You MUST follow them
+for ALL actions. Violations will be blocked.
+
+${constitution}
+
+═══════════════════════════════════════════════════════════════════════════════
+
+`;
+}
+
 export class PromptEngine {
-    static getSystemPrompt(mode: 'PLANNING' | 'FAST'): string {
+    /**
+     * Get the system prompt for the AI agent.
+     * @param mode - 'PLANNING' or 'FAST' mode
+     * @param constitution - Optional constitution content to inject (from .vibearchitect/constitution.md)
+     */
+    static getSystemPrompt(mode: 'PLANNING' | 'FAST', constitution?: string): string {
         const securityInstructions = getSecurityInstructions();
+        const constitutionBlock = formatConstitutionBlock(constitution);
 
         if (mode === 'PLANNING') {
             return `
 You are in PLANNING mode.
-${IMPLEMENTATION_PLAN_INSTRUCTIONS}
+${constitutionBlock}${IMPLEMENTATION_PLAN_INSTRUCTIONS}
 
 ${securityInstructions}
 
@@ -38,7 +68,7 @@ Do not write code yet. Focus on the plan.
         } else {
             return `
 You are in FAST mode.
-You are a highly efficient coding assistant.
+${constitutionBlock}You are a highly efficient coding assistant.
 Execute the user's request directly.
 
 ${securityInstructions}

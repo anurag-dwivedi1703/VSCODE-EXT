@@ -55,6 +55,21 @@ const AI_CALL_TIMEOUT_MS = 300000; // 5 minutes
  */
 const TOKEN_WARNING_THRESHOLD = 0.8;
 
+/**
+ * Configuration for issue description validation.
+ * These thresholds can be adjusted based on experience.
+ */
+const ISSUE_VALIDATION_CONFIG = {
+    /** Minimum characters for a valid issue description */
+    minLength: 10,
+    /** Maximum characters for a valid issue description */
+    maxLength: 500,
+    /** Maximum pipe characters allowed (to filter table rows) */
+    maxPipeChars: 1,
+    /** Enable debug logging for filtered issues */
+    debugLogging: true
+};
+
 export class RefinementSession {
     private _state: RefinementSessionState;
     private _aiSession: ISession | null = null;
@@ -852,6 +867,63 @@ ${acceptanceCriteria || 'Not specified'}
         };
     }
 
+    /**
+     * Validates whether an issue description is meaningful and not garbage.
+     * Filters out table rows, status words, and malformed content.
+     * 
+     * @param desc The issue description to validate
+     * @returns true if the description is valid, false otherwise
+     */
+    private isValidIssueDescription(desc: string): boolean {
+        if (!desc) return false;
+        
+        const trimmed = desc.trim();
+        
+        // Check minimum length
+        if (trimmed.length < ISSUE_VALIDATION_CONFIG.minLength) {
+            return false;
+        }
+        
+        // Check maximum length (likely garbage if too long)
+        if (trimmed.length > ISSUE_VALIDATION_CONFIG.maxLength) {
+            return false;
+        }
+        
+        // Check for table row patterns (multiple pipe characters)
+        const pipeCount = (trimmed.match(/\|/g) || []).length;
+        if (pipeCount > ISSUE_VALIDATION_CONFIG.maxPipeChars) {
+            return false;
+        }
+        
+        // Filter out content that's just symbols/emojis
+        if (/^[\s\-\|✅❌🟡🔴🟢⚠️💡📝🔧]+$/.test(trimmed)) {
+            return false;
+        }
+        
+        // Filter out single status words
+        if (/^\s*(complete|completed|passed|failed|yes|no|done|ok|n\/a|na)\s*$/i.test(trimmed)) {
+            return false;
+        }
+        
+        // Filter out content that starts with common table markers
+        if (/^\s*\|/.test(trimmed) || /\|\s*$/.test(trimmed)) {
+            return false;
+        }
+        
+        // Filter out content that looks like markdown table headers
+        if (/^[-\s|:]+$/.test(trimmed)) {
+            return false;
+        }
+        
+        // Filter out trailing quotes, commas, or other artifacts
+        const cleanedDesc = trimmed.replace(/^["'\-,\s]+|["'\-,\s]+$/g, '');
+        if (cleanedDesc.length < ISSUE_VALIDATION_CONFIG.minLength) {
+            return false;
+        }
+        
+        return true;
+    }
+
     private parseCritiqueResponse(response: string): CritiqueResult {
         // Try multiple strategies to parse the critique response
         
@@ -940,25 +1012,52 @@ ${acceptanceCriteria || 'Not specified'}
         }
 
         // Extract any issues mentioned (using proper CritiqueIssue types)
-        const issues: CritiqueIssue[] = [];
+        const rawIssues: CritiqueIssue[] = [];
+        
+        // Improved patterns that avoid capturing table rows and partial content
+        // Added exclusion of pipe characters and quotes at boundaries
         const issuePatterns = [
-            /(?:issue|problem|concern|gap)[:\s]+([^.\n]+)/gi,
-            /(?:missing|lacks?|needs?)[:\s]+([^.\n]+)/gi,
-            /(?:ambiguous|unclear|vague)[:\s]+([^.\n]+)/gi
+            /(?:issue|problem|concern|gap)[:\s]+["']?([^"'\n|]+?)["']?(?:\.|$|\n)/gi,
+            /(?:missing|lacks?|needs?)[:\s]+["']?([^"'\n|]+?)["']?(?:\.|$|\n)/gi,
+            /(?:ambiguous|unclear|vague)[:\s]+["']?([^"'\n|]+?)["']?(?:\.|$|\n)/gi
         ];
+
+        // Track seen descriptions to avoid duplicates
+        const seenDescriptions = new Set<string>();
 
         for (const pattern of issuePatterns) {
             let issueMatch;
             while ((issueMatch = pattern.exec(response)) !== null) {
-                issues.push({
+                const description = issueMatch[1].trim();
+                const normalizedDesc = description.toLowerCase();
+                
+                // Skip duplicates
+                if (seenDescriptions.has(normalizedDesc)) {
+                    continue;
+                }
+                seenDescriptions.add(normalizedDesc);
+                
+                rawIssues.push({
                     type: 'ambiguity' as const,
                     severity: 'medium' as const,
-                    description: issueMatch[1].trim()
+                    description: description
                 });
             }
         }
 
-        console.log(`[RefinementSession] Extracted critique: score=${confidenceScore}, passed=${passedValidation}, issues=${issues.length}`);
+        // Validate and filter issues
+        const issues = rawIssues.filter(issue => this.isValidIssueDescription(issue.description));
+        
+        // Debug logging for filtered issues
+        if (ISSUE_VALIDATION_CONFIG.debugLogging && rawIssues.length !== issues.length) {
+            const filtered = rawIssues.filter(issue => !this.isValidIssueDescription(issue.description));
+            console.log(`[RefinementSession] Filtered ${filtered.length} invalid issue(s):`);
+            filtered.forEach(issue => {
+                console.log(`  - Rejected: "${issue.description.substring(0, 100)}${issue.description.length > 100 ? '...' : ''}"`);
+            });
+        }
+
+        console.log(`[RefinementSession] Extracted critique: score=${confidenceScore}, passed=${passedValidation}, issues=${issues.length} (${rawIssues.length} raw)`);
         
         return {
             confidenceScore,

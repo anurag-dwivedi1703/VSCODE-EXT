@@ -49,6 +49,10 @@ VibeArchitect lets you assign missions to AI agents that work autonomously - wri
 
 Press `Ctrl+Shift+P` → Type `Developer: Reload Window` → Press Enter
 
+Press `Ctrl+Shift+P` → Type `VibeArchitect: Open Mission Control` → Press Enter 
+
+Right Click on `Mission Control` tab whisch should have opened and click on `Move into New Window`
+
 ### Step 3: Configure AI Model
 
 Open Settings (`Ctrl+,`) and search for `vibearchitect`:

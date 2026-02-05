@@ -112,7 +112,7 @@ export class MissionControlProvider {
         });
         this._disposables.push(navigateBrowserSub);
 
-        // Listen for approval requests (Agent Decides mode and constitution review)
+        // Listen for approval requests (Review Enabled mode and constitution review)
         const awaitingApprovalSub = this._taskRunner.onAwaitingApproval((event) => {
             // Map approval types to webview commands
             let command: string;

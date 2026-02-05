@@ -13,6 +13,7 @@ import { parseSearchReplaceBlocks, DiffLogContext } from '../utils/SearchReplace
 import { DiffLogger, findBestMatch } from '../utils/DiffLogger';
 import { getIDEDiffApplier } from '../utils/IDEDiffApplier';
 import { getSymbolNavigator } from '../utils/SymbolNavigator';
+import { RuleEnforcer } from '../services/RuleEnforcer';
 
 export class AgentTools {
     private browserService: BrowserAutomationService | null = null;
@@ -31,7 +32,9 @@ export class AgentTools {
         private readonly fileLockManager?: FileLockManager,
         private readonly taskId?: string,
         private readonly loginCheckpointCallback?: LoginCheckpointCallback,
-        taskName?: string
+        taskName?: string,
+        private readonly agentMode: 'auto' | 'review-enabled' = 'auto',
+        private readonly ruleEnforcer?: RuleEnforcer
     ) {
         // Derive workspace name from path
         this.workspaceName = worktreeRoot.split(/[\\/]/).pop() || worktreeRoot;
@@ -64,6 +67,43 @@ export class AgentTools {
         return vscode.Uri.file(fullPath);
     }
 
+    /**
+     * Check if plan files exist in .vibearchitect folder.
+     * Used by plan-first guard in review-enabled mode.
+     */
+    private async planFilesExist(): Promise<{taskExists: boolean, planExists: boolean}> {
+        const taskPath = '.vibearchitect/task.md';
+        const planPath = '.vibearchitect/implementation_plan.md';
+        
+        let taskExists = false;
+        let planExists = false;
+        
+        try {
+            await vscode.workspace.fs.stat(this.getUri(taskPath));
+            taskExists = true;
+        } catch {
+            // File doesn't exist
+        }
+        
+        try {
+            await vscode.workspace.fs.stat(this.getUri(planPath));
+            planExists = true;
+        } catch {
+            // File doesn't exist
+        }
+        
+        return { taskExists, planExists };
+    }
+
+    /**
+     * Check if a path is a plan file (task.md or implementation_plan.md in .vibearchitect).
+     */
+    private isPlanFile(relativePath: string): boolean {
+        const normalized = relativePath.replace(/\\/g, '/');
+        return normalized.includes('.vibearchitect/task.md') || 
+               normalized.includes('.vibearchitect/implementation_plan.md');
+    }
+
     async readFile(relativePath: string): Promise<string> {
         try {
             const fileUri = this.getUri(relativePath);
@@ -76,6 +116,51 @@ export class AgentTools {
 
     async writeFile(relativePath: string, content: string): Promise<string> {
         try {
+            // ==================== PLAN-FIRST GUARD (Review Enabled Mode Only) ====================
+            if (this.agentMode === 'review-enabled' && !this.isPlanFile(relativePath)) {
+                const { taskExists, planExists } = await this.planFilesExist();
+                if (!taskExists || !planExists) {
+                    console.log(`[AgentTools] BLOCKED write to ${relativePath} - plan files missing (task: ${taskExists}, plan: ${planExists})`);
+                    return `⛔ BLOCKED: You must create .vibearchitect/task.md and .vibearchitect/implementation_plan.md BEFORE writing to other files.
+
+Current status:
+- task.md: ${taskExists ? '✅ exists' : '❌ missing'}
+- implementation_plan.md: ${planExists ? '✅ exists' : '❌ missing'}
+
+Please create the missing plan file(s) first, then retry this operation.`;
+                }
+            }
+
+            // ==================== CONSTITUTION RULE ENFORCEMENT ====================
+            if (this.ruleEnforcer) {
+                const violations = await this.ruleEnforcer.validateFileEdits([{
+                    path: relativePath,
+                    type: 'create',
+                    content: content
+                }]);
+
+                // Check for strict violations (must block)
+                const strictViolations = violations.filter(v => v.severity === 'strict');
+                if (strictViolations.length > 0) {
+                    const errorLines = strictViolations.map(v => 
+                        `  ❌ ${v.rule.description}${v.rule.reason ? `: ${v.rule.reason}` : ''}`
+                    ).join('\n');
+                    console.log(`[AgentTools] BLOCKED write to ${relativePath} - constitution violation(s)`);
+                    return `⛔ BLOCKED: Constitution violation(s) detected for ${relativePath}:
+
+${errorLines}
+
+Fix the violations and try again. These rules are defined in .vibearchitect/constitution.md`;
+                }
+
+                // Log warnings for non-strict violations (don't block)
+                const warnings = violations.filter(v => v.severity === 'warning');
+                if (warnings.length > 0) {
+                    console.warn(`[AgentTools] Constitution warnings for ${relativePath}:`, 
+                        warnings.map(w => w.rule.description));
+                }
+            }
+
             const fileUri = this.getUri(relativePath);
             const absolutePath = fileUri.fsPath;
 
@@ -215,6 +300,45 @@ export class AgentTools {
      * @param source - Optional source identifier for logging (e.g., 'CopilotClaude')
      */
     async applyDiff(relativePath: string, diffContent: string, source?: string): Promise<string> {
+        // ==================== PLAN-FIRST GUARD (Review Enabled Mode Only) ====================
+        if (this.agentMode === 'review-enabled' && !this.isPlanFile(relativePath)) {
+            const { taskExists, planExists } = await this.planFilesExist();
+            if (!taskExists || !planExists) {
+                console.log(`[AgentTools] BLOCKED applyDiff to ${relativePath} - plan files missing (task: ${taskExists}, plan: ${planExists})`);
+                return `⛔ BLOCKED: You must create .vibearchitect/task.md and .vibearchitect/implementation_plan.md BEFORE modifying other files.
+
+Current status:
+- task.md: ${taskExists ? '✅ exists' : '❌ missing'}
+- implementation_plan.md: ${planExists ? '✅ exists' : '❌ missing'}
+
+Please create the missing plan file(s) first, then retry this operation.`;
+            }
+        }
+
+        // ==================== CONSTITUTION RULE ENFORCEMENT (Path-based) ====================
+        // For applyDiff, we check path-based rules before applying
+        // Content-based rules will be checked after we compute the result
+        if (this.ruleEnforcer) {
+            const pathViolations = await this.ruleEnforcer.validateFileEdits([{
+                path: relativePath,
+                type: 'modify'
+            }]);
+
+            // Check for strict path-based violations (e.g., node_modules, .git)
+            const strictViolations = pathViolations.filter(v => v.severity === 'strict');
+            if (strictViolations.length > 0) {
+                const errorLines = strictViolations.map(v => 
+                    `  ❌ ${v.rule.description}${v.rule.reason ? `: ${v.rule.reason}` : ''}`
+                ).join('\n');
+                console.log(`[AgentTools] BLOCKED applyDiff to ${relativePath} - constitution violation(s)`);
+                return `⛔ BLOCKED: Constitution violation(s) detected for ${relativePath}:
+
+${errorLines}
+
+This path is protected by rules in .vibearchitect/constitution.md`;
+            }
+        }
+
         // Initialize diff logger
         let logger: DiffLogger | null = null;
         try {
