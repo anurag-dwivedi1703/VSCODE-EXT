@@ -2994,7 +2994,7 @@ ${contextData}
             if (imageAttachments.length > 0 || docAttachments.length > 0) {
                 try {
                     const processor = getAttachmentProcessor();
-                    const processed = await processor.processAttachments(normalizedAttachments);
+                    const processed = await processor.processAttachments(normalizedAttachments, message);
                     const contextString = processor.generateContextString(processed);
                     if (contextString) {
                         enrichedMessage = message + contextString;

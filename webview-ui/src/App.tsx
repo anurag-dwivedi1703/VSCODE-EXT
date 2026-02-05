@@ -404,6 +404,20 @@ function App() {
 
     // Context State
     const [contextFiles, setContextFiles] = useState<string[]>([]);
+    
+    // Reply attachment state (for drag/drop, paste, and file upload in reply input)
+    const [replyAttachments, setReplyAttachments] = useState<Array<{
+        name: string;
+        type: 'image' | 'document' | 'file';
+        path?: string;
+        dataUrl?: string;
+        mimeType?: string;
+        size?: number;
+    }>>([]);
+    
+    // Drag state for visual feedback
+    const [isDraggingComposer, setIsDraggingComposer] = useState(false);
+    const [isDraggingReply, setIsDraggingReply] = useState(false);
 
     // Browser Reload State
     const [browserReloadTrigger, setBrowserReloadTrigger] = useState(0);
@@ -714,30 +728,106 @@ function App() {
         setComposerAttachments([]);
     };
 
-    // Handle file upload for composer attachments
+    // ==================== SHARED ATTACHMENT UTILITIES ====================
+
+    /** Convert a File to an attachment object with data URL */
+    const fileToAttachment = (file: File, setter: React.Dispatch<React.SetStateAction<Array<{
+        name: string; type: 'image' | 'document' | 'file'; path?: string; dataUrl?: string; mimeType?: string; size?: number;
+    }>>>) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+            const dataUrl = reader.result as string;
+            const isImage = file.type.startsWith('image/');
+            const isDocument = ['application/pdf', 'text/plain', 'text/markdown',
+                'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'].includes(file.type);
+
+            setter(prev => [...prev, {
+                name: file.name,
+                type: isImage ? 'image' : (isDocument ? 'document' : 'file'),
+                dataUrl,
+                mimeType: file.type,
+                size: file.size
+            }]);
+        };
+        reader.readAsDataURL(file);
+    };
+
+    /** Process multiple files (from file input, drag-drop, etc.) into attachment state */
+    const processFilesForAttachment = (files: FileList | File[], setter: React.Dispatch<React.SetStateAction<Array<{
+        name: string; type: 'image' | 'document' | 'file'; path?: string; dataUrl?: string; mimeType?: string; size?: number;
+    }>>>) => {
+        Array.from(files).forEach(file => fileToAttachment(file, setter));
+    };
+
+    /** Handle clipboard paste - extract images from snipping tool / screenshots */
+    const handlePasteAttachment = (e: React.ClipboardEvent, setter: React.Dispatch<React.SetStateAction<Array<{
+        name: string; type: 'image' | 'document' | 'file'; path?: string; dataUrl?: string; mimeType?: string; size?: number;
+    }>>>) => {
+        const items = e.clipboardData?.items;
+        if (!items) return;
+
+        let hasImage = false;
+        for (let i = 0; i < items.length; i++) {
+            if (items[i].type.startsWith('image/')) {
+                hasImage = true;
+                const file = items[i].getAsFile();
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                        setter(prev => [...prev, {
+                            name: `screenshot-${Date.now()}.png`,
+                            type: 'image' as const,
+                            dataUrl: reader.result as string,
+                            mimeType: file.type,
+                            size: file.size
+                        }]);
+                    };
+                    reader.readAsDataURL(file);
+                }
+            }
+        }
+
+        // Only prevent default if we found an image - let normal text paste work
+        if (hasImage) {
+            e.preventDefault();
+        }
+    };
+
+    /** Handle drag over - show drop zone indicator */
+    const handleDragOver = (e: React.DragEvent, setDragging: React.Dispatch<React.SetStateAction<boolean>>) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setDragging(true);
+    };
+
+    /** Handle drag leave - hide drop zone indicator */
+    const handleDragLeave = (e: React.DragEvent, setDragging: React.Dispatch<React.SetStateAction<boolean>>) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setDragging(false);
+    };
+
+    /** Handle drop - process dropped files */
+    const handleDropAttachment = (e: React.DragEvent, setter: React.Dispatch<React.SetStateAction<Array<{
+        name: string; type: 'image' | 'document' | 'file'; path?: string; dataUrl?: string; mimeType?: string; size?: number;
+    }>>>, setDragging: React.Dispatch<React.SetStateAction<boolean>>) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setDragging(false);
+
+        const files = e.dataTransfer?.files;
+        if (files && files.length > 0) {
+            processFilesForAttachment(files, setter);
+        }
+    };
+
+    // ==================== COMPOSER HANDLERS ====================
+
+    // Handle file upload for composer attachments (from file picker)
     const handleComposerFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
         const files = event.target.files;
         if (!files || files.length === 0) return;
-
-        Array.from(files).forEach(file => {
-            const reader = new FileReader();
-            reader.onload = () => {
-                const dataUrl = reader.result as string;
-                const isImage = file.type.startsWith('image/');
-                const isDocument = ['application/pdf', 'text/plain', 'text/markdown', 
-                    'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'].includes(file.type);
-                
-                setComposerAttachments(prev => [...prev, {
-                    name: file.name,
-                    type: isImage ? 'image' : (isDocument ? 'document' : 'file'),
-                    dataUrl,
-                    mimeType: file.type,
-                    size: file.size
-                }]);
-            };
-            reader.readAsDataURL(file);
-        });
-
+        processFilesForAttachment(files, setComposerAttachments);
         // Reset input so same file can be selected again
         event.target.value = '';
     };
@@ -750,6 +840,13 @@ function App() {
     // Remove attachment from composer
     const removeComposerAttachment = (index: number) => {
         setComposerAttachments(prev => prev.filter((_, i) => i !== index));
+    };
+
+    // ==================== REPLY HANDLERS ====================
+
+    // Remove attachment from reply
+    const removeReplyAttachment = (index: number) => {
+        setReplyAttachments(prev => prev.filter((_, i) => i !== index));
     };
 
     const handleAddWorkspace = () => {
@@ -1462,7 +1559,13 @@ function App() {
                                 </div>
 
                                 {/* Reply Footer */}
-                                <footer className="reply-footer">
+                                <footer 
+                                    className={`reply-footer ${isDraggingReply ? 'drop-zone-active' : ''}`}
+                                    onDragOver={(e) => handleDragOver(e, setIsDraggingReply)}
+                                    onDragLeave={(e) => handleDragLeave(e, setIsDraggingReply)}
+                                    onDrop={(e) => handleDropAttachment(e, setReplyAttachments, setIsDraggingReply)}
+                                >
+                                    {/* Context file chips */}
                                     {contextFiles.length > 0 && (
                                         <div className="context-chips">
                                             {contextFiles.map((f, idx) => (
@@ -1473,27 +1576,66 @@ function App() {
                                             ))}
                                         </div>
                                     )}
+                                    {/* Reply attachment preview (images from drag/drop/paste) */}
+                                    {replyAttachments.length > 0 && (
+                                        <div className="composer-attachments">
+                                            {replyAttachments.map((attachment, idx) => (
+                                                <div key={idx} className={`attachment-chip ${attachment.type}`}>
+                                                    {attachment.type === 'image' && attachment.dataUrl && (
+                                                        <img 
+                                                            src={attachment.dataUrl} 
+                                                            alt={attachment.name}
+                                                            className="attachment-thumbnail"
+                                                        />
+                                                    )}
+                                                    {attachment.type !== 'image' && (
+                                                        <span className="attachment-icon">
+                                                            {attachment.type === 'document' ? '📄' : '📎'}
+                                                        </span>
+                                                    )}
+                                                    <span className="attachment-name" title={attachment.name}>
+                                                        {attachment.name.length > 20 
+                                                            ? attachment.name.substring(0, 17) + '...' 
+                                                            : attachment.name}
+                                                    </span>
+                                                    <button 
+                                                        className="attachment-remove"
+                                                        onClick={() => removeReplyAttachment(idx)}
+                                                        title="Remove attachment"
+                                                    >
+                                                        ×
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
                                     <div className="input-row">
                                         <button className="icon-btn-add" title="Add Context" onClick={() => vscode.postMessage({ command: 'selectContext' })}>+</button>
                                         <textarea
                                             className="reply-input reply-textarea"
-                                            placeholder="Reply to agent... (Enter to send, Shift+Enter for new line)"
+                                            placeholder="Reply to agent... (Enter to send, Shift+Enter for new line, Ctrl+V to paste screenshots)"
                                             id={`reply-input-${activeAgent.id}`}
                                             rows={1}
                                             onKeyDown={(e) => {
                                                 if (e.key === 'Enter' && !e.shiftKey) {
                                                     e.preventDefault();
                                                     const textarea = e.target as HTMLTextAreaElement;
-                                                    if (textarea.value.trim()) {
+                                                    if (textarea.value.trim() || replyAttachments.length > 0) {
+                                                        // Merge contextFiles (paths) and replyAttachments (data URLs) into one array
+                                                        const allAttachments = [
+                                                            ...contextFiles,
+                                                            ...replyAttachments
+                                                        ];
                                                         vscode.postMessage({
                                                             command: 'replyToAgent',
                                                             text: textarea.value,
                                                             taskId: activeAgent.id,
-                                                            attachments: contextFiles
+                                                            attachments: allAttachments
                                                         });
                                                         textarea.value = '';
                                                         textarea.style.height = 'auto';
-                                                        setContextFiles([]); // Clear context after send
+                                                        setContextFiles([]);
+                                                        setReplyAttachments([]);
                                                     }
                                                 }
                                             }}
@@ -1503,6 +1645,7 @@ function App() {
                                                 textarea.style.height = 'auto';
                                                 textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px';
                                             }}
+                                            onPaste={(e) => handlePasteAttachment(e, setReplyAttachments)}
                                         />
                                     </div>
                                     <div className="model-selector-bar">
@@ -1569,16 +1712,21 @@ function App() {
                                                 className="submit-btn"
                                                 onClick={() => {
                                                     const textarea = document.getElementById(`reply-input-${activeAgent.id}`) as HTMLTextAreaElement;
-                                                    if (textarea && textarea.value.trim()) {
+                                                    if (textarea && (textarea.value.trim() || replyAttachments.length > 0)) {
+                                                        const allAttachments = [
+                                                            ...contextFiles,
+                                                            ...replyAttachments
+                                                        ];
                                                         vscode.postMessage({
                                                             command: 'replyToAgent',
                                                             text: textarea.value,
                                                             taskId: activeAgent.id,
-                                                            attachments: contextFiles
+                                                            attachments: allAttachments
                                                         });
                                                         textarea.value = '';
                                                         textarea.style.height = 'auto';
                                                         setContextFiles([]);
+                                                        setReplyAttachments([]);
                                                     }
                                                 }}
                                                 title="Send message"
@@ -1675,7 +1823,12 @@ function App() {
                                     </div>
                                 </div>
 
-                                <div className="composer-input-area">
+                                <div 
+                                    className={`composer-input-area ${isDraggingComposer ? 'drop-zone-active' : ''}`}
+                                    onDragOver={(e) => handleDragOver(e, setIsDraggingComposer)}
+                                    onDragLeave={(e) => handleDragLeave(e, setIsDraggingComposer)}
+                                    onDrop={(e) => handleDropAttachment(e, setComposerAttachments, setIsDraggingComposer)}
+                                >
                                     {/* Attachment Preview */}
                                     {composerAttachments.length > 0 && (
                                         <div className="composer-attachments">
@@ -1741,13 +1894,14 @@ function App() {
                                         
                                         <textarea
                                             className="composer-textarea"
-                                            placeholder="Describe your task... (Enter to start, Shift+Enter for new line)"
+                                            placeholder="Describe your task... (Enter to start, Shift+Enter for new line, Ctrl+V to paste screenshots)"
                                             onKeyDown={(e) => {
                                                 if (e.key === 'Enter' && !e.shiftKey) {
                                                     e.preventDefault();
                                                     handleStartTask((e.target as HTMLTextAreaElement).value);
                                                 }
                                             }}
+                                            onPaste={(e) => handlePasteAttachment(e, setComposerAttachments)}
                                         />
                                     </div>
                                     <div className="composer-actions">

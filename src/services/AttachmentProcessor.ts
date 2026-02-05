@@ -2,7 +2,8 @@
  * AttachmentProcessor.ts
  * Processes user attachments (images, documents) for context enrichment.
  * 
- * - Images: Analyzed via vision APIs (Copilot Claude, Gemini, Claude)
+ * - Images: Analyzed via vision APIs with CONTEXT-AWARE prompts
+ *   Priority: Gemini Flash (Copilot) > Claude (Copilot) > GPT (Copilot) > Gemini API > Claude API
  * - Documents: Text extracted for context
  */
 
@@ -10,6 +11,8 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { CopilotClaudeClient } from '../ai/CopilotClaudeClient';
+import { CopilotGPTClient } from '../ai/CopilotGPTClient';
+import { CopilotGeminiClient } from '../ai/CopilotGeminiClient';
 import { ClaudeClient } from '../ai/ClaudeClient';
 import { GeminiClient } from '../ai/GeminiClient';
 
@@ -32,57 +35,130 @@ export interface ProcessedAttachment {
 }
 
 /**
+ * Vision client that supports analyzeScreenshot - common interface across all Copilot clients.
+ */
+type VisionCapableClient = CopilotClaudeClient | CopilotGPTClient | CopilotGeminiClient;
+
+/**
  * Process attachments and generate context-enriched descriptions.
  */
 export class AttachmentProcessor {
+    // Best-vision-first Copilot clients
+    private copilotGeminiClient?: CopilotGeminiClient;
     private copilotClaudeClient?: CopilotClaudeClient;
-    private claudeClient?: ClaudeClient;
-    private geminiClient?: GeminiClient;
+    private copilotGPTClient?: CopilotGPTClient;
+    // API-key fallback clients
+    private geminiApiClient?: GeminiClient;
+    private claudeApiClient?: ClaudeClient;
+    // Track initialization
+    private clientsInitialized = false;
 
     constructor() {
         // Clients are initialized on-demand when needed
     }
 
     /**
-     * Initialize AI clients for vision analysis
+     * Initialize AI clients for vision analysis.
+     * Best-vision priority: Gemini Flash (Copilot) > Claude (Copilot) > GPT (Copilot) > Gemini API > Claude API
      */
     private async initializeClients(): Promise<void> {
+        if (this.clientsInitialized) { return; }
+        this.clientsInitialized = true;
+
         const config = vscode.workspace.getConfiguration('vibearchitect');
 
-        // Try to initialize Copilot Claude
-        if (!this.copilotClaudeClient) {
-            try {
-                this.copilotClaudeClient = new CopilotClaudeClient();
-                await this.copilotClaudeClient.initialize();
+        // Priority 1: Copilot Gemini Flash (best for vision - fast and accurate)
+        try {
+            this.copilotGeminiClient = new CopilotGeminiClient();
+            const ok = await this.copilotGeminiClient.initialize('gemini-3-flash');
+            if (ok) {
+                console.log('[AttachmentProcessor] Copilot Gemini Flash initialized (best vision)');
+            } else {
+                this.copilotGeminiClient = undefined;
+            }
+        } catch (e: any) {
+            console.log(`[AttachmentProcessor] Copilot Gemini unavailable: ${e.message}`);
+            this.copilotGeminiClient = undefined;
+        }
+
+        // Priority 2: Copilot Claude (good vision, especially Sonnet 4.5)
+        try {
+            this.copilotClaudeClient = new CopilotClaudeClient();
+            const ok = await this.copilotClaudeClient.initialize('claude-sonnet-4.5');
+            if (ok) {
                 console.log('[AttachmentProcessor] Copilot Claude initialized');
-            } catch (e: any) {
-                console.log(`[AttachmentProcessor] Copilot Claude unavailable: ${e.message}`);
+            } else {
+                this.copilotClaudeClient = undefined;
             }
+        } catch (e: any) {
+            console.log(`[AttachmentProcessor] Copilot Claude unavailable: ${e.message}`);
+            this.copilotClaudeClient = undefined;
         }
 
-        // Try to initialize Gemini if API key available
-        if (!this.geminiClient) {
-            const geminiApiKey = config.get<string>('geminiApiKey') || '';
-            if (geminiApiKey) {
-                this.geminiClient = new GeminiClient(geminiApiKey, 'gemini-2.0-flash');
-                console.log('[AttachmentProcessor] Gemini initialized');
+        // Priority 3: Copilot GPT (decent vision)
+        try {
+            this.copilotGPTClient = new CopilotGPTClient();
+            const ok = await this.copilotGPTClient.initialize('gpt-5-mini');
+            if (ok) {
+                console.log('[AttachmentProcessor] Copilot GPT initialized');
+            } else {
+                this.copilotGPTClient = undefined;
             }
+        } catch (e: any) {
+            console.log(`[AttachmentProcessor] Copilot GPT unavailable: ${e.message}`);
+            this.copilotGPTClient = undefined;
         }
 
-        // Try to initialize Claude if API key available
-        if (!this.claudeClient) {
-            const claudeApiKey = config.get<string>('claudeApiKey') || '';
-            if (claudeApiKey) {
-                this.claudeClient = new ClaudeClient(claudeApiKey, 'claude-3-5-sonnet-20241022');
-                console.log('[AttachmentProcessor] Claude initialized');
-            }
+        // Priority 4: Gemini API (if API key available)
+        const geminiApiKey = config.get<string>('geminiApiKey') || '';
+        if (geminiApiKey) {
+            this.geminiApiClient = new GeminiClient(geminiApiKey, 'gemini-2.0-flash');
+            console.log('[AttachmentProcessor] Gemini API initialized');
+        }
+
+        // Priority 5: Claude API (if API key available)
+        const claudeApiKey = config.get<string>('claudeApiKey') || '';
+        if (claudeApiKey) {
+            this.claudeApiClient = new ClaudeClient(claudeApiKey, 'claude-3-5-sonnet-20241022');
+            console.log('[AttachmentProcessor] Claude API initialized');
         }
     }
 
     /**
-     * Process all attachments and return enriched context.
+     * Build a context-aware vision prompt based on the user's message.
+     * This ensures the vision model focuses on what the user actually cares about.
      */
-    async processAttachments(attachments: Attachment[]): Promise<ProcessedAttachment[]> {
+    private buildContextAwareVisionPrompt(userPrompt: string): { description: string; objective: string } {
+        if (userPrompt && userPrompt.trim().length > 0) {
+            return {
+                description: `The user said: "${userPrompt}"
+
+Analyze this image in the context of the user's message above. Focus on extracting information that is DIRECTLY RELEVANT to what the user is asking or describing.
+
+Guidelines:
+- If the user mentions specific data, numbers, or text in the image, extract and report that data accurately.
+- If the user is asking about a UI bug or visual issue, describe the problem in detail.
+- If the user refers to a design or layout, focus on those design elements.
+- If the user is asking about specific elements (buttons, tables, forms, etc.), focus your analysis on those.
+- Include any text/labels/values visible in the image that relate to the user's query.
+- Be specific and detailed about the aspects the user cares about rather than giving a generic overview.`,
+                objective: `Extract information from this image that directly addresses what the user is asking about: "${userPrompt.substring(0, 200)}"`
+            };
+        }
+
+        // Fallback: generic analysis when no user prompt is available
+        return {
+            description: 'Analyze this image in detail. Describe all visible elements including: UI components, text/labels, data/values, layout structure, colors, icons, and any notable visual information. Be thorough and specific.',
+            objective: 'Extract all relevant information from this image to provide comprehensive context.'
+        };
+    }
+
+    /**
+     * Process all attachments and return enriched context.
+     * @param attachments - List of attachments to process
+     * @param userPrompt - The user's message (used to make vision analysis context-aware)
+     */
+    async processAttachments(attachments: Attachment[], userPrompt?: string): Promise<ProcessedAttachment[]> {
         if (!attachments || attachments.length === 0) {
             return [];
         }
@@ -94,7 +170,7 @@ export class AttachmentProcessor {
         for (const attachment of attachments) {
             try {
                 if (attachment.type === 'image') {
-                    const result = await this.processImage(attachment);
+                    const result = await this.processImage(attachment, userPrompt || '');
                     results.push(result);
                 } else if (attachment.type === 'document') {
                     const result = await this.processDocument(attachment);
@@ -121,9 +197,10 @@ export class AttachmentProcessor {
     }
 
     /**
-     * Process an image attachment using vision APIs.
+     * Process an image attachment using vision APIs with context-aware prompts.
+     * Vision priority: Gemini Flash (Copilot) > Claude (Copilot) > GPT (Copilot) > Gemini API > Claude API
      */
-    private async processImage(attachment: Attachment): Promise<ProcessedAttachment> {
+    private async processImage(attachment: Attachment, userPrompt: string): Promise<ProcessedAttachment> {
         let imageBuffer: Buffer;
         let mimeType = attachment.mimeType || 'image/png';
 
@@ -148,59 +225,106 @@ export class AttachmentProcessor {
             throw new Error('No image data or path provided');
         }
 
-        // Try vision analysis with available clients
+        // Build context-aware vision prompt based on user's message
+        const { description: visionDescription, objective: visionObjective } = this.buildContextAwareVisionPrompt(userPrompt);
+
+        // Try vision analysis with available clients (best-vision-first priority)
         let analysis: string | undefined;
 
-        // Priority 1: Copilot Claude (most accessible)
-        if (!analysis && this.copilotClaudeClient) {
+        // Priority 1: Copilot Gemini Flash (best vision model)
+        if (!analysis && this.copilotGeminiClient) {
             try {
-                const result = await this.copilotClaudeClient.analyzeScreenshot(
+                console.log('[AttachmentProcessor] Trying Copilot Gemini Flash for vision...');
+                const result = await this.copilotGeminiClient.analyzeScreenshot(
                     imageBuffer,
                     mimeType,
-                    'Analyze this image attached by the user. Describe what you see in detail - UI elements, layout, colors, text, icons, and any design patterns. This is a reference image for a feature request.',
-                    'Extract relevant information from this reference image to help implement the user\'s feature request.'
+                    visionDescription,
+                    visionObjective
                 );
                 if (result && result.analysis) {
                     analysis = `**Image Analysis (${attachment.name}):**\n${result.analysis}`;
+                    console.log('[AttachmentProcessor] Copilot Gemini Flash vision succeeded');
+                }
+            } catch (e: any) {
+                console.log(`[AttachmentProcessor] Copilot Gemini vision failed: ${e.message}`);
+            }
+        }
+
+        // Priority 2: Copilot Claude (good vision)
+        if (!analysis && this.copilotClaudeClient) {
+            try {
+                console.log('[AttachmentProcessor] Trying Copilot Claude for vision...');
+                const result = await this.copilotClaudeClient.analyzeScreenshot(
+                    imageBuffer,
+                    mimeType,
+                    visionDescription,
+                    visionObjective
+                );
+                if (result && result.analysis) {
+                    analysis = `**Image Analysis (${attachment.name}):**\n${result.analysis}`;
+                    console.log('[AttachmentProcessor] Copilot Claude vision succeeded');
                 }
             } catch (e: any) {
                 console.log(`[AttachmentProcessor] Copilot Claude vision failed: ${e.message}`);
             }
         }
 
-        // Priority 2: Gemini (excellent vision)
-        if (!analysis && this.geminiClient) {
+        // Priority 3: Copilot GPT (decent vision)
+        if (!analysis && this.copilotGPTClient) {
             try {
-                const base64 = imageBuffer.toString('base64');
-                const result = await this.geminiClient.analyzeScreenshot(
-                    base64,
+                console.log('[AttachmentProcessor] Trying Copilot GPT for vision...');
+                const result = await this.copilotGPTClient.analyzeScreenshot(
+                    imageBuffer,
                     mimeType,
-                    'Analyze this image attached by the user. Describe UI elements, layout, colors, text, icons, and design patterns. This is a reference image for a feature request.',
-                    'Extract information from this reference image for implementation.'
+                    visionDescription,
+                    visionObjective
                 );
                 if (result && result.analysis) {
                     analysis = `**Image Analysis (${attachment.name}):**\n${result.analysis}`;
+                    console.log('[AttachmentProcessor] Copilot GPT vision succeeded');
                 }
             } catch (e: any) {
-                console.log(`[AttachmentProcessor] Gemini vision failed: ${e.message}`);
+                console.log(`[AttachmentProcessor] Copilot GPT vision failed: ${e.message}`);
             }
         }
 
-        // Priority 3: Claude API
-        if (!analysis && this.claudeClient) {
+        // Priority 4: Gemini API (if available)
+        if (!analysis && this.geminiApiClient) {
             try {
+                console.log('[AttachmentProcessor] Trying Gemini API for vision...');
                 const base64 = imageBuffer.toString('base64');
-                const result = await this.claudeClient.analyzeScreenshot(
+                const result = await this.geminiApiClient.analyzeScreenshot(
                     base64,
                     mimeType,
-                    'Analyze this image attached by the user. Describe UI elements, layout, colors, text, icons, and design patterns. This is a reference image for a feature request.',
-                    'Extract information from this reference image for implementation.'
+                    visionDescription,
+                    visionObjective
                 );
                 if (result && result.analysis) {
                     analysis = `**Image Analysis (${attachment.name}):**\n${result.analysis}`;
+                    console.log('[AttachmentProcessor] Gemini API vision succeeded');
                 }
             } catch (e: any) {
-                console.log(`[AttachmentProcessor] Claude vision failed: ${e.message}`);
+                console.log(`[AttachmentProcessor] Gemini API vision failed: ${e.message}`);
+            }
+        }
+
+        // Priority 5: Claude API (if available)
+        if (!analysis && this.claudeApiClient) {
+            try {
+                console.log('[AttachmentProcessor] Trying Claude API for vision...');
+                const base64 = imageBuffer.toString('base64');
+                const result = await this.claudeApiClient.analyzeScreenshot(
+                    base64,
+                    mimeType,
+                    visionDescription,
+                    visionObjective
+                );
+                if (result && result.analysis) {
+                    analysis = `**Image Analysis (${attachment.name}):**\n${result.analysis}`;
+                    console.log('[AttachmentProcessor] Claude API vision succeeded');
+                }
+            } catch (e: any) {
+                console.log(`[AttachmentProcessor] Claude API vision failed: ${e.message}`);
             }
         }
 
@@ -208,7 +332,7 @@ export class AttachmentProcessor {
             name: attachment.name,
             type: 'image',
             originalPath: attachment.path,
-            analysis: analysis || `Image attached: ${attachment.name} (vision analysis unavailable - no API configured)`
+            analysis: analysis || `Image attached: ${attachment.name} (vision analysis unavailable - no vision-capable model found)`
         };
     }
 

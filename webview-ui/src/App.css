@@ -2305,3 +2305,37 @@
 .stop-btn:active {
     transform: translateY(0);
 }
+
+/* ==================== DROP ZONE VISUAL FEEDBACK ==================== */
+
+.drop-zone-active {
+    border: 2px dashed #4CAF50 !important;
+    background: rgba(76, 175, 80, 0.06) !important;
+    border-radius: 12px;
+    transition: all 0.2s ease;
+}
+
+.drop-zone-active::after {
+    content: 'Drop files here';
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(76, 175, 80, 0.08);
+    color: #4CAF50;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    pointer-events: none;
+    border-radius: 12px;
+    z-index: 10;
+}
+
+.composer-input-area,
+.reply-footer {
+    position: relative;
+}

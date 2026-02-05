@@ -415,7 +415,7 @@ export class MissionControlProvider {
                 console.log(`[MissionControl] Processing ${attachments.length} attachments...`);
                 
                 const processor = getAttachmentProcessor();
-                const processed = await processor.processAttachments(attachments);
+                const processed = await processor.processAttachments(attachments, text);
                 const contextString = processor.generateContextString(processed);
 
                 if (contextString) {
