@@ -95,10 +95,10 @@ export class TaskRunner {
     public readonly onApprovalComplete = this._onApprovalComplete.event;
 
     // Questionnaire event for interactive refinement questions
-    private _onQuestionnaire = new vscode.EventEmitter<{ 
-        taskId: string; 
+    private _onQuestionnaire = new vscode.EventEmitter<{
+        taskId: string;
         sessionId: string;
-        questions: any[]; 
+        questions: any[];
         contextSummary?: string;
         rawAnalystResponse?: string;
     }>();
@@ -317,12 +317,12 @@ Please complete the login in the browser window, then click **"I've Logged In"**
         // Convert structured responses to a formatted message
         const formattedAnswers = responses.map((r, idx) => {
             const parts: string[] = [];
-            
+
             // Add selected options
             if (r.selectedOptions && r.selectedOptions.length > 0) {
                 parts.push(r.selectedOptions.join(', '));
             }
-            
+
             // Add text response
             if (r.textResponse && r.textResponse.trim()) {
                 if (parts.length > 0) {
@@ -331,7 +331,7 @@ Please complete the login in the browser window, then click **"I've Logged In"**
                     parts.push(r.textResponse.trim());
                 }
             }
-            
+
             return `${idx + 1}. ${parts.join(' ') || 'No answer provided'}`;
         }).join('\n');
 
@@ -344,12 +344,12 @@ Please complete the login in the browser window, then click **"I've Logged In"**
         // Route to refinement manager
         const refinementManager = getRefinementManager();
         const actualSessionId = refinementManager.getSessionForTask(taskId);
-        
+
         if (actualSessionId) {
             try {
                 task.logs.push('\n> [Refinement]: Processing your answers...');
                 this._onTaskUpdate.fire({ taskId, task });
-                
+
                 await refinementManager.handleUserMessage(actualSessionId, message);
             } catch (error: any) {
                 console.error('[TaskRunner] Error handling questionnaire submission:', error);
@@ -598,7 +598,7 @@ Please complete the login in the browser window, then click **"I've Logged In"**
         if (tokenManager) {
             return tokenManager.truncateToolResult(toolName, result, maxChars);
         }
-        
+
         // Fallback to inline implementation
         if (result.length <= maxChars) {
             return result;
@@ -696,7 +696,7 @@ Please complete the login in the browser window, then click **"I've Logged In"**
         const artifactsDir = path.join(workspacePath, '.vibearchitect');
         // CRITICAL: Include prd.md to prevent old refinement PRDs from bleeding into new missions
         const filesToClear = ['task.md', 'implementation_plan.md', 'mission_summary.md', 'prd.md'];
-        
+
         // Clear files in root .vibearchitect folder
         for (const file of filesToClear) {
             const filePath = path.join(artifactsDir, file);
@@ -709,7 +709,7 @@ Please complete the login in the browser window, then click **"I've Logged In"**
                 }
             }
         }
-        
+
         // CRITICAL: Clear the 'current' symlink/folder to prevent old artifacts bleeding
         const currentPath = path.join(artifactsDir, 'current');
         if (fs.existsSync(currentPath)) {
@@ -735,7 +735,7 @@ Please complete the login in the browser window, then click **"I've Logged In"**
                         }
                     }
                 }
-                
+
                 // Also remove the symlink/junction itself to ensure clean slate
                 try {
                     fs.unlinkSync(currentPath);
@@ -781,7 +781,7 @@ Please complete the login in the browser window, then click **"I've Logged In"**
                     archivedCount++;
                 }
             }
-            
+
             // Also check the 'current' folder for artifacts
             const currentDir = path.join(srcDir, 'current');
             if (fs.existsSync(currentDir)) {
@@ -1015,7 +1015,7 @@ Please complete the login in the browser window, then click **"I've Logged In"**
 
         // Change mode to planning
         task.mode = 'planning';
-        
+
         // ========================================
         // CRITICAL: Clear refinement-phase logs to prevent context bleeding
         // The approved PRD is the source of truth - old refinement conversations
@@ -1023,21 +1023,21 @@ Please complete the login in the browser window, then click **"I've Logged In"**
         // bleed into the planning/execution context.
         // ========================================
         const refinementEndMarker = '=== REFINEMENT PHASE COMPLETE - PRD APPROVED ===';
-        
+
         // Archive refinement logs for debugging but clear from active context
-        const refinementLogs = task.logs.filter(log => 
-            log.includes('[Refinement]') || 
-            log.includes('**Analyst**') || 
+        const refinementLogs = task.logs.filter(log =>
+            log.includes('[Refinement]') ||
+            log.includes('**Analyst**') ||
             log.includes('**Critic**') ||
             log.includes('**Refiner**') ||
             log.includes('Draft PRD') ||
             log.includes('Refinement Mode')
         );
-        
+
         if (refinementLogs.length > 0) {
             console.log(`[TaskRunner] Archiving ${refinementLogs.length} refinement logs to prevent context bleeding`);
         }
-        
+
         // Keep only essential logs: system messages, errors, and the transition marker
         // Remove user messages from refinement phase to prevent their ignored inputs from bleeding
         const cleanedLogs = task.logs.filter(log => {
@@ -1046,8 +1046,8 @@ Please complete the login in the browser window, then click **"I've Logged In"**
                 return true;
             }
             // Remove refinement-specific conversation logs
-            if (log.includes('[Refinement]') || 
-                log.includes('**Analyst**') || 
+            if (log.includes('[Refinement]') ||
+                log.includes('**Analyst**') ||
                 log.includes('**Critic**') ||
                 log.includes('**Refiner**') ||
                 log.includes('Draft PRD') ||
@@ -1057,7 +1057,7 @@ Please complete the login in the browser window, then click **"I've Logged In"**
             // Keep other logs
             return true;
         });
-        
+
         // Replace logs with cleaned version + marker
         task.logs = [
             ...cleanedLogs.slice(0, 5), // Keep first few system logs
@@ -1065,7 +1065,7 @@ Please complete the login in the browser window, then click **"I've Logged In"**
             `> [System]: PRD approved. Starting implementation phase.`,
             `> [System]: The PRD below is the ONLY source of truth for requirements.`
         ];
-        
+
         // CRITICAL: Explicitly cleanup the refinement session to ensure no lingering state
         const refinementManager = getRefinementManager();
         const sessionId = refinementManager.getSessionForTask(taskId);
@@ -1080,10 +1080,10 @@ Please complete the login in the browser window, then click **"I've Logged In"**
             const chatId = task.chatId || 'default';
             const missionFolderManager = new MissionFolderManager(task.worktreePath);
             const baseDir = missionFolderManager.getBaseDir();
-            
+
             // Get or create the mission folder for this chat
             const missionFolder = missionFolderManager.getMissionFolder(chatId);
-            
+
             // Save PRD to the mission folder
             const prdFilePath = path.join(missionFolder, 'prd.md');
             try {
@@ -1091,17 +1091,17 @@ Please complete the login in the browser window, then click **"I've Logged In"**
                 prdRelativePath = path.relative(task.worktreePath, prdFilePath).replace(/\\/g, '/');
                 console.log(`[TaskRunner] Saved PRD to ${prdFilePath}`);
                 task.logs.push(`> [System]: PRD saved to ${prdRelativePath}`);
-                
+
                 // Update the current symlink to point to this mission folder
                 missionFolderManager.updateCurrentSymlink(missionFolder);
                 task.logs.push(`> [System]: Mission folder set to current: .vibearchitect/current/prd.md`);
-                
+
                 // CRITICAL: Also save a copy directly to .vibearchitect/prd.md as backup
                 // This ensures the AI can find the PRD even if symlink fails
                 const backupPrdPath = path.join(baseDir, 'prd.md');
                 fs.writeFileSync(backupPrdPath, prdContent, 'utf-8');
                 console.log(`[TaskRunner] Also saved backup PRD to ${backupPrdPath}`);
-                
+
                 // Verify PRD files exist after save
                 const primaryExists = fs.existsSync(prdFilePath);
                 const backupExists = fs.existsSync(backupPrdPath);
@@ -1116,10 +1116,10 @@ Please complete the login in the browser window, then click **"I've Logged In"**
 
         // Prepend PRD to prompt for the planning phase
         const originalPrompt = task.displayPrompt || task.prompt;
-        const prdReference = prdRelativePath 
+        const prdReference = prdRelativePath
             ? `\n\n**IMPORTANT**: The full PRD is saved at \`.vibearchitect/prd.md\` (also at \`${prdRelativePath}\`). You MUST read this file first and implement according to its specifications.`
             : '';
-        
+
         task.prompt = `## Approved Product Requirement Document (PRD)
 
 The following PRD has been approved by the user after requirement refinement. Implement it exactly as specified.${prdReference}
@@ -1135,7 +1135,7 @@ ${originalPrompt}`;
         task.status = 'pending';
         task.logs.push('\n**System**: 🎯 PRD Approved! Transitioning to Planning Mode for implementation...');
         task.logs.push('\n---\n');
-        
+
         // CRITICAL: Mark task as coming from refinement to prevent PRD deletion
         (task as any)._fromRefinement = true;
 
@@ -1240,7 +1240,7 @@ ${originalPrompt}`;
         const specManager = new SpecManager();
         await specManager.initialize(workspaceRoot);
         let constitution: string | undefined;
-        
+
         // Check if constitution exists, generate if not (for non-empty workspaces)
         if (specManager.hasConstitution()) {
             constitution = specManager.getConstitution();
@@ -1307,7 +1307,7 @@ ${originalPrompt}`;
                 const constitutionPrompt = specManager.getConstitutionGenerationPrompt();
                 console.log('[TaskRunner] Refinement Constitution: Starting AI generation...');
 
-                const constitutionSession = constitutionAI.startSession(constitutionPrompt, 'high');
+                const constitutionSession = constitutionAI.startSession(constitutionPrompt, 'high', false);
                 const result = await constitutionSession.sendMessage(`Here is the workspace context:\n\n${contextData}`);
                 const responseObj = await result.response;
                 const constitutionContent = responseObj.text();
@@ -1346,7 +1346,7 @@ ${contextData}
                     this.saveTask(task);
                     return;
                 }
-                
+
                 // Save the approved/edited content to disk (user may have edited or toggled guidelines)
                 const approvedContent = this._lastApprovalFeedback.get(taskId);
                 if (approvedContent && approvedContent.trim()) {
@@ -1386,7 +1386,7 @@ ${contextData}
                     // This includes analysis, questions, and any draft - all in one bubble
                     const payload = event.payload as { content: string; hasQuestions: boolean; hasDraft: boolean; questionCount: number };
                     task.logs.push(`\n**Analyst Response:**\n${payload.content}`);
-                    
+
                     // Add a subtle prompt based on what was found
                     if (payload.hasQuestions) {
                         task.logs.push(`\n> Please answer the questions above to continue refinement.`);
@@ -1410,11 +1410,11 @@ ${contextData}
                     // Format critique in a user-friendly way
                     const critique = event.payload as { confidenceScore: number; passedValidation: boolean; issues: any[] };
                     const scoreEmoji = critique.confidenceScore >= 70 ? '✅' : critique.confidenceScore >= 50 ? '🟡' : '🔴';
-                    
+
                     let critiqueMessage = `\n**Critic Review:**\n`;
                     critiqueMessage += `${scoreEmoji} **Confidence Score:** ${critique.confidenceScore}%\n`;
                     critiqueMessage += `**Validation:** ${critique.passedValidation ? 'Passed' : 'Needs Improvement'}\n`;
-                    
+
                     // Sanitize and filter issues before display
                     // This provides an additional layer of protection against malformed data
                     const validIssues = (critique.issues || []).filter((issue: any) => {
@@ -1427,7 +1427,7 @@ ${contextData}
                         if (/^\s*(complete|passed|failed|yes|no|done|ok)\s*$/i.test(desc)) return false;
                         return true;
                     });
-                    
+
                     if (validIssues.length > 0) {
                         critiqueMessage += `\n**Issues Found:**\n`;
                         validIssues.forEach((issue: any, i: number) => {
@@ -1439,7 +1439,7 @@ ${contextData}
                             if (desc.length > 200) {
                                 desc = desc.substring(0, 200) + '...';
                             }
-                            
+
                             const severityIcon = issue.severity === 'high' ? '🔴' : issue.severity === 'medium' ? '🟡' : '🟢';
                             critiqueMessage += `${i + 1}. ${severityIcon} [${issue.type || 'issue'}] ${desc}`;
                             if (issue.suggestion) {
@@ -1453,7 +1453,7 @@ ${contextData}
                             }
                             critiqueMessage += '\n';
                         });
-                        
+
                         // If confidence is >= 70, refiner will start automatically
                         if (critique.confidenceScore >= 70) {
                             critiqueMessage += `\n> **Note:** Score passed threshold (${critique.confidenceScore}%). Refiner will now generate the final PRD.`;
@@ -1474,12 +1474,12 @@ ${contextData}
                         critiqueMessage += `\n> ✅ PRD looks good! Proceeding to final refinement.`;
                         critiqueMessage += `\n> ⏳ **Please wait** - Refiner is starting...`;
                     }
-                    
+
                     task.logs.push(critiqueMessage);
                 } else if (event.type === 'artifact-ready') {
                     // Clear the refiner in progress flag - PRD is now ready
                     delete (task as any)._refinerInProgress;
-                    
+
                     // Fire PRD review event to show in Context pane
                     const artifact = event.payload as any;
                     const prdContent = artifact?.rawMarkdown ||
@@ -1496,17 +1496,17 @@ ${contextData}
                     });
                 } else if (event.type === 'questionnaire') {
                     // Handle structured questionnaire for interactive UI
-                    const payload = event.payload as { 
-                        questions: any[]; 
-                        contextSummary?: string; 
-                        rawAnalystResponse?: string 
+                    const payload = event.payload as {
+                        questions: any[];
+                        contextSummary?: string;
+                        rawAnalystResponse?: string
                     };
-                    
+
                     if (payload.questions && payload.questions.length > 0) {
                         // Add summary to chat indicating questionnaire is available
                         const questionCount = payload.questions.length;
                         task.logs.push(`\n> **📋 ${questionCount} question${questionCount > 1 ? 's' : ''} to answer** - View in Context pane for interactive form.`);
-                        
+
                         // Fire questionnaire event for the webview
                         this._onQuestionnaire.fire({
                             taskId,
@@ -1519,11 +1519,11 @@ ${contextData}
                 } else if (event.type === 'state-change') {
                     const newState = event.payload as string;
                     console.log(`[TaskRunner] Refinement state-change: ${newState}`);
-                    
+
                     // Update task status and add visible progress logs for each stage
                     // The UI will show each stage as a new bubble, with the latest one active
                     // Format: [RefinementStage:STATE] message - UI will parse this specially
-                    
+
                     if (newState === 'ANALYZING') {
                         task.status = 'executing';
                         task.progress = 15;
@@ -1542,13 +1542,13 @@ ${contextData}
                         task.logs.push(`[RefinementStage:REFINING] ⏳ Refiner is generating the final PRD...`);
                         task.logs.push(`> Please wait while the final PRD is being generated. This may take 1-2 minutes.`);
                         task.logs.push(`> ⚠️ **Do not send messages** until the PRD is ready for review.`);
-                        
+
                         // Set a flag to indicate refiner is working (block user input)
                         (task as any)._refinerInProgress = true;
                     } else if (newState === 'AWAITING_USER') {
                         // Clear the refiner in progress flag when we're ready for user input
                         delete (task as any)._refinerInProgress;
-                        
+
                         // Set to awaiting-approval - this will show bubble as completed (correct when waiting)
                         task.status = 'awaiting-approval';
                         task.awaitingApproval = {
@@ -1721,10 +1721,10 @@ ${contextData}
             // Initialize TokenManager with model-aware limits
             // Will be updated with actual VS Code LM API limits when AI client is initialized
             const tokenManager = TokenManager.fromModelId(task.model || 'default');
-            
+
             // Initialize RuleEnforcer for constitution rule validation
             const ruleEnforcer = createRuleEnforcer();
-            
+
             const taskContext: TaskContext = {
                 shadowRepo,
                 revertManager,
@@ -1819,7 +1819,7 @@ ${contextData}
                         const constitutionPrompt = specManager.getConstitutionGenerationPrompt();
                         console.log('[TaskRunner] Constitution: Starting AI generation...');
 
-                        const constitutionSession = constitutionAI.startSession(constitutionPrompt, 'high');
+                        const constitutionSession = constitutionAI.startSession(constitutionPrompt, 'high', false);
                         const result = await constitutionSession.sendMessage(`Here is the workspace context:\n\n${contextData}`);
 
                         // Handle response - may differ between Gemini and Claude
@@ -1867,7 +1867,7 @@ ${contextData}
                     if (!approved) {
                         throw new Error('Constitution rejected by user - mission cancelled');
                     }
-                    
+
                     // Save the approved/edited content to disk (user may have edited or toggled guidelines)
                     const approvedConstitution = this._lastApprovalFeedback.get(taskId);
                     if (approvedConstitution && approvedConstitution.trim()) {
@@ -1922,7 +1922,7 @@ ${contextData}
 
                     // Check for drift
                     const driftPrompt = specManager.getDriftDetectionPrompt(currentContext);
-                    const driftSession = driftAI.startSession(driftPrompt, 'low');
+                    const driftSession = driftAI.startSession(driftPrompt, 'low', false);
                     const driftResult = await driftSession.sendMessage('Analyze the drift');
                     const driftResponse = (await driftResult.response).text();
 
@@ -1949,17 +1949,16 @@ ${contextData}
                 }
 
                 specManager.setPhase(SpecPhase.SPECIFICATION);
-                
+
                 // Set up RuleEnforcer with structured constitution
                 if (taskContext.ruleEnforcer && specManager.hasConstitution()) {
                     const structuredConst = specManager.parseConstitutionToStructured();
                     if (structuredConst) {
                         taskContext.ruleEnforcer.setConstitution(structuredConst);
-                        task.logs.push(`> [Constitution]: Rule enforcer loaded with ${
-                            structuredConst.agentConstraints.must.length + 
+                        task.logs.push(`> [Constitution]: Rule enforcer loaded with ${structuredConst.agentConstraints.must.length +
                             structuredConst.agentConstraints.mustNot.length +
                             structuredConst.forbiddenPatterns.length
-                        } rules`);
+                            } rules`);
                     }
                 }
             } else {
@@ -2023,13 +2022,13 @@ ${contextData}
             }
 
             // Derive task display name for terminal
-            const taskDisplayName = task.displayPrompt?.substring(0, 40) || 
-                                    task.prompt.substring(0, 40) || 
-                                    `Task-${taskId.substring(0, 8)}`;
-            
+            const taskDisplayName = task.displayPrompt?.substring(0, 40) ||
+                task.prompt.substring(0, 40) ||
+                `Task-${taskId.substring(0, 8)}`;
+
             // Pass whichever Copilot client is active (they all share the same research/vision interface)
             const activeCopilotClient = taskContext.copilotClaude || taskContext.copilotGPT || taskContext.copilotGemini;
-            
+
             const tools = new AgentTools(
                 workspaceRoot,
                 terminalManager,
@@ -2041,7 +2040,7 @@ ${contextData}
                 FileLockManager.getInstance(), // Inject Lock Manager
                 taskId, // Inject Task ID for locking
                 // Login checkpoint callback - shows "I've Logged In" button in UI
-                (checkpointTaskId: string, loginUrl: string, ssoProvider?: string) => 
+                (checkpointTaskId: string, loginUrl: string, ssoProvider?: string) =>
                     this.requestLoginCheckpoint(checkpointTaskId, loginUrl, ssoProvider),
                 taskDisplayName, // Task name for terminal display
                 this._globalAgentMode, // Agent mode for plan-first enforcement
@@ -2378,9 +2377,9 @@ ${contextData}
 
                 if (text) {
                     // Use model-aware prefix for log parsing (Gemini or Claude)
-                    const modelPrefix = (task.model || '').startsWith('claude') ? '**Claude**' : 
-                        (task.model || '').startsWith('gpt') ? '**GPT**' : 
-                        (task.model || '').startsWith('gemini') ? '**Gemini**' : '**AI**';
+                    const modelPrefix = (task.model || '').startsWith('claude') ? '**Claude**' :
+                        (task.model || '').startsWith('gpt') ? '**GPT**' :
+                            (task.model || '').startsWith('gemini') ? '**Gemini**' : '**AI**';
                     task.logs.push(`${modelPrefix}: ${text} `);
 
                     // Add debug logging for summary extraction
@@ -2425,30 +2424,30 @@ ${contextData}
                                 case 'read_file': {
                                     const filePath = args.path as string;
                                     let content = await tools.readFile(filePath);
-                                    
+
                                     // Token-aware truncation using unified TokenManager
                                     // Gets model-specific limits from VS Code LM API or fallbacks
                                     const taskContext = this.taskContexts.get(taskId);
                                     const tokenMgr = taskContext?.tokenManager;
-                                    
+
                                     // Calculate max chars based on mode and available tokens
                                     // For planning/fast, allow up to 25% of available tokens for a single file
                                     const mode = task.mode === 'fast' ? 'fast' : 'planning';
                                     const availableTokens = tokenMgr?.getAvailableTokens(mode) ?? 30000;
                                     const maxFileTokens = Math.floor(availableTokens * 0.25);
                                     const MAX_FILE_CHARS = Math.max(20000, maxFileTokens * 4); // Min 20K chars
-                                    
+
                                     if (!content.startsWith('Error') && content.length > MAX_FILE_CHARS) {
                                         // Use intelligent truncation that preserves important parts
                                         const originalLength = content.length;
-                                        content = tokenMgr?.truncateFile(content, MAX_FILE_CHARS, filePath) 
+                                        content = tokenMgr?.truncateFile(content, MAX_FILE_CHARS, filePath)
                                             ?? content.slice(0, MAX_FILE_CHARS);
                                         const truncatedLength = content.length;
-                                        
-                                        task.logs.push(`[TokenManager] Truncated ${filePath}: ${Math.round(originalLength/1000)}KB → ${Math.round(truncatedLength/1000)}KB`);
-                                        content += `\n\n[FILE TRUNCATED: Original ${Math.round(originalLength/1000)}KB. Use apply_diff for edits - do NOT use write_file on truncated content.]`;
+
+                                        task.logs.push(`[TokenManager] Truncated ${filePath}: ${Math.round(originalLength / 1000)}KB → ${Math.round(truncatedLength / 1000)}KB`);
+                                        content += `\n\n[FILE TRUNCATED: Original ${Math.round(originalLength / 1000)}KB. Use apply_diff for edits - do NOT use write_file on truncated content.]`;
                                     }
-                                    
+
                                     toolResult = content;
                                     break;
                                 }
@@ -2474,11 +2473,11 @@ ${contextData}
                                     // Check for secrets and PII BEFORE writing
                                     const isEnvFile = filePath.endsWith('.env') || filePath.includes('.env.');
                                     const isTextFile = /\.(js|ts|jsx|tsx|py|rb|java|go|rs|php|cs|cpp|c|h|txt|json|yaml|yml|xml|md|csv|sql|html|htm|css|scss|less)$/i.test(filePath) || !filePath.includes('.');
-                                    
+
                                     // SKIP security checks for .vibearchitect folder - these are internal planning docs
-                                    const isVibearchitectFile = filePath.includes('.vibearchitect') || 
-                                                                filePath.includes('.vibearchitect/') ||
-                                                                filePath.includes('.vibearchitect\\');
+                                    const isVibearchitectFile = filePath.includes('.vibearchitect') ||
+                                        filePath.includes('.vibearchitect/') ||
+                                        filePath.includes('.vibearchitect\\');
 
                                     const detectedSecrets = isVibearchitectFile ? [] : detectSecrets(afterContent);
                                     const detectedPII = isVibearchitectFile ? [] : detectPII(afterContent);
@@ -2569,7 +2568,7 @@ ${contextData}
                                                 // task.md might not exist yet, continue with just implementation_plan
                                             }
                                             combinedPlanContent += `## Implementation Plan\n\n${afterContent}`;
-                                            
+
                                             task.logs.push(`> [Review Enabled]: Implementation plan created. Pausing for user review...`);
                                             const approved = await this.waitForApproval(taskId, 'plan', combinedPlanContent);
                                             if (!approved) {
@@ -2595,8 +2594,8 @@ ${contextData}
 
                                     // Get model source for logging
                                     const modelSource = (task.model || '').startsWith('claude') ? 'CopilotClaude' :
-                                        (task.model || '').startsWith('gpt') ? 'CopilotGPT' : 
-                                        (task.model || '').startsWith('gemini') ? 'CopilotGemini' : 'Gemini';
+                                        (task.model || '').startsWith('gpt') ? 'CopilotGPT' :
+                                            (task.model || '').startsWith('gemini') ? 'CopilotGemini' : 'Gemini';
 
                                     // Get or create diff aggregator from task context
                                     const taskContext = this.taskContexts.get(taskId);
@@ -2605,7 +2604,7 @@ ${contextData}
                                     if (aggregator) {
                                         // Queue the diff for batched application
                                         const flushResult = await aggregator.queueDiff(diffPath, diffContent, modelSource);
-                                        
+
                                         // If a different file was flushed, report that result first
                                         if (flushResult) {
                                             toolResult = flushResult.message;
@@ -2615,14 +2614,14 @@ ${contextData}
                                         // Report queuing status
                                         const pending = aggregator.getPendingCount();
                                         if (pending.totalBlocks > 0) {
-                                            toolResult = toolResult 
+                                            toolResult = toolResult
                                                 ? `${toolResult}\n\n✅ Queued diff for ${diffPath} (${pending.totalBlocks} blocks pending, will batch apply)`
                                                 : `✅ Queued diff for ${diffPath} (${pending.totalBlocks} blocks pending, will batch apply)`;
                                         }
                                     } else {
                                         // Fallback: Direct application if no aggregator
                                         toolResult = await tools.applyDiff(diffPath, diffContent, modelSource);
-                                        
+
                                         // Track file edit if successful
                                         if (toolResult.includes('Successfully applied diff') || toolResult.includes('✅')) {
                                             if (!task.artifacts.includes(diffPath)) {
@@ -2762,17 +2761,17 @@ ${contextData}
                     if (flushContext?.diffAggregator?.hasPendingDiffs()) {
                         const pending = flushContext.diffAggregator.getPendingCount();
                         task.logs.push(`[DiffAggregator] Flushing ${pending.files} file(s) with ${pending.totalBlocks} pending blocks...`);
-                        
+
                         const flushResults = await flushContext.diffAggregator.flushAll();
-                        
+
                         for (const result of flushResults.results) {
                             task.logs.push(`[DiffAggregator] ${result.filePath}: ${result.message}`);
-                            
+
                             // Add flush result to tool parts so model knows what happened
                             toolParts.push({
                                 functionResponse: {
                                     name: 'apply_diff_batch',
-                                    response: { 
+                                    response: {
                                         content: `Batched diff result for ${result.filePath}:\n${result.message}`,
                                         success: result.success,
                                         appliedBlocks: result.appliedBlocks,
@@ -2796,7 +2795,7 @@ ${contextData}
                     if (enforceContext?.ruleEnforcer && task.fileEdits && task.fileEdits.length > 0) {
                         // Get recent edits from this turn (last N edits based on recent timestamps)
                         const recentEdits = task.fileEdits.slice(-10); // Check last 10 edits
-                        
+
                         // Convert to RuleEnforcer format
                         const editsToCheck: RuleFileEdit[] = recentEdits.map(edit => ({
                             path: edit.path,
@@ -2804,13 +2803,13 @@ ${contextData}
                             content: edit.afterContent,
                             previousContent: edit.beforeContent || undefined
                         }));
-                        
+
                         const violations = await enforceContext.ruleEnforcer.validateFileEdits(editsToCheck);
-                        
+
                         if (violations.length > 0) {
                             const logMsg = enforceContext.ruleEnforcer.generateLogMessage(violations);
                             task.logs.push(logMsg);
-                            
+
                             // Inject violations into next prompt so agent can fix them
                             const violationPrompt = enforceContext.ruleEnforcer.formatViolationsForAgent(violations);
                             if (violationPrompt) {
@@ -3050,7 +3049,7 @@ ${contextData}
             this._onTaskUpdate.fire({ taskId, task });
             this.saveTask(task); // Persist update
             console.log(`[${taskId}] ${status}: ${log}`);
-            
+
             // Terminal lifecycle: Mark terminal as completed when task finishes
             // Keeps terminal open for user review (not immediate dispose)
             if (status === 'completed' || status === 'failed') {
@@ -3069,27 +3068,27 @@ ${contextData}
                 }
                 return a;
             });
-            
+
             task.userMessages.push({ text: message, attachments: normalizedAttachments.map(a => a.path || a.name) });
 
             // Log with context notice
             const contextMsg = normalizedAttachments.length > 0 ? ` (with ${normalizedAttachments.length} attachments)` : '';
             this.updateStatus(taskId, task.status, task.progress, `**User**: ${message}${contextMsg}`);
-            
+
             // Process attachments (images via vision, documents via text extraction)
             let enrichedMessage = message;
-            const imageAttachments = normalizedAttachments.filter(a => a.type === 'image' || 
+            const imageAttachments = normalizedAttachments.filter(a => a.type === 'image' ||
                 (a.path && /\.(png|jpg|jpeg|gif|webp)$/i.test(a.path)));
             const docAttachments = normalizedAttachments.filter(a => a.type === 'document' ||
                 (a.path && /\.(pdf|txt|md|doc|docx)$/i.test(a.path)));
-            
+
             if (imageAttachments.length > 0 || docAttachments.length > 0) {
                 // Show immediate feedback so user knows processing is happening
                 if (imageAttachments.length > 0) {
-                    this.updateStatus(taskId, task.status, task.progress, 
+                    this.updateStatus(taskId, task.status, task.progress,
                         '> Analyzing attached images... (extracting intent and running vision)');
                 } else {
-                    this.updateStatus(taskId, task.status, task.progress, 
+                    this.updateStatus(taskId, task.status, task.progress,
                         '> Processing attached documents...');
                 }
 
@@ -3119,7 +3118,7 @@ ${contextData}
                     this.saveTask(task);
                     return;
                 }
-                
+
                 console.log(`[TaskRunner] Routing reply to RefinementManager for task ${taskId}`);
                 const refinementManager = getRefinementManager();
 
@@ -3228,13 +3227,13 @@ ${contextData}
 
                     // Check if the previous task was completed
                     const wasCompleted = task.status === 'completed';
-                    
+
                     const contextSection = isNewMission
                         ? `⚠️ CRITICAL: IGNORE all previous task context. The user is starting a BRAND NEW mission. Do exactly what they ask in their new request. Do NOT reference or continue any previous work.`
                         : `IMPORTANT - PREVIOUS CONTEXT (what was done before):\n${previousContext}`;
 
                     // Add strong anti-echo instruction for completed missions
-                    const antiEchoInstruction = wasCompleted 
+                    const antiEchoInstruction = wasCompleted
                         ? `
 ⚠️ CRITICAL - DO NOT REPEAT PREVIOUS OUTPUT:
 - The previous mission was ALREADY completed
@@ -3296,7 +3295,7 @@ ${contextData}
                         const shadowRepo = new ShadowRepository(this.context, worktreePath, taskId);
                         await shadowRepo.initialize(); // Essential for checkpoints to work!
                         const revertManager = new RevertManager(shadowRepo);
-                        
+
                         // Create DiffAggregator for batched diff operations
                         const diffAggregator = new DiffAggregator(
                             worktreePath,
@@ -3314,7 +3313,7 @@ ${contextData}
                                 }
                             }
                         );
-                        
+
                         const ruleEnforcer = createRuleEnforcer();
                         taskContext = { shadowRepo, revertManager, diffAggregator, ruleEnforcer };
                         this.taskContexts.set(taskId, taskContext);
@@ -3391,14 +3390,14 @@ ${contextData}
                     }
 
                     // Derive task display name for terminal
-                    const taskDisplayName = task.displayPrompt?.substring(0, 40) || 
-                                            task.prompt.substring(0, 40) || 
-                                            `Task-${taskId.substring(0, 8)}`;
-                    
+                    const taskDisplayName = task.displayPrompt?.substring(0, 40) ||
+                        task.prompt.substring(0, 40) ||
+                        `Task-${taskId.substring(0, 8)}`;
+
                     // Pass whichever Copilot client is active (they all share the same research/vision interface)
                     const replyTaskContext = this.taskContexts.get(taskId);
                     const replyActiveCopilotClient = replyTaskContext?.copilotClaude || replyTaskContext?.copilotGPT || replyTaskContext?.copilotGemini;
-                    
+
                     const tools = new AgentTools(
                         worktreePath,
                         terminalManager,
@@ -3410,7 +3409,7 @@ ${contextData}
                         FileLockManager.getInstance(),
                         taskId,
                         // Login checkpoint callback - shows "I've Logged In" button in UI
-                        (checkpointTaskId: string, loginUrl: string, ssoProvider?: string) => 
+                        (checkpointTaskId: string, loginUrl: string, ssoProvider?: string) =>
                             this.requestLoginCheckpoint(checkpointTaskId, loginUrl, ssoProvider),
                         taskDisplayName // Task name for terminal display
                     );
@@ -3453,7 +3452,7 @@ ${contextData}
                 const shadowRepo = new ShadowRepository(this.context, task.worktreePath, taskId);
                 await shadowRepo.initialize(); // Must initialize for revert to work!
                 const revertManager = new RevertManager(shadowRepo);
-                
+
                 // Create DiffAggregator for batched diff operations
                 const diffAggregator = new DiffAggregator(
                     task.worktreePath,
@@ -3471,7 +3470,7 @@ ${contextData}
                         }
                     }
                 );
-                
+
                 const ruleEnforcer = createRuleEnforcer();
                 taskContext = { shadowRepo, revertManager, diffAggregator, ruleEnforcer };
                 this.taskContexts.set(taskId, taskContext);
@@ -3532,24 +3531,24 @@ ${contextData}
      */
     private buildContextFromTask(task: AgentTask): string {
         const contextLines: string[] = [];
-        
+
         // ========================================
         // CRITICAL: Filter out refinement-phase logs to prevent context bleeding
         // Only include logs AFTER the refinement end marker (if present)
         // ========================================
         const refinementEndMarker = '=== REFINEMENT PHASE COMPLETE - PRD APPROVED ===';
         const markerIndex = task.logs.findIndex(log => log.includes(refinementEndMarker));
-        
+
         // If marker exists, only use logs after it for context building
-        const relevantLogs = markerIndex >= 0 
-            ? task.logs.slice(markerIndex + 1) 
+        const relevantLogs = markerIndex >= 0
+            ? task.logs.slice(markerIndex + 1)
             : task.logs;
-        
+
         // Use a filtered copy of logs for the rest of this function
         const logsToProcess = relevantLogs.filter(log => {
             // Always skip refinement-specific logs that might have survived
-            if (log.includes('[Refinement]') || 
-                log.includes('**Analyst**') || 
+            if (log.includes('[Refinement]') ||
+                log.includes('**Analyst**') ||
                 log.includes('**Critic**') ||
                 log.includes('**Refiner**') ||
                 log.includes('Refinement Mode')) {
@@ -3597,7 +3596,7 @@ ${contextData}
             // CRITICAL: Skip any logs containing mission complete or summary content
             // This prevents the AI from echoing back previous mission completions
             const logLower = log.toLowerCase();
-            if (logLower.includes('mission complete') || 
+            if (logLower.includes('mission complete') ||
                 logLower.includes('mission summary') ||
                 logLower.includes('verification results') ||
                 logLower.includes('all features have been tested') ||
@@ -3609,14 +3608,14 @@ ${contextData}
             // Extract AI (Claude/Gemini) responses
             if (log.startsWith('**Claude**:') || log.startsWith('** Claude **:')) {
                 const aiResponse = log.replace(/\*\*\s*Claude\s*\*\*:/g, '').trim();
-                
+
                 // CRITICAL: Skip mission completion responses
                 if (aiResponse.toLowerCase().includes('mission complete') ||
                     aiResponse.toLowerCase().includes('verification results') ||
                     aiResponse.toLowerCase().includes('all tests passed')) {
                     continue;
                 }
-                
+
                 // Truncate long responses to avoid token bloat
                 const truncated = aiResponse.length > 500
                     ? aiResponse.substring(0, 500) + '... [truncated]'
@@ -3626,14 +3625,14 @@ ${contextData}
                 }
             } else if (log.startsWith('**Gemini**:') || log.startsWith('** Gemini **:')) {
                 const aiResponse = log.replace(/\*\*\s*Gemini\s*\*\*:/g, '').trim();
-                
+
                 // CRITICAL: Skip mission completion responses
                 if (aiResponse.toLowerCase().includes('mission complete') ||
                     aiResponse.toLowerCase().includes('verification results') ||
                     aiResponse.toLowerCase().includes('all tests passed')) {
                     continue;
                 }
-                
+
                 const truncated = aiResponse.length > 500
                     ? aiResponse.substring(0, 500) + '... [truncated]'
                     : aiResponse;
@@ -3644,18 +3643,18 @@ ${contextData}
             // Extract user messages - but SKIP refinement phase messages
             else if (log.startsWith('**User**:')) {
                 const userMsg = log.replace('**User**:', '').trim();
-                
+
                 // CRITICAL: Skip user messages that appear to be from refinement phase
                 // These can contain requirements/pointers that were NOT accepted into the PRD
                 // and would confuse the agent with conflicting context
-                const isRefinementPhaseMsg = 
+                const isRefinementPhaseMsg =
                     userMsg.toLowerCase().includes('refinement') ||
                     userMsg.toLowerCase().includes('prd') ||
                     userMsg.toLowerCase().includes('requirement') ||
                     userMsg.toLowerCase().includes('clarif') ||
                     userMsg.toLowerCase().includes('approve') ||
                     userMsg.length > 500; // Long messages during refinement are usually requirement discussions
-                    
+
                 if (!isRefinementPhaseMsg) {
                     conversationHistory.push(`[User]: ${userMsg}`);
                 }
