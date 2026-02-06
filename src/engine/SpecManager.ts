@@ -66,6 +66,9 @@ export class SpecManager {
     private _structuredConstitution: ConstitutionV2 | null = null;
     private _guidelinesConfig: CorporateGuidelinesConfig = DEFAULT_GUIDELINES_CONFIG;
 
+    // Flag to prevent file watcher from interfering during live guideline toggles
+    private _isInLivePreview: boolean = false;
+
     // File watcher for external constitution changes
     private _watcher: vscode.FileSystemWatcher | null = null;
     private _onConstitutionChanged = new vscode.EventEmitter<{ type: 'changed' | 'deleted'; content?: string }>();
@@ -280,6 +283,12 @@ export class SpecManager {
             return false;
         }
 
+        // Skip reload if we're in live preview mode (user is toggling guidelines)
+        if (this._isInLivePreview) {
+            console.log('[SpecManager] Skipping reload - in live preview mode');
+            return false;
+        }
+
         try {
             if (fs.existsSync(this._constitutionPath)) {
                 const content = fs.readFileSync(this._constitutionPath, 'utf-8');
@@ -287,8 +296,8 @@ export class SpecManager {
                 // Only update if content actually changed
                 if (content !== this._constitution) {
                     this._constitution = content;
-                    // Parse into structured form so regenerateWithGuidelines() can work
-                    this._structuredConstitution = parseMarkdownConstitution(content);
+                    // Parse into structured form, PRESERVING existing data for sections that fail to parse
+                    this._structuredConstitution = parseMarkdownConstitution(content, this._structuredConstitution || undefined);
                     console.log(`[SpecManager] Reloaded constitution (${content.length} chars)`);
 
                     // Validate the reloaded content
@@ -718,46 +727,54 @@ Output ONLY the markdown content. No preamble.`;
             return null;
         }
 
-        // DEEP CLONE to prevent mutation issues on repeated toggles
-        // This ensures each toggle starts from a clean state
-        const workingConstitution = JSON.parse(JSON.stringify(this._structuredConstitution)) as ConstitutionV2;
+        // Set live preview flag to prevent file watcher from triggering reload
+        this._isInLivePreview = true;
 
-        // Guideline rule ID prefixes to strip
-        const guidelinePrefixes = ['SEC-', 'PERF-', 'MAINT-', 'TEST-', 'A11Y-'];
-        const isGuidelineRule = (rule: AgentRule) =>
-            rule.id ? guidelinePrefixes.some(prefix => rule.id!.startsWith(prefix)) : false;
+        try {
+            // DEEP CLONE to prevent mutation issues on repeated toggles
+            // This ensures each toggle starts from a clean state
+            const workingConstitution = JSON.parse(JSON.stringify(this._structuredConstitution)) as ConstitutionV2;
 
-        // Strip all existing guideline-sourced rules from agentConstraints (on the CLONE)
-        workingConstitution.agentConstraints.must =
-            workingConstitution.agentConstraints.must.filter(r => !isGuidelineRule(r));
-        workingConstitution.agentConstraints.mustNot =
-            workingConstitution.agentConstraints.mustNot.filter(r => !isGuidelineRule(r));
-        workingConstitution.agentConstraints.should =
-            workingConstitution.agentConstraints.should.filter(r => !isGuidelineRule(r));
+            // Guideline rule ID prefixes to strip
+            const guidelinePrefixes = ['SEC-', 'PERF-', 'MAINT-', 'TEST-', 'A11Y-'];
+            const isGuidelineRule = (rule: AgentRule) =>
+                rule.id ? guidelinePrefixes.some(prefix => rule.id!.startsWith(prefix)) : false;
 
-        // Add back rules from the newly enabled guideline categories
-        const guidelines = getEnabledGuidelines(config);
-        const guidelineConstraints = guidelinesToAgentConstraints(guidelines);
+            // Strip all existing guideline-sourced rules from agentConstraints (on the CLONE)
+            workingConstitution.agentConstraints.must =
+                workingConstitution.agentConstraints.must.filter(r => !isGuidelineRule(r));
+            workingConstitution.agentConstraints.mustNot =
+                workingConstitution.agentConstraints.mustNot.filter(r => !isGuidelineRule(r));
+            workingConstitution.agentConstraints.should =
+                workingConstitution.agentConstraints.should.filter(r => !isGuidelineRule(r));
 
-        workingConstitution.agentConstraints.must.push(...guidelineConstraints.must);
-        workingConstitution.agentConstraints.mustNot.push(...guidelineConstraints.mustNot);
-        workingConstitution.agentConstraints.should.push(...guidelineConstraints.should);
+            // Add back rules from the newly enabled guideline categories
+            const guidelines = getEnabledGuidelines(config);
+            const guidelineConstraints = guidelinesToAgentConstraints(guidelines);
 
-        // Update stored config
-        this._guidelinesConfig = { ...config };
+            workingConstitution.agentConstraints.must.push(...guidelineConstraints.must);
+            workingConstitution.agentConstraints.mustNot.push(...guidelineConstraints.mustNot);
+            workingConstitution.agentConstraints.should.push(...guidelineConstraints.should);
 
-        // Update the structured constitution AFTER successful manipulation
-        this._structuredConstitution = workingConstitution;
+            // Update stored config
+            this._guidelinesConfig = { ...config };
 
-        // Re-render to markdown
-        const markdown = constitutionToMarkdown(workingConstitution);
+            // Update the structured constitution AFTER successful manipulation
+            this._structuredConstitution = workingConstitution;
 
-        // Update in-memory markdown (but do NOT write to disk during preview)
-        // Disk write should only happen on Approve to prevent corruption
-        this._constitution = markdown;
-        console.log(`[SpecManager] Regenerated constitution preview with guidelines: ${JSON.stringify(config)}`);
+            // Re-render to markdown
+            const markdown = constitutionToMarkdown(workingConstitution);
 
-        return markdown;
+            // Update in-memory markdown (but do NOT write to disk during preview)
+            // Disk write should only happen on Approve to prevent corruption
+            this._constitution = markdown;
+            console.log(`[SpecManager] Regenerated constitution preview with guidelines: ${JSON.stringify(config)}`);
+
+            return markdown;
+        } finally {
+            // Always clear the live preview flag
+            this._isInLivePreview = false;
+        }
     }
 
     /**

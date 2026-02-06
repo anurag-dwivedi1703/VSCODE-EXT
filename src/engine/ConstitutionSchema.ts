@@ -23,7 +23,7 @@ export const CONSTITUTION_VERSION = '2.0';
 /**
  * Project type classification
  */
-export type ProjectType = 
+export type ProjectType =
     | 'extension'      // VS Code extension
     | 'webapp'         // Web application (React, Vue, etc.)
     | 'api'            // Backend API service
@@ -35,7 +35,7 @@ export type ProjectType =
 /**
  * Primary programming language
  */
-export type PrimaryLanguage = 
+export type PrimaryLanguage =
     | 'typescript'
     | 'javascript'
     | 'python'
@@ -48,7 +48,7 @@ export type PrimaryLanguage =
 /**
  * Rule enforcement level
  */
-export type EnforcementLevel = 
+export type EnforcementLevel =
     | 'strict'       // Error - must be fixed immediately
     | 'warning'      // Warning - should be fixed
     | 'suggestion';  // Suggestion - nice to have
@@ -56,7 +56,7 @@ export type EnforcementLevel =
 /**
  * Risk level for dependencies
  */
-export type RiskLevel = 
+export type RiskLevel =
     | 'critical'     // Breaking changes will break the system
     | 'high'         // Major impact on functionality
     | 'medium'       // Moderate impact
@@ -159,7 +159,7 @@ export interface SecurityVulnerability {
 /**
  * Architecture pattern type
  */
-export type ArchitecturePattern = 
+export type ArchitecturePattern =
     | 'mvc'              // Model-View-Controller
     | 'mvvm'             // Model-View-ViewModel
     | 'hexagonal'        // Ports and Adapters
@@ -280,7 +280,7 @@ export interface ForbiddenPattern {
 /**
  * Testing framework type
  */
-export type TestFramework = 
+export type TestFramework =
     | 'jest'
     | 'mocha'
     | 'vitest'
@@ -508,12 +508,12 @@ export function createEmptyConstitution(projectName: string = 'Unknown'): Consti
  */
 export function constitutionToMarkdown(constitution: ConstitutionV2): string {
     const lines: string[] = [];
-    
+
     lines.push(`# Workspace Constitution v${constitution.version}`);
     lines.push('');
     lines.push(`> Generated: ${constitution.generatedAt}`);
     lines.push('');
-    
+
     // Identity
     lines.push('## 1. Project Identity');
     lines.push('');
@@ -527,7 +527,7 @@ export function constitutionToMarkdown(constitution: ConstitutionV2): string {
         lines.push(`- **Description**: ${constitution.identity.description}`);
     }
     lines.push('');
-    
+
     // Critical Dependencies
     lines.push('## 2. Critical Dependencies (DO NOT MODIFY WITHOUT REVIEW)');
     lines.push('');
@@ -541,7 +541,7 @@ export function constitutionToMarkdown(constitution: ConstitutionV2): string {
         lines.push('*No critical dependencies identified*');
     }
     lines.push('');
-    
+
     // Architecture Rules
     lines.push('## 3. Architecture Rules');
     lines.push('');
@@ -564,7 +564,7 @@ export function constitutionToMarkdown(constitution: ConstitutionV2): string {
         }
     }
     lines.push('');
-    
+
     // Coding Standards
     lines.push('## 4. Coding Standards');
     lines.push('');
@@ -576,15 +576,15 @@ export function constitutionToMarkdown(constitution: ConstitutionV2): string {
     ];
     if (allStandards.length > 0) {
         for (const standard of allStandards) {
-            const icon = standard.enforcement === 'strict' ? '🔴' : 
-                        standard.enforcement === 'warning' ? '🟡' : '🟢';
+            const icon = standard.enforcement === 'strict' ? '🔴' :
+                standard.enforcement === 'warning' ? '🟡' : '🟢';
             lines.push(`- ${icon} **${standard.description}**: ${standard.value}`);
         }
     } else {
         lines.push('*No specific coding standards detected*');
     }
     lines.push('');
-    
+
     // Forbidden Patterns
     lines.push('## 5. Forbidden Patterns');
     lines.push('');
@@ -601,7 +601,7 @@ export function constitutionToMarkdown(constitution: ConstitutionV2): string {
         lines.push('*No forbidden patterns defined*');
     }
     lines.push('');
-    
+
     // Testing Requirements
     lines.push('## 6. Testing Requirements');
     lines.push('');
@@ -614,11 +614,11 @@ export function constitutionToMarkdown(constitution: ConstitutionV2): string {
         lines.push(`- **Required Test Types**: ${constitution.testingRequirements.requiredTestTypes.join(', ')}`);
     }
     lines.push('');
-    
+
     // Agent Constraints
     lines.push('## 7. Agent Constraints (ENFORCED)');
     lines.push('');
-    
+
     if (constitution.agentConstraints.must.length > 0) {
         lines.push('### MUST');
         for (const rule of constitution.agentConstraints.must) {
@@ -629,7 +629,7 @@ export function constitutionToMarkdown(constitution: ConstitutionV2): string {
         }
         lines.push('');
     }
-    
+
     if (constitution.agentConstraints.mustNot.length > 0) {
         lines.push('### MUST NOT');
         for (const rule of constitution.agentConstraints.mustNot) {
@@ -640,7 +640,7 @@ export function constitutionToMarkdown(constitution: ConstitutionV2): string {
         }
         lines.push('');
     }
-    
+
     if (constitution.agentConstraints.should.length > 0) {
         lines.push('### SHOULD');
         for (const rule of constitution.agentConstraints.should) {
@@ -651,14 +651,14 @@ export function constitutionToMarkdown(constitution: ConstitutionV2): string {
         }
         lines.push('');
     }
-    
+
     // Custom Rules
     lines.push('## 8. Custom Rules (User-Defined)');
     lines.push('');
     if (constitution.customRules.length > 0) {
         for (const rule of constitution.customRules) {
-            const icon = rule.enforcement === 'strict' ? '🔴' : 
-                        rule.enforcement === 'warning' ? '🟡' : '🟢';
+            const icon = rule.enforcement === 'strict' ? '🔴' :
+                rule.enforcement === 'warning' ? '🟡' : '🟢';
             lines.push(`- ${icon} ${rule.description}`);
         }
     } else {
@@ -670,10 +670,10 @@ export function constitutionToMarkdown(constitution: ConstitutionV2): string {
         lines.push('```');
     }
     lines.push('');
-    
+
     lines.push('---');
     lines.push('*This constitution is the source of truth for AI agents working in this workspace.*');
-    
+
     return lines.join('\n');
 }
 
@@ -683,17 +683,17 @@ export function constitutionToMarkdown(constitution: ConstitutionV2): string {
  */
 export function parseMarkdownConstitution(markdown: string, existingConstitution?: ConstitutionV2): ConstitutionV2 {
     const constitution = existingConstitution || createEmptyConstitution();
-    
+
     // ========================================
     // Section 1: Project Identity
     // ========================================
     const identityMatch = markdown.match(/## 1\. Project Identity[\s\S]*?(?=## \d|---|\Z)/i);
     if (identityMatch) {
         const section = identityMatch[0];
-        
+
         const nameMatch = section.match(/\*\*Name\*\*:\s*([^\n]+)/i);
         if (nameMatch) constitution.identity.name = nameMatch[1].trim();
-        
+
         const typeMatch = section.match(/\*\*Type\*\*:\s*([^\n]+)/i);
         if (typeMatch) {
             const typeVal = typeMatch[1].trim().toLowerCase() as ProjectType;
@@ -701,7 +701,7 @@ export function parseMarkdownConstitution(markdown: string, existingConstitution
                 constitution.identity.type = typeVal;
             }
         }
-        
+
         const langMatch = section.match(/\*\*Primary Language\*\*:\s*([^\n]+)/i);
         if (langMatch) {
             const langVal = langMatch[1].trim().toLowerCase() as PrimaryLanguage;
@@ -709,31 +709,32 @@ export function parseMarkdownConstitution(markdown: string, existingConstitution
                 constitution.identity.primaryLanguage = langVal;
             }
         }
-        
+
         const frameworkMatch = section.match(/\*\*Framework\*\*:\s*([^\n]+)/i);
         if (frameworkMatch) constitution.identity.framework = frameworkMatch[1].trim();
-        
+
         const descMatch = section.match(/\*\*Description\*\*:\s*([^\n]+)/i);
         if (descMatch) constitution.identity.description = descMatch[1].trim();
     }
-    
+
     // ========================================
     // Section 2: Critical Dependencies
     // ========================================
-    const depsMatch = markdown.match(/## 2\. Critical Dependencies[\s\S]*?(?=## \d|---|\Z)/i);
+    const depsMatch = markdown.match(/## 2\. Critical Dependencies[\s\S]*?(?=## \d|---|$)/i);
     if (depsMatch) {
         const section = depsMatch[0];
         const tableRows = section.match(/\|[^|\n]+\|[^|\n]+\|[^|\n]+\|[^|\n]+\|/g) || [];
-        
-        constitution.criticalDependencies = [];
-        
+
+        // Parse into temporary array first
+        const parsedDeps: CriticalDependency[] = [];
+
         for (const row of tableRows) {
             // Skip header and separator rows
             if (row.includes('Package') || row.includes('---') || row.includes('Version')) continue;
-            
+
             const cells = row.split('|').filter(c => c.trim()).map(c => c.trim());
             if (cells.length >= 4) {
-                constitution.criticalDependencies.push({
+                parsedDeps.push({
                     name: cells[0],
                     version: cells[1],
                     reason: cells[2],
@@ -741,15 +742,21 @@ export function parseMarkdownConstitution(markdown: string, existingConstitution
                 });
             }
         }
+
+        // Only update if we parsed something OR if there's no existing data to preserve
+        if (parsedDeps.length > 0 || constitution.criticalDependencies.length === 0) {
+            constitution.criticalDependencies = parsedDeps;
+        }
+        // If parsedDeps is empty but we have existing data, keep the existing data
     }
-    
+
     // ========================================
     // Section 3: Architecture Rules
     // ========================================
     const archMatch = markdown.match(/## 3\. Architecture Rules[\s\S]*?(?=## \d|---|\Z)/i);
     if (archMatch) {
         const section = archMatch[0];
-        
+
         const patternMatch = section.match(/\*\*Pattern\*\*:\s*([^\n]+)/i);
         if (patternMatch) {
             const patternVal = patternMatch[1].trim().toLowerCase().replace(/[^a-z-]/g, '') as ArchitecturePattern;
@@ -757,16 +764,16 @@ export function parseMarkdownConstitution(markdown: string, existingConstitution
                 constitution.architectureRules.pattern = patternVal;
             }
         }
-        
+
         const entryMatch = section.match(/\*\*Entry Point\*\*:\s*`?([^`\n]+)`?/i);
         if (entryMatch) constitution.architectureRules.entryPoint = entryMatch[1].trim();
-        
+
         // Parse module boundaries
         const boundariesMatch = section.match(/### Module Boundaries[\s\S]*?(?=###|## \d|---|\Z)/i);
         if (boundariesMatch) {
             const boundarySection = boundariesMatch[0];
             const boundaryLines = boundarySection.match(/\*\*([^*]+)\*\*:\s*([^\n]+)/g) || [];
-            
+
             constitution.architectureRules.moduleBoundaries = [];
             for (const line of boundaryLines) {
                 const match = line.match(/\*\*([^*]+)\*\*:\s*([^\n]+)/);
@@ -779,13 +786,13 @@ export function parseMarkdownConstitution(markdown: string, existingConstitution
                 }
             }
         }
-        
+
         // Parse import rules
         const importRulesMatch = section.match(/### Import Rules[\s\S]*?(?=###|## \d|---|\Z)/i);
         if (importRulesMatch) {
             const importSection = importRulesMatch[0];
             const ruleLines = importSection.split('\n').filter(l => l.trim().startsWith('-'));
-            
+
             constitution.architectureRules.importRules = [];
             for (let i = 0; i < ruleLines.length; i++) {
                 const line = ruleLines[i].replace(/^-\s*/, '').trim();
@@ -800,7 +807,7 @@ export function parseMarkdownConstitution(markdown: string, existingConstitution
             }
         }
     }
-    
+
     // ========================================
     // Section 5: Forbidden Patterns
     // ========================================
@@ -808,14 +815,14 @@ export function parseMarkdownConstitution(markdown: string, existingConstitution
     if (forbiddenMatch) {
         const section = forbiddenMatch[0];
         const patterns = section.split(/(?=- ❌|\*\*[^*]+\*\*)/);
-        
+
         constitution.forbiddenPatterns = [];
-        
+
         for (const pattern of patterns) {
             const descMatch = pattern.match(/(?:❌\s*)?(?:\*\*)?([^*\n]+)(?:\*\*)?/);
             const reasonMatch = pattern.match(/Reason:\s*([^\n]+)/i);
             const insteadMatch = pattern.match(/Instead:\s*([^\n]+)/i);
-            
+
             if (descMatch && descMatch[1].trim() && !descMatch[1].includes('Forbidden Patterns')) {
                 constitution.forbiddenPatterns.push({
                     id: `forbidden-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
@@ -828,14 +835,14 @@ export function parseMarkdownConstitution(markdown: string, existingConstitution
             }
         }
     }
-    
+
     // ========================================
     // Section 6: Testing Requirements
     // ========================================
     const testingMatch = markdown.match(/## 6\. Testing Requirements[\s\S]*?(?=## \d|---|\Z)/i);
     if (testingMatch) {
         const section = testingMatch[0];
-        
+
         const frameworkMatch = section.match(/\*\*Framework\*\*:\s*([^\n]+)/i);
         if (frameworkMatch) {
             const fw = frameworkMatch[1].trim().toLowerCase() as TestFramework;
@@ -843,27 +850,27 @@ export function parseMarkdownConstitution(markdown: string, existingConstitution
                 constitution.testingRequirements.framework = fw;
             }
         }
-        
+
         const patternMatch = section.match(/\*\*Test Pattern\*\*:\s*`?([^`\n]+)`?/i);
         if (patternMatch) constitution.testingRequirements.testFilePattern = patternMatch[1].trim();
-        
+
         const coverageMatch = section.match(/\*\*Coverage Minimum\*\*:\s*(\d+)/i);
         if (coverageMatch) constitution.testingRequirements.coverageMinimum = parseInt(coverageMatch[1], 10);
-        
+
         const typesMatch = section.match(/\*\*Required Test Types\*\*:\s*([^\n]+)/i);
         if (typesMatch) {
             const types = typesMatch[1].split(/[,\s]+/).filter(t => t.trim());
             constitution.testingRequirements.requiredTestTypes = types.map(t => t.toLowerCase().trim() as TestType);
         }
     }
-    
+
     // ========================================
     // Section 7: Agent Constraints
     // ========================================
     const constraintsMatch = markdown.match(/## 7\. Agent Constraints[\s\S]*?(?=## \d|---|\Z)/i);
     if (constraintsMatch) {
         const section = constraintsMatch[0];
-        
+
         // Parse MUST rules
         const mustMatch = section.match(/### MUST\b[\s\S]*?(?=###|## \d|---|\Z)/i);
         if (mustMatch) {
@@ -871,7 +878,7 @@ export function parseMarkdownConstitution(markdown: string, existingConstitution
             const rules = parseAgentRules(mustSection, 'strict');
             constitution.agentConstraints.must = rules;
         }
-        
+
         // Parse MUST NOT rules
         const mustNotMatch = section.match(/### MUST NOT\b[\s\S]*?(?=###|## \d|---|\Z)/i);
         if (mustNotMatch) {
@@ -879,7 +886,7 @@ export function parseMarkdownConstitution(markdown: string, existingConstitution
             const rules = parseAgentRules(mustNotSection, 'strict');
             constitution.agentConstraints.mustNot = rules;
         }
-        
+
         // Parse SHOULD rules
         const shouldMatch = section.match(/### SHOULD\b[\s\S]*?(?=###|## \d|---|\Z)/i);
         if (shouldMatch) {
@@ -888,7 +895,7 @@ export function parseMarkdownConstitution(markdown: string, existingConstitution
             constitution.agentConstraints.should = rules;
         }
     }
-    
+
     // ========================================
     // Section 8: Custom Rules
     // ========================================
@@ -896,15 +903,15 @@ export function parseMarkdownConstitution(markdown: string, existingConstitution
     if (customRulesMatch) {
         const customRulesSection = customRulesMatch[0];
         const ruleLines = customRulesSection.split('\n').filter(line => line.trim().startsWith('- '));
-        
+
         constitution.customRules = [];
-        
+
         for (const line of ruleLines) {
             const cleanLine = line.replace(/^-\s*[🔴🟡🟢❌✅💡]*\s*/, '').trim();
-            
+
             let enforcement: EnforcementLevel = 'suggestion';
             let description = cleanLine;
-            
+
             if (cleanLine.startsWith('MUST NOT:')) {
                 enforcement = 'strict';
                 description = cleanLine.replace('MUST NOT:', '').trim();
@@ -915,7 +922,7 @@ export function parseMarkdownConstitution(markdown: string, existingConstitution
                 enforcement = 'warning';
                 description = cleanLine.replace('SHOULD:', '').trim();
             }
-            
+
             if (description && !description.startsWith('[') && !description.startsWith('*')) {
                 constitution.customRules.push({
                     id: `custom-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
@@ -927,9 +934,9 @@ export function parseMarkdownConstitution(markdown: string, existingConstitution
             }
         }
     }
-    
+
     constitution.generatedAt = new Date().toISOString();
-    
+
     return constitution;
 }
 
@@ -942,11 +949,11 @@ function parseAgentRules(section: string, defaultEnforcement: EnforcementLevel):
         const trimmed = line.trim();
         return trimmed.startsWith('-') || trimmed.startsWith('✅') || trimmed.startsWith('❌') || trimmed.startsWith('💡');
     });
-    
+
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         const cleanLine = line.replace(/^[-✅❌💡]\s*/, '').trim();
-        
+
         if (cleanLine && !cleanLine.startsWith('[') && !cleanLine.startsWith('*')) {
             // Check for reason on next line
             let reason: string | undefined;
@@ -956,7 +963,7 @@ function parseAgentRules(section: string, defaultEnforcement: EnforcementLevel):
                     reason = nextLine.replace(/^[-\s]*\*Reason:\s*/i, '').replace(/\*$/, '').trim();
                 }
             }
-            
+
             rules.push({
                 id: `rule-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
                 description: cleanLine,
@@ -966,7 +973,7 @@ function parseAgentRules(section: string, defaultEnforcement: EnforcementLevel):
             });
         }
     }
-    
+
     return rules;
 }
 
@@ -1147,7 +1154,7 @@ export function validateConstitutionMarkdown(markdown: string): ConstitutionVali
  */
 export function repairConstitutionMarkdown(markdown: string, projectName: string = 'Unknown Project'): string {
     const validation = validateConstitutionMarkdown(markdown);
-    
+
     // If already valid, return as-is
     if (validation.isValid) {
         return markdown;
