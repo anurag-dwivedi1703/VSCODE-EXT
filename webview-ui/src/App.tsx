@@ -626,6 +626,13 @@ function App() {
                     type: message.approvalType || 'constitution'
                 });
             }
+            // Handle live guidelines update (constitution content regenerated with toggled guidelines)
+            if (message.command === 'constitutionGuidelinesUpdated') {
+                setConstitutionReview(prev => prev ? {
+                    ...prev,
+                    content: message.content
+                } : null);
+            }
 
             // Phase execution message handlers
             if (message.command === 'phaseUpdate') {
@@ -944,12 +951,13 @@ function App() {
     };
 
     // Constitution Review Handlers
-    const handleApproveConstitution = (editedContent?: string) => {
+    const handleApproveConstitution = (editedContent?: string, guidelinesConfig?: any) => {
         if (!constitutionReview) return;
         vscode.postMessage({
             command: 'approveConstitution',
             taskId: constitutionReview.taskId,
-            feedback: editedContent || constitutionReview.content
+            feedback: editedContent || constitutionReview.content,
+            guidelinesConfig: guidelinesConfig  // Forward guidelines selection to backend
         });
         setConstitutionReview(null);
     };
@@ -961,6 +969,16 @@ function App() {
             taskId: constitutionReview.taskId
         });
         setConstitutionReview(null);
+    };
+
+    // Live guidelines toggle: send to backend to regenerate constitution preview
+    const handleGuidelinesChange = (config: any) => {
+        if (!constitutionReview) return;
+        vscode.postMessage({
+            command: 'toggleConstitutionGuidelines',
+            taskId: constitutionReview.taskId,
+            guidelinesConfig: config
+        });
     };
 
     const activeAgent = activeAgents.find(a => a.id === expandedAgentId) || activeAgents[0];
@@ -1090,6 +1108,7 @@ function App() {
                     taskId={constitutionReview.taskId}
                     onApprove={handleApproveConstitution}
                     onReject={handleRejectConstitution}
+                    onGuidelinesChange={handleGuidelinesChange}
                 />
             )}
 

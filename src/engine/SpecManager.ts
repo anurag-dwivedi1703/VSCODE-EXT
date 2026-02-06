@@ -189,6 +189,8 @@ export class SpecManager {
         try {
             fs.writeFileSync(this._constitutionPath, finalContent, 'utf-8');
             this._constitution = finalContent;
+            // Parse into structured form so regenerateWithGuidelines() can work
+            this._structuredConstitution = parseMarkdownConstitution(finalContent);
             console.log(`[SpecManager] Saved constitution to ${this._constitutionPath} (valid: ${validation.isValid})`);
         } catch (error) {
             console.error(`[SpecManager] Failed to save constitution:`, error);
@@ -285,6 +287,8 @@ export class SpecManager {
                 // Only update if content actually changed
                 if (content !== this._constitution) {
                     this._constitution = content;
+                    // Parse into structured form so regenerateWithGuidelines() can work
+                    this._structuredConstitution = parseMarkdownConstitution(content);
                     console.log(`[SpecManager] Reloaded constitution (${content.length} chars)`);
                     
                     // Validate the reloaded content
@@ -696,6 +700,63 @@ Output ONLY the markdown content. No preamble.`;
      */
     getGuidelinesConfig(): CorporateGuidelinesConfig {
         return this._guidelinesConfig;
+    }
+
+    /**
+     * Regenerate constitution markdown with updated corporate guidelines.
+     * 
+     * This is used for LIVE PREVIEW in the Constitution Review Modal:
+     * when the user toggles a guideline category, this method strips old guideline
+     * rules from agentConstraints, adds the newly-selected ones, and re-renders
+     * the markdown -- all without an AI call.
+     * 
+     * Does NOT save to disk (that happens on Approve).
+     */
+    regenerateWithGuidelines(config: CorporateGuidelinesConfig): string | null {
+        if (!this._structuredConstitution) {
+            console.warn('[SpecManager] No structured constitution in memory for guideline regeneration');
+            return null;
+        }
+
+        // Guideline rule ID prefixes to strip
+        const guidelinePrefixes = ['SEC-', 'PERF-', 'MAINT-', 'TEST-', 'A11Y-'];
+        const isGuidelineRule = (rule: AgentRule) => 
+            rule.id ? guidelinePrefixes.some(prefix => rule.id!.startsWith(prefix)) : false;
+
+        // Strip all existing guideline-sourced rules from agentConstraints
+        this._structuredConstitution.agentConstraints.must = 
+            this._structuredConstitution.agentConstraints.must.filter(r => !isGuidelineRule(r));
+        this._structuredConstitution.agentConstraints.mustNot = 
+            this._structuredConstitution.agentConstraints.mustNot.filter(r => !isGuidelineRule(r));
+        this._structuredConstitution.agentConstraints.should = 
+            this._structuredConstitution.agentConstraints.should.filter(r => !isGuidelineRule(r));
+
+        // Add back rules from the newly enabled guideline categories
+        const guidelines = getEnabledGuidelines(config);
+        const guidelineConstraints = guidelinesToAgentConstraints(guidelines);
+
+        this._structuredConstitution.agentConstraints.must.push(...guidelineConstraints.must);
+        this._structuredConstitution.agentConstraints.mustNot.push(...guidelineConstraints.mustNot);
+        this._structuredConstitution.agentConstraints.should.push(...guidelineConstraints.should);
+
+        // Update stored config
+        this._guidelinesConfig = { ...config };
+
+        // Re-render to markdown
+        const markdown = constitutionToMarkdown(this._structuredConstitution);
+
+        // Save to disk so agents always use the latest version
+        this._constitution = markdown;
+        if (this._constitutionPath) {
+            try {
+                fs.writeFileSync(this._constitutionPath, markdown, 'utf-8');
+                console.log(`[SpecManager] Regenerated constitution with guidelines and saved to disk: ${JSON.stringify(config)}`);
+            } catch (e: any) {
+                console.error(`[SpecManager] Failed to save regenerated constitution: ${e.message}`);
+            }
+        }
+
+        return markdown;
     }
 
     /**

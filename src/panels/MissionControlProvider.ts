@@ -831,11 +831,26 @@ export class MissionControlProvider {
                         return;
                     // Constitution Review Handlers
                     case 'approveConstitution':
-                        this._taskRunner.approveReview(message.taskId, message.feedback);
+                        this._taskRunner.approveReview(message.taskId, message.feedback, message.guidelinesConfig);
                         return;
                     case 'rejectConstitution':
                         this._taskRunner.rejectReview(message.taskId);
                         return;
+                    case 'toggleConstitutionGuidelines': {
+                        // Live preview: regenerate constitution with updated guidelines
+                        const specManager = this._taskRunner.getSpecManager(message.taskId);
+                        if (specManager && message.guidelinesConfig) {
+                            const updatedMarkdown = specManager.regenerateWithGuidelines(message.guidelinesConfig);
+                            if (updatedMarkdown) {
+                                this.safePostMessage({
+                                    command: 'constitutionGuidelinesUpdated',
+                                    taskId: message.taskId,
+                                    content: updatedMarkdown
+                                });
+                            }
+                        }
+                        return;
+                    }
                     // PRD Review Handlers (Refinement Mode)
                     case 'prdApproved':
                         this._taskRunner.approvePrd(message.taskId);

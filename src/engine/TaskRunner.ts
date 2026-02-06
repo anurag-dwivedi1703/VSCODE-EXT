@@ -106,6 +106,8 @@ export class TaskRunner {
 
     // Approval resolvers - allows execution loop to await user approval
     private _approvalResolvers: Map<string, { resolve: (approved: boolean) => void, feedback?: string }> = new Map();
+    // Store last approval feedback so callers of waitForApproval can retrieve it
+    private _lastApprovalFeedback: Map<string, string | undefined> = new Map();
 
     // Global agent mode (applies to all missions)
     private _globalAgentMode: 'auto' | 'review-enabled' = 'auto';
@@ -125,9 +127,18 @@ export class TaskRunner {
     }
 
     // Approval control methods for Review Enabled mode
-    public approveReview(taskId: string, feedback?: string) {
+    public approveReview(taskId: string, feedback?: string, guidelinesConfig?: any) {
         const task = this.tasks.get(taskId);
         if (!task || task.status !== 'awaiting-approval') { return; }
+
+        // Persist guidelines config if provided (from constitution review modal)
+        if (guidelinesConfig) {
+            const specManager = this.taskContexts.get(taskId)?.specManager;
+            if (specManager) {
+                specManager.setGuidelinesConfig(guidelinesConfig);
+                console.log(`[TaskRunner] Persisted guidelines config for task ${taskId}: ${JSON.stringify(guidelinesConfig)}`);
+            }
+        }
 
         // Clear awaiting state
         task.awaitingApproval = undefined;
@@ -138,6 +149,9 @@ export class TaskRunner {
             task.userMessages.push({ text: `[User Feedback on Plan]: ${feedback}`, attachments: [] });
             task.logs.push(`> [User Feedback]: ${feedback}`);
         }
+
+        // Store feedback so callers of waitForApproval can retrieve the approved content
+        this._lastApprovalFeedback.set(taskId, feedback);
 
         // Resolve the waiting promise to resume execution loop
         const resolver = this._approvalResolvers.get(taskId);
@@ -1333,7 +1347,15 @@ ${contextData}
                     return;
                 }
                 
-                // Reload the constitution (user may have edited it during review)
+                // Save the approved/edited content to disk (user may have edited or toggled guidelines)
+                const approvedContent = this._lastApprovalFeedback.get(taskId);
+                if (approvedContent && approvedContent.trim()) {
+                    await specManager.saveConstitution(approvedContent);
+                    console.log(`[TaskRunner] Saved approved constitution to disk (${approvedContent.length} chars)`);
+                }
+                this._lastApprovalFeedback.delete(taskId);
+
+                // Reload the constitution
                 await specManager.reloadConstitution();
                 constitution = specManager.getConstitution();
                 task.logs.push(`> [Constitution]: Approved by user`);
@@ -1846,7 +1868,15 @@ ${contextData}
                         throw new Error('Constitution rejected by user - mission cancelled');
                     }
                     
-                    // Reload the constitution (user may have edited it during review)
+                    // Save the approved/edited content to disk (user may have edited or toggled guidelines)
+                    const approvedConstitution = this._lastApprovalFeedback.get(taskId);
+                    if (approvedConstitution && approvedConstitution.trim()) {
+                        await specManager.saveConstitution(approvedConstitution);
+                        console.log(`[TaskRunner] Saved approved constitution to disk (${approvedConstitution.length} chars)`);
+                    }
+                    this._lastApprovalFeedback.delete(taskId);
+
+                    // Reload the constitution
                     await specManager.reloadConstitution();
                     task.logs.push(`> [Constitution]: Approved by user`);
                 } else {
@@ -3398,6 +3428,13 @@ ${contextData}
 
     public getTask(taskId: string): AgentTask | undefined {
         return this.tasks.get(taskId);
+    }
+
+    /**
+     * Get the SpecManager for a given task (used for live guidelines toggle).
+     */
+    public getSpecManager(taskId: string): SpecManager | undefined {
+        return this.taskContexts.get(taskId)?.specManager;
     }
 
     public async revertTask(taskId: string, checkpointId: string) {

@@ -166,6 +166,13 @@ export const ConstitutionReviewModal: React.FC<ConstitutionReviewModalProps> = (
         corporateGuidelines || DEFAULT_GUIDELINES
     );
 
+    // Sync editedContent when parent content changes (e.g., after live guidelines toggle)
+    React.useEffect(() => {
+        if (!isEditing) {
+            setEditedContent(content);
+        }
+    }, [content, isEditing]);
+
     // Update guidelines and notify parent
     const toggleGuideline = useCallback((key: keyof CorporateGuidelinesConfig) => {
         const newConfig = { ...guidelinesConfig, [key]: !guidelinesConfig[key] };
