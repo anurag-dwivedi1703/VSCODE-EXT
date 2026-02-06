@@ -215,15 +215,15 @@ export const ConstitutionReviewModal: React.FC<ConstitutionReviewModalProps> = (
     // Add a rule template to the constitution
     const addRule = useCallback((rule: string) => {
         const ruleWithBullet = `- ${rule}`;
-        
+
         // Find the custom rules section
         const customRulesMatch = editedContent.match(/(## 8\. Custom Rules.*?)(\n---|\n##|$)/s);
-        
+
         if (customRulesMatch) {
             // Add to existing custom rules section
             const beforeSection = editedContent.substring(0, customRulesMatch.index! + customRulesMatch[1].length);
             const afterSection = editedContent.substring(customRulesMatch.index! + customRulesMatch[1].length);
-            
+
             // Check if there's placeholder text to replace
             if (beforeSection.includes('*Add custom rules here')) {
                 // Replace placeholder with actual rule
@@ -240,7 +240,7 @@ export const ConstitutionReviewModal: React.FC<ConstitutionReviewModalProps> = (
             // No custom rules section found - append at end
             setEditedContent(editedContent + '\n\n## 8. Custom Rules (User-Defined)\n\n' + ruleWithBullet);
         }
-        
+
         setIsEditing(true); // Switch to edit mode to show changes
     }, [editedContent]);
 
@@ -283,7 +283,7 @@ export const ConstitutionReviewModal: React.FC<ConstitutionReviewModalProps> = (
                 <div className="constitution-modal-header">
                     <h2>{getTitle()}</h2>
                     <p className="constitution-description">{getDescription()}</p>
-                    
+
                     {/* Rule Stats */}
                     <div className="constitution-stats">
                         <span className="stat-item stat-must" title="MUST rules">
@@ -307,19 +307,19 @@ export const ConstitutionReviewModal: React.FC<ConstitutionReviewModalProps> = (
                         <div className="templates-header">
                             <h3>Quick Add Rules</h3>
                             <div className="category-tabs">
-                                <button 
+                                <button
                                     className={`tab-btn ${selectedCategory === 'MUST' ? 'active' : ''}`}
                                     onClick={() => setSelectedCategory('MUST')}
                                 >
                                     ✅ MUST
                                 </button>
-                                <button 
+                                <button
                                     className={`tab-btn ${selectedCategory === 'MUST NOT' ? 'active' : ''}`}
                                     onClick={() => setSelectedCategory('MUST NOT')}
                                 >
                                     ❌ MUST NOT
                                 </button>
-                                <button 
+                                <button
                                     className={`tab-btn ${selectedCategory === 'SHOULD' ? 'active' : ''}`}
                                     onClick={() => setSelectedCategory('SHOULD')}
                                 >
@@ -327,7 +327,7 @@ export const ConstitutionReviewModal: React.FC<ConstitutionReviewModalProps> = (
                                 </button>
                             </div>
                         </div>
-                        
+
                         <div className="templates-grid">
                             {filteredTemplates.map(template => (
                                 <button
@@ -341,7 +341,7 @@ export const ConstitutionReviewModal: React.FC<ConstitutionReviewModalProps> = (
                                 </button>
                             ))}
                         </div>
-                        
+
                         {/* Custom Rule Input */}
                         <div className="custom-rule-input">
                             <input
@@ -351,7 +351,7 @@ export const ConstitutionReviewModal: React.FC<ConstitutionReviewModalProps> = (
                                 onChange={(e) => setCustomRuleText(e.target.value)}
                                 onKeyDown={(e) => e.key === 'Enter' && addCustomRule()}
                             />
-                            <button 
+                            <button
                                 className="add-custom-btn"
                                 onClick={addCustomRule}
                                 disabled={!customRuleText.trim()}
@@ -371,12 +371,12 @@ export const ConstitutionReviewModal: React.FC<ConstitutionReviewModalProps> = (
                                 Industry best practices applied to agent constraints
                             </span>
                         </div>
-                        
+
                         <div className="guidelines-grid">
                             {(Object.keys(GUIDELINES_INFO) as Array<keyof typeof GUIDELINES_INFO>).map(key => {
                                 const info = GUIDELINES_INFO[key];
                                 const isEnabled = guidelinesConfig[key];
-                                
+
                                 return (
                                     <button
                                         key={key}
@@ -396,7 +396,7 @@ export const ConstitutionReviewModal: React.FC<ConstitutionReviewModalProps> = (
                                 );
                             })}
                         </div>
-                        
+
                         <div className="guidelines-footer">
                             <span className="guidelines-note">
                                 {enabledGuidelinesCount} guideline set{enabledGuidelinesCount !== 1 ? 's' : ''} enabled
@@ -416,7 +416,7 @@ export const ConstitutionReviewModal: React.FC<ConstitutionReviewModalProps> = (
                             spellCheck={false}
                         />
                     ) : (
-                        <div className="constitution-preview">
+                        <div className="constitution-preview" key={`preview-${editedContent.length}`}>
                             <ReactMarkdown>{editedContent}</ReactMarkdown>
                         </div>
                     )}
@@ -461,7 +461,7 @@ export const ConstitutionReviewModal: React.FC<ConstitutionReviewModalProps> = (
                     </div>
                 </div>
             </div>
-            
+
             {/* Enhanced Styles */}
             <style>{`
                 .constitution-modal-enhanced {

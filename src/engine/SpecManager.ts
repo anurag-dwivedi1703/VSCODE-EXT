@@ -65,11 +65,11 @@ export class SpecManager {
     private _workspaceRoot: string = '';
     private _structuredConstitution: ConstitutionV2 | null = null;
     private _guidelinesConfig: CorporateGuidelinesConfig = DEFAULT_GUIDELINES_CONFIG;
-    
+
     // File watcher for external constitution changes
     private _watcher: vscode.FileSystemWatcher | null = null;
     private _onConstitutionChanged = new vscode.EventEmitter<{ type: 'changed' | 'deleted'; content?: string }>();
-    
+
     /**
      * Event that fires when the constitution file is changed externally.
      * Subscribe to this to reload the constitution in your components.
@@ -156,10 +156,10 @@ export class SpecManager {
         // Auto-repair if enabled and there are errors
         if (!validation.isValid && autoRepair) {
             console.log(`[SpecManager] Constitution has validation errors, attempting repair...`);
-            const projectName = this._structuredConstitution?.identity.name || 
-                               path.basename(this._workspaceRoot) || 'Unknown';
+            const projectName = this._structuredConstitution?.identity.name ||
+                path.basename(this._workspaceRoot) || 'Unknown';
             finalContent = repairConstitutionMarkdown(content, projectName);
-            
+
             // Re-validate after repair
             const revalidation = validateConstitutionMarkdown(finalContent);
             if (revalidation.isValid) {
@@ -207,11 +207,11 @@ export class SpecManager {
     validateCurrentConstitution(): ConstitutionValidationResult {
         return validateConstitutionMarkdown(this._constitution);
     }
-    
+
     // ============================================
     // FILE SYSTEM WATCHER
     // ============================================
-    
+
     /**
      * Start watching the constitution file for external changes.
      * Call this after initialize() to enable real-time sync.
@@ -220,27 +220,27 @@ export class SpecManager {
         if (this._watcher) {
             this._watcher.dispose();
         }
-        
+
         if (!this._constitutionPath) {
             console.warn('[SpecManager] Cannot start watching - no constitution path set');
             return;
         }
-        
+
         // Create a file watcher for the constitution file
         const pattern = new vscode.RelativePattern(
             path.dirname(this._constitutionPath),
             path.basename(this._constitutionPath)
         );
-        
+
         this._watcher = vscode.workspace.createFileSystemWatcher(pattern);
-        
+
         // Handle file changes
         this._watcher.onDidChange(async (uri) => {
             console.log(`[SpecManager] Constitution file changed externally: ${uri.fsPath}`);
             await this.reloadConstitution();
             this._onConstitutionChanged.fire({ type: 'changed', content: this._constitution });
         });
-        
+
         // Handle file deletion
         this._watcher.onDidDelete((uri) => {
             console.log(`[SpecManager] Constitution file deleted: ${uri.fsPath}`);
@@ -248,17 +248,17 @@ export class SpecManager {
             this._structuredConstitution = null;
             this._onConstitutionChanged.fire({ type: 'deleted' });
         });
-        
+
         // Handle file creation (if it didn't exist before)
         this._watcher.onDidCreate(async (uri) => {
             console.log(`[SpecManager] Constitution file created: ${uri.fsPath}`);
             await this.reloadConstitution();
             this._onConstitutionChanged.fire({ type: 'changed', content: this._constitution });
         });
-        
+
         console.log(`[SpecManager] Started watching constitution file: ${this._constitutionPath}`);
     }
-    
+
     /**
      * Stop watching the constitution file.
      * Call this when disposing the SpecManager.
@@ -270,7 +270,7 @@ export class SpecManager {
             console.log('[SpecManager] Stopped watching constitution file');
         }
     }
-    
+
     /**
      * Reload the constitution from disk.
      * Called automatically by the file watcher on external changes.
@@ -279,24 +279,24 @@ export class SpecManager {
         if (!this._constitutionPath) {
             return false;
         }
-        
+
         try {
             if (fs.existsSync(this._constitutionPath)) {
                 const content = fs.readFileSync(this._constitutionPath, 'utf-8');
-                
+
                 // Only update if content actually changed
                 if (content !== this._constitution) {
                     this._constitution = content;
                     // Parse into structured form so regenerateWithGuidelines() can work
                     this._structuredConstitution = parseMarkdownConstitution(content);
                     console.log(`[SpecManager] Reloaded constitution (${content.length} chars)`);
-                    
+
                     // Validate the reloaded content
                     const validation = validateConstitutionMarkdown(content);
                     if (!validation.isValid) {
                         console.warn('[SpecManager] Reloaded constitution has validation issues:', validation.errors);
                     }
-                    
+
                     return true;
                 }
             } else {
@@ -308,10 +308,10 @@ export class SpecManager {
         } catch (error) {
             console.error('[SpecManager] Failed to reload constitution:', error);
         }
-        
+
         return false;
     }
-    
+
     /**
      * Dispose all resources including file watcher.
      */
@@ -339,7 +339,7 @@ export class SpecManager {
         if (analysis) {
             return this.getStructuredConstitutionPrompt(analysis);
         }
-        
+
         // Legacy prompt for backward compatibility
         return `You are the Chief Architect of this repository. I have provided you with the file structure and configuration files. Your goal is to reverse-engineer the "Constitution" — the set of immutable rules that govern this codebase.
 
@@ -424,7 +424,7 @@ Output ONLY the markdown content. Do not include any preamble or explanation.`;
      */
     private getStructuredConstitutionPrompt(analysis: WorkspaceAnalysis): string {
         const criticalDepsTable = analysis.dependencies.critical.length > 0
-            ? analysis.dependencies.critical.map(d => 
+            ? analysis.dependencies.critical.map(d =>
                 `| ${d.name} | ${d.version} | ${d.reason} | ${d.riskLevel.toUpperCase()} |`
             ).join('\n')
             : '*No critical dependencies identified*';
@@ -437,7 +437,7 @@ Output ONLY the markdown content. Do not include any preamble or explanation.`;
             : '*No lint rules detected*';
 
         const risksList = analysis.risks.length > 0
-            ? analysis.risks.slice(0, 5).map(r => 
+            ? analysis.risks.slice(0, 5).map(r =>
                 `- **${r.description}** (${r.type}, ${r.severity})`
             ).join('\n')
             : '*No risks detected*';
@@ -554,16 +554,16 @@ Output ONLY the markdown content. No preamble.`;
      */
     createConstitutionFromAnalysis(analysis: WorkspaceAnalysis): ConstitutionV2 {
         const constitution = createEmptyConstitution(analysis.identity.name);
-        
+
         // Set identity
         constitution.identity = analysis.identity;
-        
+
         // Set critical dependencies
         constitution.criticalDependencies = analysis.dependencies.critical;
-        
+
         // Set coding standards
         for (const rule of analysis.lintRules) {
-            if (rule.id.includes('indent') || rule.id.includes('semi') || 
+            if (rule.id.includes('indent') || rule.id.includes('semi') ||
                 rule.id.includes('quote') || rule.id.includes('spacing')) {
                 constitution.codingStandards.formatting.push(rule);
             } else if (rule.id.includes('naming') || rule.id.includes('camel')) {
@@ -574,7 +574,7 @@ Output ONLY the markdown content. No preamble.`;
                 constitution.codingStandards.other.push(rule);
             }
         }
-        
+
         // Convert risks to forbidden patterns
         for (const risk of analysis.risks) {
             constitution.forbiddenPatterns.push({
@@ -586,20 +586,20 @@ Output ONLY the markdown content. No preamble.`;
                 suggestion: risk.suggestion
             });
         }
-        
+
         // Add corporate guidelines if enabled
         const guidelines = getEnabledGuidelines(this._guidelinesConfig);
         const guidelineConstraints = guidelinesToAgentConstraints(guidelines);
-        
+
         constitution.agentConstraints.must.push(...guidelineConstraints.must);
         constitution.agentConstraints.mustNot.push(...guidelineConstraints.mustNot);
         constitution.agentConstraints.should.push(...guidelineConstraints.should);
-        
+
         // Add built-in constraints
         this.addBuiltInConstraints(constitution);
-        
+
         constitution.generatedAt = new Date().toISOString();
-        
+
         return constitution;
     }
 
@@ -718,43 +718,44 @@ Output ONLY the markdown content. No preamble.`;
             return null;
         }
 
+        // DEEP CLONE to prevent mutation issues on repeated toggles
+        // This ensures each toggle starts from a clean state
+        const workingConstitution = JSON.parse(JSON.stringify(this._structuredConstitution)) as ConstitutionV2;
+
         // Guideline rule ID prefixes to strip
         const guidelinePrefixes = ['SEC-', 'PERF-', 'MAINT-', 'TEST-', 'A11Y-'];
-        const isGuidelineRule = (rule: AgentRule) => 
+        const isGuidelineRule = (rule: AgentRule) =>
             rule.id ? guidelinePrefixes.some(prefix => rule.id!.startsWith(prefix)) : false;
 
-        // Strip all existing guideline-sourced rules from agentConstraints
-        this._structuredConstitution.agentConstraints.must = 
-            this._structuredConstitution.agentConstraints.must.filter(r => !isGuidelineRule(r));
-        this._structuredConstitution.agentConstraints.mustNot = 
-            this._structuredConstitution.agentConstraints.mustNot.filter(r => !isGuidelineRule(r));
-        this._structuredConstitution.agentConstraints.should = 
-            this._structuredConstitution.agentConstraints.should.filter(r => !isGuidelineRule(r));
+        // Strip all existing guideline-sourced rules from agentConstraints (on the CLONE)
+        workingConstitution.agentConstraints.must =
+            workingConstitution.agentConstraints.must.filter(r => !isGuidelineRule(r));
+        workingConstitution.agentConstraints.mustNot =
+            workingConstitution.agentConstraints.mustNot.filter(r => !isGuidelineRule(r));
+        workingConstitution.agentConstraints.should =
+            workingConstitution.agentConstraints.should.filter(r => !isGuidelineRule(r));
 
         // Add back rules from the newly enabled guideline categories
         const guidelines = getEnabledGuidelines(config);
         const guidelineConstraints = guidelinesToAgentConstraints(guidelines);
 
-        this._structuredConstitution.agentConstraints.must.push(...guidelineConstraints.must);
-        this._structuredConstitution.agentConstraints.mustNot.push(...guidelineConstraints.mustNot);
-        this._structuredConstitution.agentConstraints.should.push(...guidelineConstraints.should);
+        workingConstitution.agentConstraints.must.push(...guidelineConstraints.must);
+        workingConstitution.agentConstraints.mustNot.push(...guidelineConstraints.mustNot);
+        workingConstitution.agentConstraints.should.push(...guidelineConstraints.should);
 
         // Update stored config
         this._guidelinesConfig = { ...config };
 
-        // Re-render to markdown
-        const markdown = constitutionToMarkdown(this._structuredConstitution);
+        // Update the structured constitution AFTER successful manipulation
+        this._structuredConstitution = workingConstitution;
 
-        // Save to disk so agents always use the latest version
+        // Re-render to markdown
+        const markdown = constitutionToMarkdown(workingConstitution);
+
+        // Update in-memory markdown (but do NOT write to disk during preview)
+        // Disk write should only happen on Approve to prevent corruption
         this._constitution = markdown;
-        if (this._constitutionPath) {
-            try {
-                fs.writeFileSync(this._constitutionPath, markdown, 'utf-8');
-                console.log(`[SpecManager] Regenerated constitution with guidelines and saved to disk: ${JSON.stringify(config)}`);
-            } catch (e: any) {
-                console.error(`[SpecManager] Failed to save regenerated constitution: ${e.message}`);
-            }
-        }
+        console.log(`[SpecManager] Regenerated constitution preview with guidelines: ${JSON.stringify(config)}`);
 
         return markdown;
     }
@@ -766,7 +767,7 @@ Output ONLY the markdown content. No preamble.`;
         if (!this._constitution) {
             return null;
         }
-        
+
         try {
             return parseMarkdownConstitution(this._constitution, this._structuredConstitution || undefined);
         } catch (error) {
