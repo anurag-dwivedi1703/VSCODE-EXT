@@ -401,15 +401,15 @@
     display: flex;
     gap: 12px;
     margin-bottom: 24px;
-    align-items: flex-end;
-    /* Align to bottom of bubbles */
+    align-items: flex-start;
+    /* Align to top */
     animation: message-enter 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 @keyframes message-enter {
     from {
         opacity: 0;
-        transform: translateY(15px);
+        transform: translateY(10px);
     }
 
     to {
@@ -419,8 +419,9 @@
 }
 
 .msg-row-user {
-    flex-direction: row;
-    justify-content: flex-end;
+    flex-direction: row-reverse;
+    /* Avatar on right */
+    justify-content: flex-start;
 }
 
 .msg-row-agent {
@@ -429,74 +430,78 @@
 }
 
 .msg-avatar {
-    width: 32px;
-    height: 32px;
-    border-radius: 6px;
+    width: 28px;
+    height: 28px;
+    border-radius: 4px;
     background-color: #367c2b;
+    /* Brand Green */
     color: white;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 18px;
+    font-size: 16px;
     flex-shrink: 0;
+    margin-top: 4px;
+    /* Optical alignment with text */
 }
 
 .msg-bubble {
-    max-width: 70%;
-    padding: 12px 16px;
-    border-radius: 12px;
+    max-width: 85%;
+    padding: 10px 14px;
+    border-radius: 8px;
     position: relative;
     font-size: 14px;
-    line-height: 1.5;
+    line-height: 1.6;
 }
 
 .msg-user {
-    background: linear-gradient(135deg, #367c2b 0%, #2d6924 100%);
-    color: white;
-    border-bottom-right-radius: 2px;
-    /* Chat bubble effect */
-    box-shadow: 0 2px 8px rgba(54, 124, 43, 0.2);
+    background-color: rgba(54, 124, 43, 0.2);
+    /* Subtle green tint */
+    color: var(--vscode-foreground);
+    border: 1px solid rgba(54, 124, 43, 0.3);
+    /* No shadow/gradient */
 }
 
 .msg-agent {
-    background-color: var(--vscode-editor-inactiveSelectionBackground);
-    border-bottom-left-radius: 2px;
-    /* Chat bubble effect */
+    background: transparent;
+    /* Seamless with background */
+    padding: 0;
+    /* Remove padding for seamless look */
+    max-width: 100%;
+    /* Let it take full width minus avatar */
+    /* No border */
 }
 
 /* Artifact Card */
 .msg-artifact-card {
-    background-color: var(--vscode-editor-background);
-    border: 1px solid var(--vscode-panel-border);
-    border-radius: 8px;
-    padding: 12px 16px;
-    margin-bottom: 16px;
-    margin-left: 44px;
-    /* Align with agent bubble start */
+    background-color: var(--vscode-textBlockQuote-background);
+    border: 1px solid var(--vscode-textBlockQuote-border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    margin-left: 0;
+    /* Aligned with content */
     max-width: 400px;
     display: flex;
     align-items: center;
     gap: 12px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
     transition: transform 0.1s ease, border-color 0.1s ease;
 }
 
 .msg-artifact-card:hover {
     border-color: var(--vscode-focusBorder);
-    transform: translateY(-1px);
 }
 
 .artifact-icon {
-    font-size: 20px;
-    width: 36px;
-    height: 36px;
+    font-size: 18px;
+    width: 32px;
+    height: 32px;
     display: flex;
     align-items: center;
     justify-content: center;
-    background-color: rgba(54, 124, 43, 0.15);
-    /* Brand Green */
+    background-color: rgba(54, 124, 43, 0.1);
     color: #367c2b;
-    border-radius: 6px;
+    border-radius: 4px;
 }
 
 .artifact-info {
@@ -634,31 +639,50 @@
     color: var(--vscode-foreground);
 }
 
-/* Reply Footer */
+/* Reply Footer - Minimal & Clean */
 .reply-footer {
-    min-height: 90px;
     flex-shrink: 0;
     background-color: var(--vscode-editor-background);
     border-top: 1px solid var(--vscode-panel-border);
     display: flex;
     flex-direction: column;
-    justify-content: center;
-    padding: 14px 24px;
-    box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.15);
+    padding: 12px 16px;
+    gap: 8px;
+}
+
+.input-row {
+    display: flex;
+    align-items: flex-start;
+    width: 100%;
+    background: var(--vscode-input-background);
+    border: 1px solid var(--vscode-input-border);
+    border-radius: 8px;
+    padding: 6px 10px;
+    transition: all 0.2s ease;
+    gap: 8px;
+    box-sizing: border-box;
+}
+
+.input-row:focus-within {
+    border-color: var(--vscode-focusBorder);
+    box-shadow: 0 0 0 1px var(--vscode-focusBorder);
 }
 
 .reply-input {
     flex: 1;
-    padding: 6px 4px;
+    padding: 4px 6px;
+    /* Reduced vertical padding */
     background: transparent;
     color: var(--vscode-input-foreground);
     border: none;
-    font-size: 14px;
+    font-size: 13px;
     line-height: 1.5;
     resize: none;
     min-height: 24px;
     max-height: 200px;
     font-family: var(--vscode-font-family);
+    margin-top: 2px;
+    /* Align text with icons */
 }
 
 .reply-input:focus {
@@ -667,7 +691,8 @@
 
 .reply-input::placeholder {
     color: var(--vscode-input-placeholderForeground);
-    opacity: 0.7;
+    font-style: italic;
+    opacity: 0.8;
 }
 
 /* Reply Textarea - Resizable and Scrollable */
@@ -2191,7 +2216,8 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    margin-top: 10px;
+    margin-top: 4px;
+    /* Reduced from 10px */
     padding: 0 4px;
 }
 

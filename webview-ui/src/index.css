@@ -66,6 +66,7 @@ body {
         opacity: 0;
         transform: translateY(20px) scale(0.98);
     }
+
     to {
         opacity: 1;
         transform: translateY(0) scale(1);
@@ -78,9 +79,20 @@ body {
 
 /* Running step - animated border glow */
 @keyframes border-flow {
-    0% { border-color: var(--vscode-panel-border); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1); }
-    50% { border-color: #00d9ff; box-shadow: 0 0 20px rgba(0, 217, 255, 0.15), 0 4px 12px rgba(0, 0, 0, 0.1); }
-    100% { border-color: var(--vscode-panel-border); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1); }
+    0% {
+        border-color: var(--vscode-panel-border);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    }
+
+    50% {
+        border-color: #00d9ff;
+        box-shadow: 0 0 20px rgba(0, 217, 255, 0.15), 0 4px 12px rgba(0, 0, 0, 0.1);
+    }
+
+    100% {
+        border-color: var(--vscode-panel-border);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    }
 }
 
 .msg-step-card.running {
@@ -89,12 +101,14 @@ body {
 
 /* Completed step - subtle green accent */
 .msg-step-card.completed {
-    border-left: 3px solid #3fb950;
+    border-left: none;
+    border-top: 2px solid #3fb950;
 }
 
 /* Failed step - red accent */
 .msg-step-card.failed {
-    border-left: 3px solid #f85149;
+    border-left: none;
+    border-top: 2px solid #f85149;
 }
 
 .step-header {
@@ -115,8 +129,17 @@ body {
 
 /* Pulsing robot icon for active steps */
 @keyframes pulse-glow {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.7; transform: scale(1.15); }
+
+    0%,
+    100% {
+        opacity: 1;
+        transform: scale(1);
+    }
+
+    50% {
+        opacity: 0.7;
+        transform: scale(1.15);
+    }
 }
 
 .step-icon.active {
@@ -133,19 +156,24 @@ body {
 
 /* Rainbow shimmer for active thinking */
 @keyframes shimmer {
-    0% { background-position: -200% center; }
-    100% { background-position: 200% center; }
+    0% {
+        background-position: -200% center;
+    }
+
+    100% {
+        background-position: 200% center;
+    }
 }
 
 .step-title.thinking {
-    background: linear-gradient(90deg, 
-        var(--vscode-editor-foreground) 0%,
-        #00d9ff 20%,
-        #a855f7 40%,
-        #ff00ff 50%,
-        #00ff88 60%,
-        #00d9ff 80%,
-        var(--vscode-editor-foreground) 100%);
+    background: linear-gradient(90deg,
+            var(--vscode-editor-foreground) 0%,
+            #00d9ff 20%,
+            #a855f7 40%,
+            #ff00ff 50%,
+            #00ff88 60%,
+            #00d9ff 80%,
+            var(--vscode-editor-foreground) 100%);
     background-size: 200% auto;
     -webkit-background-clip: text;
     background-clip: text;
@@ -164,11 +192,25 @@ body {
 }
 
 @keyframes loading-dots {
-    0% { content: ''; }
-    25% { content: '.'; }
-    50% { content: '..'; }
-    75% { content: '...'; }
-    100% { content: ''; }
+    0% {
+        content: '';
+    }
+
+    25% {
+        content: '.';
+    }
+
+    50% {
+        content: '..';
+    }
+
+    75% {
+        content: '...';
+    }
+
+    100% {
+        content: '';
+    }
 }
 
 /* Tool execution progress animation */
@@ -189,8 +231,13 @@ body {
 }
 
 @keyframes tool-progress {
-    0% { left: -100%; }
-    100% { left: 100%; }
+    0% {
+        left: -100%;
+    }
+
+    100% {
+        left: 100%;
+    }
 }
 
 .step-body {
@@ -220,8 +267,15 @@ body {
 }
 
 @keyframes typing-underline {
-    0%, 100% { opacity: 0.3; }
-    50% { opacity: 0.8; }
+
+    0%,
+    100% {
+        opacity: 0.3;
+    }
+
+    50% {
+        opacity: 0.8;
+    }
 }
 
 /* Artifacts in Step */
