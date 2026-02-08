@@ -1354,13 +1354,15 @@ function App() {
                                                 const statusClass = group.status || '';
                                                 return (
                                                     <div key={i} className={`msg-step-card ${statusClass}`}>
-                                                        <div className="step-header">
-                                                            <div className={`step-icon ${isRunning ? 'active' : ''}`}>🤖</div>
-                                                            <div className={`step-title ${isRunning ? 'thinking' : ''}`}>
-                                                                {group.title}
-                                                                {isRunning && <span className="loading-dots"></span>}
+                                                        {isRunning && (
+                                                            <div className="step-header">
+                                                                <div className={`step-icon ${isRunning ? 'active' : ''}`}>🤖</div>
+                                                                <div className={`step-title ${isRunning ? 'thinking' : ''}`}>
+                                                                    {group.title}
+                                                                    {isRunning && <span className="loading-dots"></span>}
+                                                                </div>
                                                             </div>
-                                                        </div>
+                                                        )}
                                                         <div className="step-body">
                                                             {group.markdown && (
                                                                 <div className={`step-markdown markdown-body ${isRunning ? 'typing' : ''}`}>
