@@ -78,6 +78,46 @@ Vibearchitect › Claude Api Key: sk-ant-xxxxx
 
 ---
 
+## 🛠️ Developer Setup (Build from Source)
+
+If you're cloning this repository to build or develop locally:
+
+### Quick Setup (Recommended)
+
+**Windows:**
+```cmd
+setup.bat
+```
+
+**macOS/Linux:**
+```bash
+chmod +x setup.sh
+./setup.sh
+```
+
+### Manual Setup
+
+```bash
+# 1. Install root dependencies
+npm install
+
+# 2. Install webview dependencies (CRITICAL - includes fonts!)
+cd webview-ui
+npm install
+cd ..
+
+# 3. Compile the extension
+npm run compile
+
+# 4. (Optional) Create VSIX package
+npx vsce package --no-dependencies
+```
+
+> ⚠️ **Common Error**: If you see `@fontsource/inter` import errors, you forgot step 2!
+> The webview-ui folder has its own `package.json` that must be installed separately.
+
+---
+
 ## 📋 Configuration
 
 ### Required Settings

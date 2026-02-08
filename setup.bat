@@ -23,7 +23,7 @@ if %errorlevel% neq 0 (
     pause
     exit /b %errorlevel%
 )
-echo [OK] Webview dependencies installed.
+echo [OK] Webview dependencies installed (including @fontsource/inter).
 echo.
 
 echo [3/4] Building Webview UI...
