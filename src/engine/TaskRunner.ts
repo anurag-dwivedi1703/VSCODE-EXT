@@ -3898,6 +3898,13 @@ Allowed tools: write_file ONLY to these paths:
   - .vibearchitect/implementation_plan.md
 Forbidden: write_file to ANY other path, apply_diff, run_command
 
+⚠️ WORKFLOW GUARD SYSTEM (Active in this mode):
+If you try to write/modify files OTHER than the plan files before creating them:
+- You will receive a "📋 WORKFLOW: Planning Phase Required" message
+- This is NOT an error - it is the expected workflow enforcement
+- Do NOT interpret this as a failure or try workarounds (temp files, alternate paths)
+- Simply follow the instructions: create task.md and implementation_plan.md first
+
 Steps:
 2a. Create '.vibearchitect/task.md' - a Markdown checklist of implementation steps
     - If PRD exists: Derive steps DIRECTLY from PRD requirements

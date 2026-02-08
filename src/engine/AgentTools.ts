@@ -42,18 +42,18 @@ export class AgentTools {
         this.workspaceName = worktreeRoot.split(/[\\/]/).pop() || worktreeRoot;
         // Use provided task name or default
         this.taskName = taskName || `Task-${taskId?.substring(0, 8) || 'unknown'}`;
-        
+
         // Initialize browser automation services if taskId is available
         if (this.taskId) {
             this.browserService = new BrowserAutomationService(this.taskId, this.worktreeRoot);
             this.visualService = new VisualComparisonService(this.worktreeRoot, this.taskId);
-            
+
             // Set login checkpoint callback if provided
             if (this.loginCheckpointCallback) {
                 this.browserService.setLoginCheckpointCallback(this.loginCheckpointCallback);
             }
         }
-        
+
         // Initialize task-specific terminal if taskId provided
         if (this.taskId && this.terminalManager) {
             this.terminalManager.getTerminalForTask(this.taskId, this.taskName, this.workspaceName);
@@ -73,27 +73,27 @@ export class AgentTools {
      * Check if plan files exist in .vibearchitect folder.
      * Used by plan-first guard in review-enabled mode.
      */
-    private async planFilesExist(): Promise<{taskExists: boolean, planExists: boolean}> {
+    private async planFilesExist(): Promise<{ taskExists: boolean, planExists: boolean }> {
         const taskPath = '.vibearchitect/task.md';
         const planPath = '.vibearchitect/implementation_plan.md';
-        
+
         let taskExists = false;
         let planExists = false;
-        
+
         try {
             await vscode.workspace.fs.stat(this.getUri(taskPath));
             taskExists = true;
         } catch {
             // File doesn't exist
         }
-        
+
         try {
             await vscode.workspace.fs.stat(this.getUri(planPath));
             planExists = true;
         } catch {
             // File doesn't exist
         }
-        
+
         return { taskExists, planExists };
     }
 
@@ -102,8 +102,8 @@ export class AgentTools {
      */
     private isPlanFile(relativePath: string): boolean {
         const normalized = relativePath.replace(/\\/g, '/');
-        return normalized.includes('.vibearchitect/task.md') || 
-               normalized.includes('.vibearchitect/implementation_plan.md');
+        return normalized.includes('.vibearchitect/task.md') ||
+            normalized.includes('.vibearchitect/implementation_plan.md');
     }
 
     async readFile(relativePath: string): Promise<string> {
@@ -122,14 +122,19 @@ export class AgentTools {
             if (this.agentMode === 'review-enabled' && !this.isPlanFile(relativePath)) {
                 const { taskExists, planExists } = await this.planFilesExist();
                 if (!taskExists || !planExists) {
-                    console.log(`[AgentTools] BLOCKED write to ${relativePath} - plan files missing (task: ${taskExists}, plan: ${planExists})`);
-                    return `⛔ BLOCKED: You must create .vibearchitect/task.md and .vibearchitect/implementation_plan.md BEFORE writing to other files.
+                    console.log(`[AgentTools] WORKFLOW GUARD: write to ${relativePath} deferred - plan files pending (task: ${taskExists}, plan: ${planExists})`);
+                    return `📋 WORKFLOW: Planning Phase Required
 
-Current status:
-- task.md: ${taskExists ? '✅ exists' : '❌ missing'}
-- implementation_plan.md: ${planExists ? '✅ exists' : '❌ missing'}
+This is expected behavior in Review Enabled mode. You are in the PLANNING phase.
 
-Please create the missing plan file(s) first, then retry this operation.`;
+**Action Required** (not an error - this is the normal workflow):
+1. Create .vibearchitect/task.md (${taskExists ? '✅ done' : '📝 create this first'})
+2. Create .vibearchitect/implementation_plan.md (${planExists ? '✅ done' : '📝 create this next'})
+
+After BOTH plan files exist, the system will pause for user review.
+Once the user approves, you can proceed with implementation.
+
+⚠️ Do NOT try workarounds (temp files, different paths, etc.) - just follow the workflow above.`;
                 }
             }
 
@@ -144,7 +149,7 @@ Please create the missing plan file(s) first, then retry this operation.`;
                 // Check for strict violations (must block)
                 const strictViolations = violations.filter(v => v.severity === 'strict');
                 if (strictViolations.length > 0) {
-                    const errorLines = strictViolations.map(v => 
+                    const errorLines = strictViolations.map(v =>
                         `  ❌ ${v.rule.description}${v.rule.reason ? `: ${v.rule.reason}` : ''}`
                     ).join('\n');
                     console.log(`[AgentTools] BLOCKED write to ${relativePath} - constitution violation(s)`);
@@ -158,7 +163,7 @@ Fix the violations and try again. These rules are defined in .vibearchitect/cons
                 // Log warnings for non-strict violations (don't block)
                 const warnings = violations.filter(v => v.severity === 'warning');
                 if (warnings.length > 0) {
-                    console.warn(`[AgentTools] Constitution warnings for ${relativePath}:`, 
+                    console.warn(`[AgentTools] Constitution warnings for ${relativePath}:`,
                         warnings.map(w => w.rule.description));
                 }
             }
@@ -306,14 +311,19 @@ Fix the violations and try again. These rules are defined in .vibearchitect/cons
         if (this.agentMode === 'review-enabled' && !this.isPlanFile(relativePath)) {
             const { taskExists, planExists } = await this.planFilesExist();
             if (!taskExists || !planExists) {
-                console.log(`[AgentTools] BLOCKED applyDiff to ${relativePath} - plan files missing (task: ${taskExists}, plan: ${planExists})`);
-                return `⛔ BLOCKED: You must create .vibearchitect/task.md and .vibearchitect/implementation_plan.md BEFORE modifying other files.
+                console.log(`[AgentTools] WORKFLOW GUARD: applyDiff to ${relativePath} deferred - plan files pending (task: ${taskExists}, plan: ${planExists})`);
+                return `📋 WORKFLOW: Planning Phase Required
 
-Current status:
-- task.md: ${taskExists ? '✅ exists' : '❌ missing'}
-- implementation_plan.md: ${planExists ? '✅ exists' : '❌ missing'}
+This is expected behavior in Review Enabled mode. You are in the PLANNING phase.
 
-Please create the missing plan file(s) first, then retry this operation.`;
+**Action Required** (not an error - this is the normal workflow):
+1. Create .vibearchitect/task.md (${taskExists ? '✅ done' : '📝 create this first'})
+2. Create .vibearchitect/implementation_plan.md (${planExists ? '✅ done' : '📝 create this next'})
+
+After BOTH plan files exist, the system will pause for user review.
+Once the user approves, you can proceed with implementation.
+
+⚠️ Do NOT try workarounds (temp files, different paths, etc.) - just follow the workflow above.`;
             }
         }
 
@@ -329,7 +339,7 @@ Please create the missing plan file(s) first, then retry this operation.`;
             // Check for strict path-based violations (e.g., node_modules, .git)
             const strictViolations = pathViolations.filter(v => v.severity === 'strict');
             if (strictViolations.length > 0) {
-                const errorLines = strictViolations.map(v => 
+                const errorLines = strictViolations.map(v =>
                     `  ❌ ${v.rule.description}${v.rule.reason ? `: ${v.rule.reason}` : ''}`
                 ).join('\n');
                 console.log(`[AgentTools] BLOCKED applyDiff to ${relativePath} - constitution violation(s)`);
@@ -408,7 +418,7 @@ TIP: You can add line hints for faster matching:
 
                 // PHASE 1: Try batched application first (most reliable)
                 const batchResult = await ideDiffApplier.applyBlocks(absolutePath, blocks);
-                
+
                 let appliedBlocks = batchResult.appliedBlocks;
                 let failedBlocks = batchResult.failedBlocks;
                 let errors = batchResult.errors;
