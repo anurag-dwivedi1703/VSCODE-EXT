@@ -2580,7 +2580,28 @@ ${contextData}
                                                 this._onTaskUpdate.fire({ taskId, task });
                                                 throw new Error('User rejected implementation plan');
                                             }
-                                            toolResult += '\n> [System]: User approved the implementation plan. Continuing...';
+
+                                            // Check if user provided genuine feedback requiring plan revision
+                                            const planFeedback = this._lastApprovalFeedback.get(taskId);
+                                            this._lastApprovalFeedback.delete(taskId); // Clean up
+
+                                            // Helper: Detect if feedback is genuine (not just whitespace, punctuation, or garbage)
+                                            const isGenuineFeedback = (feedback: string | undefined): boolean => {
+                                                if (!feedback) return false;
+                                                // Strip whitespace and common garbage characters
+                                                const cleaned = feedback.replace(/[\s.,!?;:\-_=+*#@$%^&()[\]{}|\\/<>'"~`]+/g, '');
+                                                // Must have at least 3 meaningful characters to be considered genuine
+                                                return cleaned.length >= 3;
+                                            };
+
+                                            if (isGenuineFeedback(planFeedback)) {
+                                                // Genuine feedback provided - request revision
+                                                task.logs.push(`> [Review Enabled]: User approved with revision request.`);
+                                                toolResult += `\n\n> [System]: User approved with requested changes:\n> "${planFeedback}"\n\n**REVISION REQUIRED**: Please update the implementation_plan.md and/or task.md based on this feedback. After you save the revised plan, the system will pause for another review.`;
+                                            } else {
+                                                // Pure approval (no feedback or garbage input) - proceed with implementation
+                                                toolResult += '\n> [System]: User approved the implementation plan. Proceeding with implementation...';
+                                            }
                                         }
                                     }
                                     break;
