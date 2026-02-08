@@ -145,6 +145,9 @@ Other Available Tools (these USE \`\`\`tool_call format):
 {"name": "write_file", "args": {"path": "path/to/NEW/file", "content": "file content"}}
 \`\`\`
   ^ Use ONLY for creating NEW files that don't exist yet!
+  ⚠️ STRICT RULE: Any non-code output (notes, creative writing, temporary files) MUST be written to ".vibearchitect/" directory.
+     Example: write_file(".vibearchitect/poem.txt", ...)
+     DO NOT pollute the workspace root with random text files.
   
 - \`\`\`tool_call
 {"name": "run_command", "args": {"command": "npm start"}}
@@ -165,7 +168,7 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
 
         // Add system context as first user message (vscode.lm may not support system role)
         // Only append tool instructions if they're enabled
-        const systemContext = toolCallInstructions 
+        const systemContext = toolCallInstructions
             ? `[SYSTEM CONTEXT]\n${systemPrompt}\n${toolCallInstructions}\n[END SYSTEM CONTEXT]`
             : `[SYSTEM CONTEXT]\n${systemPrompt}\n\nIMPORTANT: You are in analysis/refinement mode. Do NOT use tools like list_files, read_file, or write_file. Only provide text responses - questions, analysis, or structured documents.\n[END SYSTEM CONTEXT]`;
         messages.push(vscode.LanguageModelChatMessage.User(systemContext));
@@ -711,9 +714,9 @@ Respond ONLY with the JSON, no other text.`;
             // Parse the JSON response
             try {
                 let jsonText = responseText.trim();
-                if (jsonText.startsWith('```json')) {jsonText = jsonText.slice(7);}
-                if (jsonText.startsWith('```')) {jsonText = jsonText.slice(3);}
-                if (jsonText.endsWith('```')) {jsonText = jsonText.slice(0, -3);}
+                if (jsonText.startsWith('```json')) { jsonText = jsonText.slice(7); }
+                if (jsonText.startsWith('```')) { jsonText = jsonText.slice(3); }
+                if (jsonText.endsWith('```')) { jsonText = jsonText.slice(0, -3); }
                 jsonText = jsonText.trim();
 
                 const parsed = JSON.parse(jsonText);

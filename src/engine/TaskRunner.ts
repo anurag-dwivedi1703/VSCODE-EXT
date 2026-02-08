@@ -2058,6 +2058,8 @@ ${contextData}
             === BASIC TOOLS ===
             - read_file(path): Read file content.
             - write_file(path, content): Write file content (auto-creates dirs). Use for NEW files only.
+                                          CRITICAL: ALL non-code/temporary files (notes, poems, plans) MUST go into .vibearchitect/ folder.
+                                          NEVER create .txt/.md files at workspace root unless explicitly asked for documentation.
             - apply_diff(path, diff): Apply SEARCH/REPLACE diff to modify existing files. PREFERRED for edits.
             - list_files(path): List directory.
             - run_command(command): Execute shell command (git, npm, etc).

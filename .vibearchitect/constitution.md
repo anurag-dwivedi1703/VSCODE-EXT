@@ -1,4 +1,4 @@
-# Workspace Constitution v2.0
+# Workspace Constitution v2.1
 
 ## 1. Project Identity
 - **Name**: vibearchitect
@@ -12,13 +12,14 @@
 |---------|---------|--------|------------|
 | @anthropic-ai/sdk | ^0.39.0 | Primary Claude client used for agent LLM access; core to mission execution when Claude is selected. | CRITICAL |
 | @google/genai | ^1.34.0 | Gemini/Google GenAI client used for alternative LLMs — used by several AI clients. | CRITICAL |
+| @google/generative-ai | ^0.24.1 | Additional Google GenAI / generative client discovered in workspace lockfiles — used for alternative model endpoints. | MEDIUM |
 | playwright-core | ^1.40.0 | Browser automation engine used by BrowserAutomationService for end-to-end tests and recordings. | CRITICAL |
 | pixelmatch | ^5.3.0 | Image diffing library used by VisualComparisonService to validate visual regressions. | HIGH |
 | pngjs | ^7.0.0 | PNG read/write used by screenshot comparison and recording pipelines. | HIGH |
 | fs-extra | ^11.2.0 | File utilities used across ShadowRepository, MissionFolderManager, and persistence logic. | MEDIUM |
 | simple-git | ^3.22.0 | Lightweight git operations used by ShadowRepository and revert/commit tools. | MEDIUM |
 
-Reasoning: these packages implement core runtime capabilities (LLM access, browser automation, visual diffing, file operations). Upgrading or removing them without coordinated testing and reviews risks breaking mission execution, recordings, and recovery workflows.
+Reasoning: these packages implement core runtime capabilities (LLM access, browser automation, visual diffing, file operations). Upgrading or removing them without coordinated testing and reviews risks breaking mission execution, recordings, and recovery workflows. The newly-detected generative client and experimental local GLM usage must be reviewed before promotion to critical dependencies.
 
 ## 3. Architecture Rules
 - **Pattern**: Layered (Extension Host backend) + Webview (React) UI with clear message-passing boundary
@@ -27,6 +28,7 @@ Reasoning: these packages implement core runtime capabilities (LLM access, brows
 ### Module Boundaries
 - **ai**: LLM clients, prompt engine, and security instruction generators — encapsulates all external LLM API usage and prompt shaping.
   - Reason: Centralizes model-related changes and credentials handling.
+  - NOTE: Any production LLM client must live under src/ai. Experimental or local-model prototypes may exist in _local_work but MUST be isolated and audited before moving into src/ai.
 - **engine**: Orchestration (TaskRunner), refinement pipeline, constitution/schema, and spec management.
   - Reason: Core business logic; must be deterministic and testable.
 - **panels**: MissionControlProvider — hosts webview and mediates UI <-> backend messages.
@@ -49,6 +51,13 @@ Reasoning: these packages implement core runtime capabilities (LLM access, brows
   - Reason: Ensures consistent lifecycle and auditability of tasks.
 - No circular imports between top-level modules (ai, engine, services, panels, utils). Violations must be fixed by introducing explicit interfaces in utils or engine.
   - Reason: Maintainable dependency graph and predictable builds.
+
+### Local / Experimental Model Rule
+- Experimental local model clients (e.g., LocalGLMClient in _local_work) MUST remain isolated from production code. Promotion into src/ai requires:
+  - Security and licensing review.
+  - Size and storage plan for model artifacts (do not commit large binaries).
+  - Explicit tests and CI review for reproducibility and sandboxing.
+  - Conformance to ai/* rules (no VS Code API access, sanitization of outputs).
 
 ## 4. Coding Standards
 List each standard with enforcement level:
@@ -85,6 +94,11 @@ List each standard with enforcement level:
 - ❌ **Committing large binaries (>5MB) into repo (recordings, browser profiles)**
   - Reason: Repository bloat and packaging failures.
   - Instead: Store recordings under workspace/.vibearchitect/recordings or external storage; add .gitignore entries.
+- ❌ **Committing local model binaries or datasets into repository**
+  - Reason: Large size, licensing, and security risk. Local model artifacts must be stored outside repo and referenced via configuration.
+- ❌ **Promoting experimental local LLM clients into production without review**
+  - Reason: Security, reproducibility, and licensing concerns.
+  - Instead: Formal review and migration steps described in Architecture Rules.
 
 ## 6. Testing Requirements
 - **Framework**: mocha
@@ -117,6 +131,7 @@ List each standard with enforcement level:
   - Reason: Architectural boundary violation.
 - ❌ Execute unchecked shell scripts or network installs during autonomous runs without explicit opt-in.  
   - Reason: Security and deterministic behavior.
+- ❌ Promote or use experimental local LLM clients in production workflows without formal review and CI tests.
 
 ### SHOULD
 - 💡 Use ShadowRepository and commit/rollback semantics for incremental edits; create checkpoints for each phase.  
@@ -131,8 +146,8 @@ Add custom rules here using the format:
 ```text
 - MUST: Use 'unknown' (not 'any') for raw LLM responses; validate and map to typed interfaces before use.
 - MUST NOT: Commit API keys or credentials; settings must be used (vibearchitect.*) and documented.
+- MUST: Keep experimental local model code isolated in _local_work; do not promote to src/ai without review.
 - SHOULD: Always create a MissionFolder via MissionFolderManager for any mission run; do not write directly to workspace root.
 ```
 
----
 *This constitution is the source of truth for AI agents working in this workspace.*

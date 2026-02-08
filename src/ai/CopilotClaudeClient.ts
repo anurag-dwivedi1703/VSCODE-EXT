@@ -228,6 +228,9 @@ Other Available Tools (these USE \`\`\`tool_call format):
 {"name": "write_file", "args": {"path": "path/to/NEW/file", "content": "file content"}}
 \`\`\`
   ^ Use ONLY for creating NEW files that don't exist yet!
+  ⚠️ STRICT RULE: Any non-code output (notes, creative writing, temporary files) MUST be written to ".vibearchitect/" directory.
+     Example: write_file(".vibearchitect/poem.txt", ...)
+     DO NOT pollute the workspace root with random text files.
   
 - \`\`\`tool_call
 {"name": "run_command", "args": {"command": "npm start"}}
@@ -248,7 +251,7 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
 
         // Add system context as first user message (vscode.lm may not support system role)
         // Only append tool instructions if they're enabled
-        const systemContext = toolCallInstructions 
+        const systemContext = toolCallInstructions
             ? `[SYSTEM CONTEXT]\n${systemPrompt}\n${toolCallInstructions}\n[END SYSTEM CONTEXT]`
             : `[SYSTEM CONTEXT]\n${systemPrompt}\n\nIMPORTANT: You are in analysis/refinement mode. Do NOT use tools like list_files, read_file, or write_file. Only provide text responses - questions, analysis, or structured documents.\n[END SYSTEM CONTEXT]`;
         messages.push(vscode.LanguageModelChatMessage.User(systemContext));
@@ -296,22 +299,22 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
                         // Track token usage
                         const messageTokens = estimateTokens(userMessage);
                         estimatedTokensUsed += messageTokens;
-                        
+
                         // Warn if approaching context limit (>80% usage)
                         const utilizationPct = Math.round((estimatedTokensUsed / (maxTokens - responseReserve)) * 100);
                         if (utilizationPct > 80) {
                             console.warn(`[CopilotClaudeClient] ⚠️ Token usage at ${utilizationPct}% (${estimatedTokensUsed}/${maxTokens - responseReserve})`);
                         }
-                        
+
                         // Truncate message if it would exceed available tokens
                         const available = getAvailableTokens();
                         if (messageTokens > available && available > 1000) {
                             const maxChars = available * 4;
-                            userMessage = userMessage.slice(0, maxChars - 100) + 
+                            userMessage = userMessage.slice(0, maxChars - 100) +
                                 '\n\n[MESSAGE TRUNCATED - context limit reached. Please complete current work before reading more files.]';
                             console.warn(`[CopilotClaudeClient] Truncated message from ${messageTokens} to ${estimateTokens(userMessage)} tokens`);
                         }
-                        
+
                         messages.push(vscode.LanguageModelChatMessage.User(userMessage));
                     }
 
@@ -353,10 +356,10 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
                     // Track response tokens for context window management
                     const responseTokens = estimateTokens(responseText);
                     estimatedTokensUsed += responseTokens;
-                    
+
                     const finalUtilization = Math.round((estimatedTokensUsed / (maxTokens - responseReserve)) * 100);
                     console.log(`[CopilotClaudeClient] Context: ${estimatedTokensUsed} tokens used (${finalUtilization}% of ${maxTokens})`);
-                    
+
                     messages.push(vscode.LanguageModelChatMessage.Assistant(responseText));
 
                     // ==================== PARSE TOOL CALLS ====================
