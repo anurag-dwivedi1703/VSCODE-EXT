@@ -5,7 +5,13 @@ esbuild.build({
     bundle: true,
     outdir: 'dist/assets',
     entryNames: 'index',
-    loader: { '.tsx': 'tsx', '.ts': 'ts' },
+    loader: {
+        '.tsx': 'tsx',
+        '.ts': 'ts',
+        '.css': 'css',
+        '.woff': 'file',
+        '.woff2': 'file'
+    },
     minify: true,
     sourcemap: true,
     platform: 'browser',

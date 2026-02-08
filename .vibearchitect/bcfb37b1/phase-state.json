@@ -1,0 +1,36 @@
+{
+  "taskId": "task-1770350144267-dd1w7fu3c",
+  "originalRequirement": "Describe this app to me",
+  "phases": [
+    {
+      "id": "phase-1",
+      "name": "Implementation",
+      "description": "Complete implementation of the requirement",
+      "requirements": [
+        "Describe this app to me"
+      ],
+      "deliverables": [
+        "Working implementation"
+      ],
+      "verificationCriteria": [
+        "Code compiles",
+        "Basic functionality works"
+      ],
+      "estimatedTokens": 506,
+      "dependencies": [],
+      "status": "in-progress",
+      "order": 0,
+      "domains": [],
+      "riskFactors": []
+    }
+  ],
+  "currentPhaseIndex": 0,
+  "phaseResults": [],
+  "executionMode": "single",
+  "strategyUsed": "none",
+  "estimatedTotalTokens": 506,
+  "actualTokensUsed": 0,
+  "startedAt": 1770350144268,
+  "lastUpdatedAt": 1770350144269,
+  "overallStatus": "in-progress"
+}

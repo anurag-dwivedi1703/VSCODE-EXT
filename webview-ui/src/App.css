@@ -17,9 +17,10 @@
     width: 100vw;
     display: flex;
     flex-direction: column;
-    background-color: var(--vscode-editor-background);
+    /* Deep Space Gradient Background */
+    background: radial-gradient(circle at 50% 0%, #1a2333 0%, #0b0e14 100%);
     color: var(--vscode-editor-foreground);
-    font-family: var(--vscode-font-family);
+    font-family: 'Inter', var(--vscode-font-family), sans-serif;
     overflow: hidden;
 }
 
@@ -141,7 +142,10 @@
     min-height: 0;
     min-width: 0;
     /* Allow shrinking below content size */
-    background-color: var(--vscode-sideBar-background);
+    background-color: rgba(11, 14, 20, 0.4);
+    /* Semi-transparent */
+    border-right: 1px solid var(--glass-border);
+    backdrop-filter: blur(5px);
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -168,7 +172,10 @@
     min-height: 0;
     min-width: 0;
     /* Allow shrinking below content size */
-    background-color: var(--vscode-sideBar-background);
+    background-color: rgba(11, 14, 20, 0.4);
+    /* Semi-transparent */
+    border-left: 1px solid var(--glass-border);
+    backdrop-filter: blur(5px);
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -182,12 +189,13 @@
     align-items: center;
     justify-content: space-between;
     padding: 0 15px;
-    background-color: #367c2b;
-    color: white;
+    background: linear-gradient(90deg, rgba(0, 217, 255, 0.1) 0%, rgba(11, 14, 20, 0.8) 100%);
+    border-bottom: 1px solid var(--glass-border);
+    color: var(--brand-primary);
     font-weight: 600;
     text-transform: uppercase;
     font-size: 11px;
-    letter-spacing: 0.8px;
+    letter-spacing: 1.2px;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
@@ -285,8 +293,11 @@
     align-items: center;
     gap: 8px;
     font-weight: 600;
-    font-size: 12px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
     overflow: hidden;
+    color: var(--vscode-descriptionForeground);
 }
 
 .workspace-name {
@@ -342,9 +353,11 @@
 }
 
 .mission-item.active {
-    background-color: var(--vscode-list-activeSelectionBackground);
-    color: var(--vscode-list-activeSelectionForeground);
-    border-left-color: var(--vscode-progressBar-background);
+    background: linear-gradient(90deg, rgba(0, 217, 255, 0.1), transparent);
+    color: white;
+    border-left-color: var(--brand-primary);
+    box-shadow: inset 2px 0 0 0 var(--brand-primary), 0 0 10px rgba(0, 217, 255, 0.1);
+    font-weight: 500;
 }
 
 .mission-title {
@@ -433,9 +446,11 @@
     width: 28px;
     height: 28px;
     border-radius: 4px;
-    background-color: #367c2b;
-    /* Brand Green */
-    color: white;
+    background: linear-gradient(135deg, var(--brand-primary), #0088cc);
+    box-shadow: 0 0 10px rgba(0, 217, 255, 0.4);
+    /* Brand Cyan */
+    color: black;
+    font-weight: bold;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -455,10 +470,11 @@
 }
 
 .msg-user {
-    background-color: rgba(54, 124, 43, 0.2);
-    /* Subtle green tint */
+    background: linear-gradient(90deg, rgba(0, 217, 255, 0.05), transparent);
+    /* Subtle cyan tint */
     color: var(--vscode-foreground);
-    border: 1px solid rgba(54, 124, 43, 0.3);
+    border: 1px solid rgba(0, 217, 255, 0.15);
+    border-left: 2px solid var(--brand-primary);
     /* No shadow/gradient */
 }
 
@@ -654,18 +670,22 @@
     display: flex;
     align-items: flex-start;
     width: 100%;
-    background: var(--vscode-input-background);
-    border: 1px solid var(--vscode-input-border);
-    border-radius: 8px;
-    padding: 6px 10px;
+    /* Glass Pill Input */
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--glass-border);
+    backdrop-filter: blur(10px);
+    border-radius: 12px;
+    /* More rounded */
+    padding: 8px 12px;
     transition: all 0.2s ease;
     gap: 8px;
     box-sizing: border-box;
 }
 
 .input-row:focus-within {
-    border-color: var(--vscode-focusBorder);
-    box-shadow: 0 0 0 1px var(--vscode-focusBorder);
+    border-color: var(--brand-primary);
+    box-shadow: 0 0 15px rgba(0, 217, 255, 0.15);
+    background: rgba(0, 0, 0, 0.5);
 }
 
 .reply-input {
@@ -718,18 +738,38 @@
 }
 
 .agent-status-badge.FAILED {
-    background-color: #f14c4c;
-    color: white;
+    background-color: rgba(248, 81, 73, 0.2);
+    color: #f85149;
+    border: 1px solid rgba(248, 81, 73, 0.3);
 }
 
 .agent-status-badge.COMPLETED {
-    background-color: #367c2b;
-    color: white;
+    background-color: var(--brand-accent-light);
+    color: var(--brand-accent);
+    border: 1px solid rgba(0, 255, 136, 0.3);
+    box-shadow: 0 0 5px rgba(0, 255, 136, 0.2);
 }
 
 .agent-status-badge.EXECUTING {
-    background-color: #ffde00;
-    color: #27251f;
+    background-color: rgba(0, 217, 255, 0.15);
+    color: var(--brand-primary);
+    border: 1px solid rgba(0, 217, 255, 0.3);
+    animation: pulse-badge 2s infinite;
+}
+
+@keyframes pulse-badge {
+    0% {
+        opacity: 0.7;
+    }
+
+    50% {
+        opacity: 1;
+        box-shadow: 0 0 8px rgba(0, 217, 255, 0.4);
+    }
+
+    100% {
+        opacity: 0.7;
+    }
 }
 
 /* Modal */
@@ -748,8 +788,10 @@
 }
 
 .modal {
-    background: var(--vscode-editor-background);
-    border: 1px solid var(--vscode-panel-border);
+    background: var(--glass-bg);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--glass-border);
     width: 400px;
     padding: 20px;
     border-radius: 8px;
@@ -1675,12 +1717,14 @@
    ========================================= */
 
 .command-approval-modal {
-    background: var(--vscode-editor-background);
-    border: 2px solid var(--vscode-inputValidation-warningBorder, #cca700);
+    background: var(--glass-bg);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 204, 0, 0.3);
+    box-shadow: 0 0 30px rgba(255, 204, 0, 0.1);
     width: 480px;
     padding: 24px;
     border-radius: 12px;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
     animation: modalSlideIn 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
@@ -1878,12 +1922,14 @@
    ========================================= */
 
 .login-checkpoint-modal {
-    background: var(--vscode-editor-background);
-    border: 2px solid var(--vscode-inputValidation-infoBorder, #007acc);
+    background: var(--glass-bg);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--brand-primary);
+    box-shadow: 0 0 30px var(--brand-primary-light);
     width: 500px;
     padding: 24px;
     border-radius: 12px;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
     animation: modalSlideIn 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
@@ -2039,8 +2085,10 @@
 }
 
 .constitution-modal {
-    background: var(--vscode-editor-background);
-    border: 1px solid var(--vscode-panel-border);
+    background: var(--glass-bg);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--glass-border);
     width: 90%;
     max-width: 800px;
     max-height: 85vh;

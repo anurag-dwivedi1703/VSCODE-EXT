@@ -1,332 +1,138 @@
-# Workspace Constitution
+# Workspace Constitution v2.0
 
-Generated automatically for: VSCODE-EXT
+## 1. Project Identity
+- **Name**: vibearchitect
+- **Type**: extension
+- **Primary Language**: typescript
+- **Framework**: React (Webview UI)
+- **Description**: Manage autonomous AI agents that complete coding missions end-to-end. Assign tasks, agents execute autonomously, you review results.
 
-This constitution defines the rules and patterns for this workspace.
+## 2. Critical Dependencies (DO NOT MODIFY WITHOUT REVIEW)
+| Package | Version | Reason | Risk Level |
+|---------|---------|--------|------------|
+| @anthropic-ai/sdk | ^0.39.0 | Primary Claude client used for agent LLM access; core to mission execution when Claude is selected. | CRITICAL |
+| @google/genai | ^1.34.0 | Gemini/Google GenAI client used for alternative LLMs — used by several AI clients. | CRITICAL |
+| playwright-core | ^1.40.0 | Browser automation engine used by BrowserAutomationService for end-to-end tests and recordings. | CRITICAL |
+| pixelmatch | ^5.3.0 | Image diffing library used by VisualComparisonService to validate visual regressions. | HIGH |
+| pngjs | ^7.0.0 | PNG read/write used by screenshot comparison and recording pipelines. | HIGH |
+| fs-extra | ^11.2.0 | File utilities used across ShadowRepository, MissionFolderManager, and persistence logic. | MEDIUM |
+| simple-git | ^3.22.0 | Lightweight git operations used by ShadowRepository and revert/commit tools. | MEDIUM |
 
-## Project Metadata
+Reasoning: these packages implement core runtime capabilities (LLM access, browser automation, visual diffing, file operations). Upgrading or removing them without coordinated testing and reviews risks breaking mission execution, recordings, and recovery workflows.
 
-### package.json
+## 3. Architecture Rules
+- **Pattern**: Layered (Extension Host backend) + Webview (React) UI with clear message-passing boundary
+- **Entry Point**: src/extension.ts
 
-```json
-{
-    "name": "vibearchitect",
-    "displayName": "VibeArchitect Agent Manager",
-    "description": "Manage autonomous AI agents that complete coding missions end-to-end. Assign tasks, agents execute autonomously, you review results. Features Mission Control dashboard, multi-model support (Claude, GPT-5, Gemini), and automated browser testing.",
-    "version": "0.0.1",
-    "engines": {
-        "vscode": "^1.85.0"
-    },
-    "categories": [
-        "Machine Learning",
-        "Programming Languages",
-        "Other"
-    ],
-    "keywords": [
-        "ai agents",
-        "autonomous",
-        "agent manager",
-        "claude",
-        "gpt",
-        "automation",
-        "mission control"
-    ],
-    "activationEvents": [
-        "onCommand:vibearchitect.openMissionControl"
-    ],
-    "main": "./dist/extension.js",
-    "contributes": {
-        "commands": [
-            {
-                "command": "vibearchitect.openMissionControl",
-                "title": "VibeArchitect: Open Mission Control"
-            },
-            {
-                "command": "vibearchitect.installBrowserDependencies",
-                "title": "VibeArchitect: Install Browser Automation Dependencies"
-            },
-            {
-                "command": "vibearchitect.checkBrowserDependencies",
-                "title": "VibeArchitect: Check Browser Dependencies Status"
-            }
-        ],
-        "configuration": {
-            "title": "VibeArchitect",
-            "properties": {
-                "vibearchitect.geminiApiKey": { "type": "string" },
-                "vibearchitect.claudeApiKey": { "type": "string" },
-                "vibearchitect.useCopilotForClaude": { "type": "boolean", "default": false },
-                "vibearchitect.browserRecordingsPath": { "type": "string" },
-                "vibearchitect.browserSelfHealingRetries": { "type": "number", "default": 3 },
-                "vibearchitect.missionFolderRetentionDays": { "type": "number", "default": 7 },
-                "vibearchitect.maxMissionFolders": { "type": "number", "default": 50 },
-                "vibearchitect.enableMissionFolderSymlink": { "type": "boolean", "default": true },
-                "vibearchitect.corporateGuidelines.security": { "type": "boolean", "default": true },
-                "vibearchitect.corporateGuidelines.performance": { "type": "boolean", "default": true },
-                "vibearchitect.corporateGuidelines.maintainability": { "type": "boolean", "default": false },
-                "vibearchitect.corporateGuidelines.testing": { "type": "boolean", "default": false }
-            }
-        }
-    },
-    "devDependencies": {
-        "@types/fs-extra": "^11.0.4",
-        "@types/glob": "^8.1.0",
-        "@types/mocha": "^10.0.6",
-        "@types/node": "20.x",
-        "@types/pixelmatch": "^5.2.6",
-        "@types/pngjs": "^6.0.5",
-        "@types/vscode": "^1.85.0",
-        "@typescript-eslint/eslint-plugin": "^6.15.0",
-        "@typescript-eslint/parser": "^6.15.0",
-        "@vscode/test-electron": "^2.3.8",
-        "@vscode/vsce": "^3.7.1",
-        "eslint": "^8.56.0",
-        "glob": "^8.1.0",
-        "mocha": "^10.2.0",
-        "ts-loader": "^9.5.1",
-        "typescript": "^5.3.3",
-        "webpack": "^5.89.0",
-        "webpack-cli": "^5.1.4"
-    },
-    "dependencies": {
-        "@anthropic-ai/sdk": "^0.39.0",
-        "@google/genai": "^1.34.0",
-        "@google/generative-ai": "^0.24.1",
-        "fs-extra": "^11.2.0",
-        "pixelmatch": "^5.3.0",
-        "playwright-core": "^1.40.0",
-        "pngjs": "^7.0.0",
-        "simple-git": "^3.22.0"
-    }
-}
+### Module Boundaries
+- **ai**: LLM clients, prompt engine, and security instruction generators — encapsulates all external LLM API usage and prompt shaping.
+  - Reason: Centralizes model-related changes and credentials handling.
+- **engine**: Orchestration (TaskRunner), refinement pipeline, constitution/schema, and spec management.
+  - Reason: Core business logic; must be deterministic and testable.
+- **panels**: MissionControlProvider — hosts webview and mediates UI <-> backend messages.
+  - Reason: Single point for message validation and persistence.
+- **services**: Side-effectful services (BrowserAutomationService, VisualComparisonService, ShadowRepository, RevertManager, FileLockManager, DependencyAnalyzer, etc.)
+  - Reason: Isolate external integrations and filesystem/git interactions.
+- **utils**: Pure helpers (file discovery, diff applier, token managers).
+  - Reason: Reusable, side-effect-minimal utilities.
+- **webview-ui**: React frontend bundle — must not be imported by backend code.
+  - Reason: Bundled and served as static content; keeps backend tree-shakable and testable.
+
+### Import Rules
+- Backend (anything under src/) MUST NOT import from webview-ui. Communication with the UI MUST occur only via MissionControlProvider postMessage APIs.
+  - Reason: Prevents runtime bundling/import issues and enforces separation of concerns.
+- services/* MUST be the only code allowed to perform filesystem or git operations; engine/* and ai/* MUST call services APIs (ShadowRepository, MissionFolderManager, FileLockManager) instead of direct fs/git calls.
+  - Reason: Centralizes side effects for easier testing and recovery.
+- ai/* clients MUST NOT access VS Code APIs or UI; they may only be used by engine TaskRunner or services.
+  - Reason: Keeps LLM logic pure and portable.
+- engine/* (TaskRunner, PhaseExecutor, RefinementManager) are the orchestrators and MUST NOT manipulate UI directly — use MissionControlProvider messaging.
+  - Reason: Ensures consistent lifecycle and auditability of tasks.
+- No circular imports between top-level modules (ai, engine, services, panels, utils). Violations must be fixed by introducing explicit interfaces in utils or engine.
+  - Reason: Maintainable dependency graph and predictable builds.
+
+## 4. Coding Standards
+List each standard with enforcement level:
+- 🔴 **TypeScript strict mode**: strict=true; noImplicitReturns=true; noFallthroughCasesInSwitch=true (STRICT - must follow)  
+  - Reason: Prevent runtime type bugs; matches tsconfig.json.
+- 🔴 **No hardcoded secrets**: Never commit API keys, tokens, or secrets in repo (STRICT - must follow)  
+  - Reason: Security and compliance; package.json and settings indicate API keys are user-configured.
+- 🟡 **Prefer explicit types over `any` for public APIs**: Use `unknown` for parsed external data and cast explicitly after validation (WARNING - should follow)  
+  - Reason: Improves correctness and documents intent. Note: ESLint currently allows `any`, but project-wide code should avoid it.
+- 🔴 **Async/await for async flows; avoid long-running synchronous I/O on main thread** (STRICT - must follow)  
+  - Reason: Extension host responsiveness and predictable task lifecycle.
+- 🟡 **Use services for side effects**: Any code modifying the workspace filesystem must go through ShadowRepository / MissionFolderManager (WARNING - should follow)  
+  - Reason: Enables revert, audit, and conflict management.
+- 🟢 **Document exported module behavior with JSDoc/TSDoc** (SUGGESTION)  
+  - Reason: Improves discoverability for agents and maintainers.
+- 🟡 **Follow ESLint/TS rules in .eslintrc.json; reduce `no-explicit-any` use over time** (WARNING - should follow)  
+  - Reason: Maintain consistency; existing config relaxes some rules but code should trend stricter.
+- 🟢 **Small, focused modules and single responsibility** (SUGGESTION)  
+  - Reason: Easier testing and reasoning by agents.
+
+## 5. Forbidden Patterns
+- ❌ **Hardcoding API keys or secrets in source files or committed config**
+  - Reason: Security leakage and credential theft risk.
+  - Instead: Use VS Code settings (vibearchitect.*) or environment variables and document in README.
+- ❌ **Direct modifications of workspace files outside ShadowRepository/WorktreeManager**
+  - Reason: Bypasses revert, diff, and audit capabilities; breaks mission recovery.
+  - Instead: Use ShadowRepository APIs, then apply via IDEDiffApplier with user review checkpoints.
+- ❌ **Webview UI direct imports from backend code**
+  - Reason: Bundling mismatch and runtime errors; violates separation.
+  - Instead: Communicate over MissionControlProvider messages.
+- ❌ **Running arbitrary shell commands from agents or TaskRunner without explicit opt-in/approval**
+  - Reason: Security and sandboxing — prevents exfiltration or destructive operations.
+  - Instead: Use predefined Service tools (TerminalManager) with explicit authorization and logging.
+- ❌ **Committing large binaries (>5MB) into repo (recordings, browser profiles)**
+  - Reason: Repository bloat and packaging failures.
+  - Instead: Store recordings under workspace/.vibearchitect/recordings or external storage; add .gitignore entries.
+
+## 6. Testing Requirements
+- **Framework**: mocha
+  - Reason: devDependencies include mocha and @types/mocha; test files exist under src/test.
+- **Test Pattern**: src/test/**/*.test.ts and src/test/suite/**/*.test.ts
+  - Reason: Matches current test layout.
+- **Coverage Minimum**: Not enforced by CI (N/A) — target 80% for critical modules (engine, services, ai)
+  - Reason: No coverage tool configured; aim set as maintainability goal.
+- **Required Test Types**: unit (required), integration (required for engine <-> services), e2e (optional for browser automation using Playwright)
+  - Reason: Agents perform file and browser operations; integration tests validate real interactions. Playwright-based tests must run in isolated CI or developer environment.
+
+## 7. Agent Constraints (ENFORCED)
+
+### MUST
+- ✅ Always respect the Constitution and use documented services (ShadowRepository, FileLockManager, MissionFolderManager) for file operations.  
+  - Reason: Ensures recoverability and audit trails.
+- ✅ Validate and sanitize any external model output before using as code or shell commands (use parsing + token/size checks).  
+  - Reason: Prevents injection and runaway actions.
+- ✅ Persist mission artifacts under workspace/.vibearchitect or configured missionFolder and include metadata (taskId, model, timestamp).  
+  - Reason: Predictable storage and cleanup.
+- ✅ Run unit tests for changed modules locally (or CI) before creating a commit/PR that modifies engine, services, or ai modules.  
+  - Reason: Prevent regressions in core logic.
+
+### MUST NOT
+- ❌ Modify package.json dependencies, webpack externals, or tsconfig.json without human review and test run.  
+  - Reason: Dependency changes affect packaging and runtime; must be reviewed.
+- ❌ Exfiltrate or log sensitive data (API keys, tokens, private user files) to external endpoints.  
+  - Reason: Compliance and security.
+- ❌ Import webview-ui from backend or call DOM APIs from extension host.  
+  - Reason: Architectural boundary violation.
+- ❌ Execute unchecked shell scripts or network installs during autonomous runs without explicit opt-in.  
+  - Reason: Security and deterministic behavior.
+
+### SHOULD
+- 💡 Use ShadowRepository and commit/rollback semantics for incremental edits; create checkpoints for each phase.  
+  - Reason: Enables safe iteration and human review.
+- 💡 Prefer self-healing retries for Playwright flows; follow configured vibearchitect.browserSelfHealingRetries.  
+  - Reason: Improves robustness of browser tests.
+- 💡 Emit structured logs (taskId, phase, timestamp, tool, outcome) and surface them to Mission Control for traceability.  
+  - Reason: Troubleshooting and auditability.
+
+## 8. Custom Rules (User-Defined)
+Add custom rules here using the format:
+```text
+- MUST: Use 'unknown' (not 'any') for raw LLM responses; validate and map to typed interfaces before use.
+- MUST NOT: Commit API keys or credentials; settings must be used (vibearchitect.*) and documented.
+- SHOULD: Always create a MissionFolder via MissionFolderManager for any mission run; do not write directly to workspace root.
 ```
 
-### tsconfig.json
-
-```json
-{
-    "compilerOptions": {
-        "module": "Node16",
-        "target": "ES2022",
-        "outDir": "out",
-        "lib": ["ES2022"],
-        "sourceMap": true,
-        "rootDir": "src",
-        "strict": true,
-        "noImplicitReturns": true,
-        "noFallthroughCasesInSwitch": true,
-        "moduleResolution": "Node16",
-        "esModuleInterop": true,
-        "skipLibCheck": true,
-        "forceConsistentCasingInFileNames": true
-    },
-    "exclude": ["node_modules", ".vscode-test", "webview-ui", "_local_work"]
-}
-```
-
-### .eslintrc.json
-
-```json
-{
-    "root": true,
-    "parser": "@typescript-eslint/parser",
-    "parserOptions": {
-        "ecmaVersion": 2020,
-        "sourceType": "module"
-    },
-    "plugins": ["@typescript-eslint"],
-    "extends": ["eslint:recommended", "plugin:@typescript-eslint/recommended"],
-    "rules": {
-        "@typescript-eslint/naming-convention": "off",
-        "@typescript-eslint/no-explicit-any": "off",
-        "@typescript-eslint/no-unused-vars": ["warn", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }],
-        "semi": "off",
-        "curly": "warn",
-        "eqeqeq": "warn",
-        "no-throw-literal": "warn"
-    },
-    "ignorePatterns": ["out", "dist", "**/*.d.ts", "node_modules", "webview-ui"]
-}
-```
-
-## Project Structure
-
-```
-├── src/
-│   ├── ai/
-│   │   ├── ClaudeClient.ts
-│   │   ├── CopilotClaudeClient.ts
-│   │   ├── CopilotGPTClient.ts
-│   │   ├── GeminiClient.ts
-│   │   ├── PromptEngine.ts
-│   │   └── SecurityInstructions.ts
-│   ├── engine/
-│   │   ├── refinement/
-│   │   │   ├── ContextSkeletonizer.ts
-│   │   │   ├── index.ts
-│   │   │   ├── RefinementManager.ts
-│   │   │   ├── RefinementPrompts.ts
-│   │   │   ├── RefinementSession.ts
-│   │   │   ├── RefinementTokenManager.ts
-│   │   │   ├── RefinementTypes.ts
-│   │   │   └── SmartContextBuilder.ts
-│   │   ├── AgentTools.ts
-│   │   ├── ConstitutionSchema.ts
-│   │   ├── CorporateGuidelines.ts
-│   │   ├── SpecManager.ts
-│   │   ├── TaskRunner.ts
-│   │   ├── TerminalManager.ts
-│   │   └── WorktreeManager.ts
-│   ├── panels/
-│   │   └── MissionControlProvider.ts
-│   ├── services/
-│   │   ├── AttachmentProcessor.ts
-│   │   ├── AuthSessionManager.ts
-│   │   ├── BrowserAutomationService.ts
-│   │   ├── BrowserDependencyInstaller.ts
-│   │   ├── BrowserManager.ts
-│   │   ├── ComplexityAnalyzer.ts
-│   │   ├── ContextHarvester.ts
-│   │   ├── ContextMonitor.ts
-│   │   ├── DependencyAnalyzer.ts
-│   │   ├── FileLockManager.ts
-│   │   ├── LintRuleExtractor.ts
-│   │   ├── NetworkInterceptor.ts
-│   │   ├── PageLoadValidator.ts
-│   │   ├── PhaseExecutor.ts
-│   │   ├── PhaseGenerator.ts
-│   │   ├── PhaseStateManager.ts
-│   │   ├── RevertManager.ts
-│   │   ├── RiskDetector.ts
-│   │   ├── RuleEnforcer.ts
-│   │   ├── SessionStorageManager.ts
-│   │   ├── ShadowRepository.ts
-│   │   ├── TaskRunnerPhaseIntegration.ts
-│   │   └── VisualComparisonService.ts
-│   ├── test/
-│   │   ├── suite/
-│   │   │   ├── ComplexityAnalyzer.test.ts
-│   │   │   ├── ContextMonitor.test.ts
-│   │   │   ├── index.ts
-│   │   │   ├── PhaseExecutor.test.ts
-│   │   │   ├── PhaseGenerator.test.ts
-│   │   │   ├── PhaseStateManager.test.ts
-│   │   │   └── taskRunner.test.ts
-│   │   ├── runTest.ts
-│   │   └── simple.test.ts
-│   ├── utils/
-│   │   ├── DiffAggregator.ts
-│   │   ├── DiffLogger.ts
-│   │   ├── DiffMatcher.ts
-│   │   ├── DiffPreview.ts
-│   │   ├── DiffRecovery.ts
-│   │   ├── FileDiscovery.ts
-│   │   ├── FileSearch.ts
-│   │   ├── IDEDiffApplier.ts
-│   │   ├── MissionFolderManager.ts
-│   │   ├── SearchReplaceParser.ts
-│   │   ├── SymbolNavigator.ts
-│   │   ├── TokenBudget.ts
-│   │   └── TokenManager.ts
-│   └── extension.ts
-├── webview-ui/
-│   ├── src/
-│   │   ├── components/
-│   │   │   ├── BrowserPreview.tsx
-│   │   │   ├── BrowserSetupWizard.css
-│   │   │   ├── BrowserSetupWizard.tsx
-│   │   │   ├── ConstitutionReviewModal.tsx
-│   │   │   ├── ContextBudgetIndicator.css
-│   │   │   ├── ContextBudgetIndicator.tsx
-│   │   │   ├── DiffRecoveryModal.css
-│   │   │   ├── DiffRecoveryModal.tsx
-│   │   │   ├── DiffViewer.tsx
-│   │   │   ├── PhaseApprovalModal.css
-│   │   │   ├── PhaseApprovalModal.tsx
-│   │   │   ├── PhaseProgress.css
-│   │   │   ├── PhaseProgress.tsx
-│   │   │   ├── RefinementQuestionnaire.css
-│   │   │   ├── RefinementQuestionnaire.tsx
-│   │   │   ├── ResizableLayout.tsx
-│   │   │   ├── SessionManagerUI.css
-│   │   │   ├── SessionManagerUI.tsx
-│   │   │   ├── TypewriterText.css
-│   │   │   └── TypewriterText.tsx
-│   │   ├── utilities/
-│   │   │   └── vscode.ts
-│   │   ├── App.css
-│   │   ├── App.tsx
-│   │   ├── index.css
-│   │   └── main.tsx
-│   ├── build.js
-│   ├── index.html
-│   ├── package.json
-│   ├── tsconfig.json
-│   └── vite.config.ts
-├── .eslintrc.json
-├── ARCHITECTURE.md
-├── package.json
-├── README.md
-├── tsconfig.json
-└── webpack.config.js
-```
-
-## Detected Technologies
-
-- **Node.js/NPM** project detected
-- **TypeScript** enabled (strict mode)
-- **Webpack** bundler for extension
-- **Vite** bundler for webview-ui
-- **ESLint** configured with TypeScript parser
-- **Mocha** test framework
-- **Playwright** for browser automation
-- **React** for webview UI
-
-## Architecture Patterns
-
-### AI Clients
-Multiple AI provider integrations:
-- `ClaudeClient.ts` - Direct Anthropic API
-- `CopilotClaudeClient.ts` - Claude via VS Code Copilot
-- `CopilotGPTClient.ts` - GPT via VS Code Copilot
-- `GeminiClient.ts` - Google Gemini API
-
-### Engine Layer
-Core execution logic:
-- `TaskRunner.ts` - Main orchestration engine
-- `AgentTools.ts` - Tool definitions for AI agents
-- `TerminalManager.ts` - Terminal command execution
-- `WorktreeManager.ts` - Git worktree isolation
-- `refinement/` - PRD generation and refinement workflow
-
-### Services Layer
-Supporting services:
-- `BrowserAutomationService.ts` - Playwright browser control
-- `BrowserDependencyInstaller.ts` - Browser setup automation
-- `ShadowRepository.ts` - Checkpoint/revert system
-- `PhaseGenerator.ts` / `PhaseExecutor.ts` / `PhaseStateManager.ts` - Phased execution
-- `ComplexityAnalyzer.ts` - Task complexity assessment
-- `ContextHarvester.ts` - Codebase context extraction
-- `RiskDetector.ts` - High-risk command detection
-
-### Utils Layer
-Utility modules:
-- `SearchReplaceParser.ts` - Diff parsing
-- `DiffLogger.ts` / `DiffMatcher.ts` / `DiffRecovery.ts` - Diff handling
-- `TokenManager.ts` / `TokenBudget.ts` - Token management
-- `MissionFolderManager.ts` - Mission folder lifecycle
-
-## Configuration Options
-
-### Corporate Guidelines (configurable)
-- `security` - OWASP-inspired security rules (default: true)
-- `performance` - Performance best practices (default: true)
-- `maintainability` - SOLID principles (default: false)
-- `testing` - Testing best practices (default: false)
-
-### Mission Management
-- `missionFolderRetentionDays` - Cleanup threshold (default: 7)
-- `maxMissionFolders` - Max folders before cleanup (default: 50)
-- `enableMissionFolderSymlink` - Create 'current' symlink (default: true)
-
-*Constitution auto-generated from workspace scan*
+---
+*This constitution is the source of truth for AI agents working in this workspace.*

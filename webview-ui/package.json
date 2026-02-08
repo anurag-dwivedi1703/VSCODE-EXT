@@ -9,6 +9,7 @@
         "preview": "vite preview"
     },
     "dependencies": {
+        "@fontsource/inter": "^5.2.8",
         "@vscode/webview-ui-toolkit": "^1.4.0",
         "lucide-react": "^0.303.0",
         "react": "^18.2.0",

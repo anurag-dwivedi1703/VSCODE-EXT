@@ -1,4 +1,7 @@
 import * as React from 'react';
+import '@fontsource/inter/400.css';
+import '@fontsource/inter/500.css';
+import '@fontsource/inter/600.css';
 import { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import './App.css';
@@ -35,7 +38,7 @@ interface LogGroup {
 }
 
 function parseLogs(
-    logs: string[], 
+    logs: string[],
     checkpoints: { id: string, message: string }[] = [],
     options: { agentStatus?: string; isWaitingForUserInput?: boolean } = {}
 ): LogGroup[] {
@@ -116,10 +119,10 @@ function parseLogs(
 
             // FIX: Create new bubble when agent sends a new substantial response
             // after tool execution (not just appending everything together)
-            const shouldCreateNewBubble = currentStep && 
-                currentStep.markdown && 
+            const shouldCreateNewBubble = currentStep &&
+                currentStep.markdown &&
                 currentStep.markdown.length > 50 && // Has substantial content already
-                currentStep.tools && 
+                currentStep.tools &&
                 currentStep.tools.length > 0 && // Has tool calls
                 currentStep.tools.some(t => t.result); // At least one tool has completed
 
@@ -129,7 +132,7 @@ function parseLogs(
                     currentStep.status = 'completed';
                     commitStep();
                 }
-                
+
                 // Create new step for this agent response
                 const cleanText = text.replace(/\*\*/g, '').trim();
                 let title = 'Response';
@@ -142,7 +145,7 @@ function parseLogs(
                         title = `💭 ${firstSentence}`;
                     }
                 }
-                
+
                 currentStep = {
                     type: 'step',
                     content: 'Agent Reply',
@@ -269,23 +272,23 @@ function parseLogs(
         else if (log.startsWith('[RefinementStage:')) {
             commitStep();
             commitSystem();
-            
+
             // Parse stage and message: [RefinementStage:ANALYZING] 🔍 Analyzing...
             const stageMatch = log.match(/^\[RefinementStage:(\w+)\]\s*(.*)$/);
             const stage = stageMatch ? stageMatch[1] : 'PROCESSING';
             const message = stageMatch ? stageMatch[2] : log;
-            
+
             // Determine title based on stage
             const stageTitle = stage === 'ANALYZING' ? '🔍 Analyzing Request' :
-                              stage === 'DRAFTING' ? '📝 Drafting Requirements' :
-                              stage === 'CRITIQUING' ? '🔍 Reviewing Draft' :
-                              stage === 'REFINING' ? '⏳ Generating Final PRD' :
-                              '⏳ Processing...';
-            
+                stage === 'DRAFTING' ? '📝 Drafting Requirements' :
+                    stage === 'CRITIQUING' ? '🔍 Reviewing Draft' :
+                        stage === 'REFINING' ? '⏳ Generating Final PRD' :
+                            '⏳ Processing...';
+
             // Last AI bubble stays active visually until next bubble appears
             const isLastLog = i === logs.length - 1;
             const shouldBeRunning = isLastLog;
-            
+
             currentStep = {
                 type: 'step',
                 content: 'Refinement',
@@ -302,24 +305,24 @@ function parseLogs(
             commitSystem();
             // Create a step for Analyst/Refinement content
             const text = log.replace(/^\*\*(Analyst|System)\*\*:\s*/i, '').trim();
-            
+
             // Determine if this is the last log (still in progress) for animations
             const isLastLog = i === logs.length - 1;
             const isFinalPRD = log.startsWith('**Final PRD Ready**');
-            
+
             // Last AI bubble stays active visually (except for Final PRD which is a terminal state)
             const shouldBeRunning = isLastLog && !isFinalPRD;
-            
+
             currentStep = {
                 type: 'step',
                 content: 'Refinement',
                 title: log.startsWith('**Analyst Questions:**') ? '📋 Analyst Questions' :
                     log.startsWith('**Clarifying Questions:**') ? '📋 Clarifying Questions' :
-                    log.startsWith('**Draft PRD:**') ? '📝 Draft PRD' :
-                        log.startsWith('**Critic Feedback:**') ? '🔍 Critic Feedback' :
-                            log.startsWith('**Critic Review:**') ? '🔍 Critic Review' :
-                            log.startsWith('**Final PRD Ready**') ? '✅ Final PRD' :
-                                '💬 Analyst Response',
+                        log.startsWith('**Draft PRD:**') ? '📝 Draft PRD' :
+                            log.startsWith('**Critic Feedback:**') ? '🔍 Critic Feedback' :
+                                log.startsWith('**Critic Review:**') ? '🔍 Critic Review' :
+                                    log.startsWith('**Final PRD Ready**') ? '✅ Final PRD' :
+                                        '💬 Analyst Response',
                 markdown: log,  // Keep the full markdown including the header
                 tools: [],
                 artifacts: [],
@@ -377,8 +380,8 @@ function parseLogs(
     // mission complete are terminal states that should show as completed.
     for (let g = groups.length - 1; g >= 0; g--) {
         if (groups[g].type === 'step') {
-            const isFinal = groups[g].title?.includes('Final PRD') || 
-                           groups[g].title?.includes('Mission Complete');
+            const isFinal = groups[g].title?.includes('Final PRD') ||
+                groups[g].title?.includes('Mission Complete');
             if (!isFinal && groups[g].status !== 'failed') {
                 groups[g].status = 'running';
             }
@@ -404,7 +407,7 @@ function App() {
 
     // Context State
     const [contextFiles, setContextFiles] = useState<string[]>([]);
-    
+
     // Reply attachment state (for drag/drop, paste, and file upload in reply input)
     const [replyAttachments, setReplyAttachments] = useState<Array<{
         name: string;
@@ -414,7 +417,7 @@ function App() {
         mimeType?: string;
         size?: number;
     }>>([]);
-    
+
     // Drag state for visual feedback
     const [isDraggingComposer, setIsDraggingComposer] = useState(false);
     const [isDraggingReply, setIsDraggingReply] = useState(false);
@@ -547,8 +550,8 @@ function App() {
             if (message.command === 'composerContextSelected') {
                 const newAttachments = message.files.map((f: { path: string; name: string; type: string; content?: string }) => ({
                     name: f.name,
-                    type: f.type.startsWith('image') ? 'image' as const : 
-                          (f.type.includes('pdf') || f.type.includes('text') || f.type.includes('word')) ? 'document' as const : 'file' as const,
+                    type: f.type.startsWith('image') ? 'image' as const :
+                        (f.type.includes('pdf') || f.type.includes('text') || f.type.includes('word')) ? 'document' as const : 'file' as const,
                     path: f.path,
                     mimeType: f.type,
                     dataUrl: f.content  // For images, backend sends base64 content
@@ -668,13 +671,13 @@ function App() {
     // Auto-scroll to bottom of logs - only if user is near bottom
     // Uses smooth scrolling with a slight delay for better UX
     const prevLogsLength = useRef(0);
-    
+
     useEffect(() => {
         if (isUserNearBottom && scrollContainerRef.current) {
             // Check if there's new content by comparing total logs length
             const activeAgent = dynamicAgents.find(a => a.id === expandedAgentId);
             const currentLogsLength = activeAgent?.logs?.length || 0;
-            
+
             if (currentLogsLength > prevLogsLength.current) {
                 // Small delay to let new content render before scrolling
                 const timeoutId = setTimeout(() => {
@@ -698,7 +701,7 @@ function App() {
     const [composerModel, setComposerModel] = useState<string>('claude-opus-4.6');
     // Track if refinement mode has been used in this chat (prevents reuse in replyToTask)
     const [refinementUsed, setRefinementUsed] = useState(false);
-    
+
     // Attachment state for Start Mission composer
     const [composerAttachments, setComposerAttachments] = useState<Array<{
         name: string;
@@ -730,7 +733,7 @@ function App() {
             chatId: chatId,        // Include chat ID for mission folder isolation
             attachments: composerAttachments  // Include attachments (images, docs)
         });
-        
+
         // Clear attachments after sending
         setComposerAttachments([]);
     };
@@ -982,16 +985,16 @@ function App() {
     };
 
     const activeAgent = activeAgents.find(a => a.id === expandedAgentId) || activeAgents[0];
-    
+
     // Determine if we're waiting for user input (questionnaire or pending approval)
     const isWaitingForUserInput = !!(questionnaireData || pendingApproval);
-    
+
     const logGroups = activeAgent ? parseLogs(
-        activeAgent.logs, 
+        activeAgent.logs,
         activeAgent.checkpoints || [],
-        { 
-            agentStatus: activeAgent.status, 
-            isWaitingForUserInput 
+        {
+            agentStatus: activeAgent.status,
+            isWaitingForUserInput
         }
     ) : [];
 
@@ -1169,18 +1172,18 @@ function App() {
                     /* LEFT PANE: WORKSPACE & MISSIONS */
                     <aside className="pane-sidebar">
                         <div className="pane-header">
-                            <span className="title">VIBEARCHITECT v1.4</span>
+                            <span className="title">VIBEARCHITECT v2.0.2</span>
                             <div className="header-tools">
-                                <button 
-                                    className="icon-btn-small" 
-                                    onClick={() => setShowBrowserSetup(true)} 
+                                <button
+                                    className="icon-btn-small"
+                                    onClick={() => setShowBrowserSetup(true)}
                                     title="Browser Setup"
                                 >
                                     🌐
                                 </button>
-                                <button 
-                                    className="icon-btn-small" 
-                                    onClick={() => setShowSessionManager(true)} 
+                                <button
+                                    className="icon-btn-small"
+                                    onClick={() => setShowSessionManager(true)}
                                     title="Session Manager"
                                 >
                                     🔐
@@ -1362,8 +1365,8 @@ function App() {
                                                             {group.markdown && (
                                                                 <div className={`step-markdown markdown-body ${isRunning ? 'typing' : ''}`}>
                                                                     {isRunning && group.markdown.length < 500 ? (
-                                                                        <TypewriterText 
-                                                                            text={group.markdown} 
+                                                                        <TypewriterText
+                                                                            text={group.markdown}
                                                                             speed={8}
                                                                             isActive={isRunning}
                                                                         />
@@ -1484,54 +1487,55 @@ function App() {
                                                                         {group.tools.map((tool, ti) => {
                                                                             const isExecuting = !tool.result && group.status === 'running' && ti === group.tools!.length - 1;
                                                                             return (
-                                                                            <div key={ti} className={`step-tool-item ${tool.name === 'write_file' ? 'file-edit' : ''} ${isExecuting ? 'executing' : ''}`}>
-                                                                                <div className="tool-row">
-                                                                                    <span className="tool-name">⚡ {tool.name}</span>
-                                                                                    <div className="tool-actions">
-                                                                                        {(tool.name === 'write_file' || tool.name === 'apply_diff') && (
-                                                                                            <button
-                                                                                                className="open-diff-btn"
-                                                                                                title="Open Diff"
-                                                                                                onClick={(e) => {
-                                                                                                    e.stopPropagation();
-                                                                                                    // Extract path from tool.call string
-                                                                                                    let extractedPath = tool.filePath;
-                                                                                                    if (!extractedPath) {
-                                                                                                        // Try to extract from call: write_file({"path":"poem.md",...})
-                                                                                                        const match = tool.call.match(/["']path["']\s*:\s*["']([^"']+)["']/);
-                                                                                                        if (match) extractedPath = match[1];
-                                                                                                    }
-                                                                                                    if (extractedPath) {
+                                                                                <div key={ti} className={`step-tool-item ${tool.name === 'write_file' ? 'file-edit' : ''} ${isExecuting ? 'executing' : ''}`}>
+                                                                                    <div className="tool-row">
+                                                                                        <span className="tool-name">⚡ {tool.name}</span>
+                                                                                        <div className="tool-actions">
+                                                                                            {(tool.name === 'write_file' || tool.name === 'apply_diff') && (
+                                                                                                <button
+                                                                                                    className="open-diff-btn"
+                                                                                                    title="Open Diff"
+                                                                                                    onClick={(e) => {
+                                                                                                        e.stopPropagation();
+                                                                                                        // Extract path from tool.call string
+                                                                                                        let extractedPath = tool.filePath;
+                                                                                                        if (!extractedPath) {
+                                                                                                            // Try to extract from call: write_file({"path":"poem.md",...})
+                                                                                                            const match = tool.call.match(/["']path["']\s*:\s*["']([^"']+)["']/);
+                                                                                                            if (match) extractedPath = match[1];
+                                                                                                        }
+                                                                                                        if (extractedPath) {
+                                                                                                            vscode.postMessage({
+                                                                                                                command: 'getDiff',
+                                                                                                                taskId: activeAgent.id,
+                                                                                                                path: extractedPath
+                                                                                                            });
+                                                                                                        }
+                                                                                                    }}>
+                                                                                                    Open Diff
+                                                                                                </button>
+                                                                                            )}
+                                                                                            {tool.checkpointId && (
+                                                                                                <button className="revert-btn-small"
+                                                                                                    title="Revert to this state"
+                                                                                                    onClick={(e) => {
+                                                                                                        e.stopPropagation();
                                                                                                         vscode.postMessage({
-                                                                                                            command: 'getDiff',
+                                                                                                            command: 'requestRevert',
                                                                                                             taskId: activeAgent.id,
-                                                                                                            path: extractedPath
+                                                                                                            checkpointId: tool.checkpointId
                                                                                                         });
-                                                                                                    }
-                                                                                                }}>
-                                                                                                Open Diff
-                                                                                            </button>
-                                                                                        )}
-                                                                                        {tool.checkpointId && (
-                                                                                            <button className="revert-btn-small"
-                                                                                                title="Revert to this state"
-                                                                                                onClick={(e) => {
-                                                                                                    e.stopPropagation();
-                                                                                                    vscode.postMessage({
-                                                                                                        command: 'requestRevert',
-                                                                                                        taskId: activeAgent.id,
-                                                                                                        checkpointId: tool.checkpointId
-                                                                                                    });
-                                                                                                }}>
-                                                                                                ↩ Revert
-                                                                                            </button>
-                                                                                        )}
+                                                                                                    }}>
+                                                                                                    ↩ Revert
+                                                                                                </button>
+                                                                                            )}
+                                                                                        </div>
                                                                                     </div>
+                                                                                    <div className="tool-args">{tool.call}</div>
+                                                                                    {tool.result && <div className="tool-result-mini">{tool.result.substring(0, 100)}{tool.result.length > 100 ? '...' : ''}</div>}
                                                                                 </div>
-                                                                                <div className="tool-args">{tool.call}</div>
-                                                                                {tool.result && <div className="tool-result-mini">{tool.result.substring(0, 100)}{tool.result.length > 100 ? '...' : ''}</div>}
-                                                                            </div>
-                                                                        );})}
+                                                                            );
+                                                                        })}
                                                                     </div>
                                                                 </details>
                                                             )}
@@ -1578,7 +1582,7 @@ function App() {
                                 </div>
 
                                 {/* Reply Footer */}
-                                <footer 
+                                <footer
                                     className={`reply-footer ${isDraggingReply ? 'drop-zone-active' : ''}`}
                                     onDragOver={(e) => handleDragOver(e, setIsDraggingReply)}
                                     onDragLeave={(e) => handleDragLeave(e, setIsDraggingReply)}
@@ -1601,8 +1605,8 @@ function App() {
                                             {replyAttachments.map((attachment, idx) => (
                                                 <div key={idx} className={`attachment-chip ${attachment.type}`}>
                                                     {attachment.type === 'image' && attachment.dataUrl && (
-                                                        <img 
-                                                            src={attachment.dataUrl} 
+                                                        <img
+                                                            src={attachment.dataUrl}
                                                             alt={attachment.name}
                                                             className="attachment-thumbnail"
                                                         />
@@ -1613,11 +1617,11 @@ function App() {
                                                         </span>
                                                     )}
                                                     <span className="attachment-name" title={attachment.name}>
-                                                        {attachment.name.length > 20 
-                                                            ? attachment.name.substring(0, 17) + '...' 
+                                                        {attachment.name.length > 20
+                                                            ? attachment.name.substring(0, 17) + '...'
                                                             : attachment.name}
                                                     </span>
-                                                    <button 
+                                                    <button
                                                         className="attachment-remove"
                                                         onClick={() => removeReplyAttachment(idx)}
                                                         title="Remove attachment"
@@ -1842,7 +1846,7 @@ function App() {
                                     </div>
                                 </div>
 
-                                <div 
+                                <div
                                     className={`composer-input-area ${isDraggingComposer ? 'drop-zone-active' : ''}`}
                                     onDragOver={(e) => handleDragOver(e, setIsDraggingComposer)}
                                     onDragLeave={(e) => handleDragLeave(e, setIsDraggingComposer)}
@@ -1854,8 +1858,8 @@ function App() {
                                             {composerAttachments.map((attachment, idx) => (
                                                 <div key={idx} className={`attachment-chip ${attachment.type}`}>
                                                     {attachment.type === 'image' && attachment.dataUrl && (
-                                                        <img 
-                                                            src={attachment.dataUrl} 
+                                                        <img
+                                                            src={attachment.dataUrl}
                                                             alt={attachment.name}
                                                             className="attachment-thumbnail"
                                                         />
@@ -1866,11 +1870,11 @@ function App() {
                                                         </span>
                                                     )}
                                                     <span className="attachment-name" title={attachment.name}>
-                                                        {attachment.name.length > 20 
-                                                            ? attachment.name.substring(0, 17) + '...' 
+                                                        {attachment.name.length > 20
+                                                            ? attachment.name.substring(0, 17) + '...'
                                                             : attachment.name}
                                                     </span>
-                                                    <button 
+                                                    <button
                                                         className="attachment-remove"
                                                         onClick={() => removeComposerAttachment(idx)}
                                                         title="Remove attachment"
@@ -1881,7 +1885,7 @@ function App() {
                                             ))}
                                         </div>
                                     )}
-                                    
+
                                     <div className="composer-input-row">
                                         {/* Hidden file input */}
                                         <input
@@ -1892,25 +1896,25 @@ function App() {
                                             accept="image/*,.pdf,.txt,.md,.doc,.docx"
                                             onChange={handleComposerFileUpload}
                                         />
-                                        
+
                                         {/* Attachment button */}
-                                        <button 
+                                        <button
                                             className="icon-btn-attachment"
                                             onClick={() => composerFileInputRef.current?.click()}
                                             title="Attach image or document (UI mockups, specs, etc.)"
                                         >
                                             📎
                                         </button>
-                                        
+
                                         {/* Context button for workspace files */}
-                                        <button 
+                                        <button
                                             className="icon-btn-context"
                                             onClick={handleComposerContextSelect}
                                             title="Add workspace files as context"
                                         >
                                             +
                                         </button>
-                                        
+
                                         <textarea
                                             className="composer-textarea"
                                             placeholder="Describe your task... (Enter to start, Shift+Enter for new line, Ctrl+V to paste screenshots)"
@@ -1957,7 +1961,7 @@ function App() {
                             rightPaneTab === 'context' ? (() => {
                                 // Build array of available context items
                                 const contextItems: { id: string; render: () => React.ReactNode }[] = [];
-                                
+
                                 if (questionnaireData) {
                                     contextItems.push({
                                         id: 'questionnaire',
@@ -1973,7 +1977,7 @@ function App() {
                                         )
                                     });
                                 }
-                                
+
                                 if (pendingApproval && pendingApproval.type === 'plan') {
                                     contextItems.push({
                                         id: 'plan',
@@ -2007,7 +2011,7 @@ function App() {
                                         )
                                     });
                                 }
-                                
+
                                 if (pendingApproval && pendingApproval.type === 'prd') {
                                     contextItems.push({
                                         id: 'prd',
@@ -2064,7 +2068,7 @@ function App() {
                                         )
                                     });
                                 }
-                                
+
                                 if (diffContent) {
                                     contextItems.push({
                                         id: 'diff',
@@ -2078,7 +2082,7 @@ function App() {
                                         )
                                     });
                                 }
-                                
+
                                 // Add all preview files to context items
                                 previewFiles.forEach((file, idx) => {
                                     contextItems.push({
@@ -2102,14 +2106,14 @@ function App() {
                                         )
                                     });
                                 });
-                                
+
                                 // Clamp index to valid range
                                 const safeIndex = Math.max(0, Math.min(contextPaneIndex, contextItems.length - 1));
                                 if (safeIndex !== contextPaneIndex && contextItems.length > 0) {
                                     // Reset index if it's out of bounds (item was removed)
                                     setTimeout(() => setContextPaneIndex(safeIndex), 0);
                                 }
-                                
+
                                 // If no items, show empty state
                                 if (contextItems.length === 0) {
                                     return (
@@ -2120,14 +2124,14 @@ function App() {
                                         </div>
                                     );
                                 }
-                                
+
                                 return (
                                     <div className="context-list">
                                         {/* Navigation bar when multiple items */}
                                         {contextItems.length > 1 && (
                                             <div className="context-nav-bar">
-                                                <button 
-                                                    className="context-nav-btn" 
+                                                <button
+                                                    className="context-nav-btn"
                                                     onClick={() => setContextPaneIndex(prev => Math.max(0, prev - 1))}
                                                     disabled={safeIndex === 0}
                                                 >
@@ -2136,8 +2140,8 @@ function App() {
                                                 <span className="context-nav-indicator">
                                                     {safeIndex + 1} / {contextItems.length}
                                                 </span>
-                                                <button 
-                                                    className="context-nav-btn" 
+                                                <button
+                                                    className="context-nav-btn"
                                                     onClick={() => setContextPaneIndex(prev => Math.min(contextItems.length - 1, prev + 1))}
                                                     disabled={safeIndex === contextItems.length - 1}
                                                 >

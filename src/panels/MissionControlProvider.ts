@@ -420,7 +420,7 @@ export class MissionControlProvider {
         attachments: Attachment[]
     ): Promise<void> {
         const hasAttachments = attachments && attachments.length > 0;
-        const hasImageAttachments = hasAttachments && attachments.some(a => 
+        const hasImageAttachments = hasAttachments && attachments.some(a =>
             a.type === 'image' || (a.mimeType && a.mimeType.startsWith('image/'))
         );
 
@@ -446,10 +446,10 @@ export class MissionControlProvider {
 
         // Show processing indicator immediately in the chat
         if (hasImageAttachments) {
-            this._taskRunner.updateStatus_public(taskId, 'pending', 0, 
+            this._taskRunner.updateStatus_public(taskId, 'pending', 0,
                 '> Analyzing attached images... (extracting intent and running vision)');
         } else {
-            this._taskRunner.updateStatus_public(taskId, 'pending', 0, 
+            this._taskRunner.updateStatus_public(taskId, 'pending', 0,
                 '> Processing attached documents...');
         }
 
@@ -457,7 +457,7 @@ export class MissionControlProvider {
         let enrichedPrompt = text;
         try {
             console.log(`[MissionControl] Processing ${attachments.length} attachments...`);
-            
+
             const processor = getAttachmentProcessor();
             const processed = await processor.processAttachments(attachments, text);
             const contextString = processor.generateContextString(processed);
@@ -519,12 +519,12 @@ export class MissionControlProvider {
                 <meta charset="UTF-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <meta http-equiv="Content-Security-Policy" content="${csp}">
-                <link rel="stylesheet" href="${styleUri}">
+                <link rel="stylesheet" href="${styleUri.toString()}?v=${Date.now()}">
                 <title>Mission Control</title>
             </head>
             <body>
                 <div id="root"></div>
-                <script type="module" src="${scriptUri}"></script>
+                <script type="module" src="${scriptUri.toString()}?v=${Date.now()}"></script>
             </body>
             </html>
         `;
@@ -555,7 +555,7 @@ export class MissionControlProvider {
                         const model = message.model;
                         const chatId = message.chatId;  // Chat-specific ID for mission folder isolation
                         const attachments = message.attachments as Attachment[] || [];
-                        
+
                         console.log(`[MissionControl] Starting task in workspace: ${workspacePath} [${mode}] [${model}] [chatId: ${chatId || 'auto'}] [attachments: ${attachments.length}]`);
 
                         // Process attachments if any (images via vision, documents via text extraction)
@@ -636,7 +636,7 @@ export class MissionControlProvider {
                                     const filePath = uri.fsPath;
                                     const fileName = path.basename(filePath);
                                     const ext = path.extname(filePath).toLowerCase();
-                                    
+
                                     // Determine file type
                                     const isImage = ['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(ext);
                                     const mimeTypes: Record<string, string> = {
@@ -651,9 +651,9 @@ export class MissionControlProvider {
                                         '.doc': 'application/msword',
                                         '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
                                     };
-                                    
+
                                     const fileType = mimeTypes[ext] || 'application/octet-stream';
-                                    
+
                                     // For images, read and convert to base64 data URL
                                     let content: string | undefined;
                                     if (isImage) {
@@ -664,7 +664,7 @@ export class MissionControlProvider {
                                             console.error(`Failed to read image: ${filePath}`, e);
                                         }
                                     }
-                                    
+
                                     return {
                                         path: filePath,
                                         name: fileName,
@@ -672,7 +672,7 @@ export class MissionControlProvider {
                                         content
                                     };
                                 }));
-                                
+
                                 this.safePostMessage({
                                     command: 'composerContextSelected',
                                     files
@@ -960,11 +960,11 @@ export class MissionControlProvider {
         try {
             const { getBrowserManager } = await import('../services/BrowserManager');
             const browserManager = getBrowserManager();
-            
+
             this.safePostMessage({ type: 'browserDownloadStarted' });
-            
+
             const browser = await browserManager.downloadChromium();
-            
+
             if (browser) {
                 this.safePostMessage({
                     type: 'browserDownloadComplete',
@@ -989,12 +989,12 @@ export class MissionControlProvider {
             const { getBrowserManager } = await import('../services/BrowserManager');
             const browserManager = getBrowserManager();
             browserManager.setCustomBrowserPath(executablePath);
-            
+
             this.safePostMessage({
                 type: 'browserSelected',
                 browser: { executablePath }
             });
-            
+
             vscode.window.showInformationMessage(`Browser configured: ${executablePath}`);
         } catch (error: any) {
             vscode.window.showErrorMessage(`Failed to set browser: ${error.message}`);
@@ -1110,16 +1110,16 @@ export class MissionControlProvider {
     private async _handleInstallDependencies(): Promise<void> {
         try {
             this.safePostMessage({ type: 'dependenciesInstalling' });
-            
+
             const { getBrowserDependencyInstaller } = await import('../services/BrowserDependencyInstaller');
             const installer = getBrowserDependencyInstaller();
             installer.setExtensionPath(this._context.extensionPath);
-            
+
             const result = await installer.installDependencies();
-            
+
             // Re-check dependencies after install
             const dependencies = await installer.checkDependencies();
-            
+
             this.safePostMessage({
                 type: 'dependenciesInstalled',
                 success: result.success,
