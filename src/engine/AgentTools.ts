@@ -881,6 +881,7 @@ TIP: You can add line hints for faster matching:
 
     /**
      * Navigate browser to a URL
+     * Returns structured error messages to help agent decide appropriate next steps
      */
     async browserNavigate(url: string): Promise<string> {
         if (!this.browserService) {
@@ -888,9 +889,33 @@ TIP: You can add line hints for faster matching:
         }
         const result = await this.browserService.navigateTo(url);
         if (result.success) {
-            return `Navigated to: ${result.url}` + (result.authRequired ? ' (authentication was required)' : '');
+            if (result.authRequired) {
+                return `🔐 AUTH REQUIRED: Navigated to ${result.url} but login page detected. ` +
+                    `User will be prompted via LoginCheckpoint - wait for auth completion then retry navigation.`;
+            }
+            return `✅ Navigated to: ${result.url}`;
         } else {
-            return `Navigation failed: ${result.error || 'Unknown error'}`;
+            // Provide specific, actionable error messages
+            const error = result.error || 'Unknown error';
+
+            if (error.includes('ECONNREFUSED') || error.includes('net::ERR_CONNECTION_REFUSED')) {
+                return `❌ SERVER NOT RUNNING: Connection refused at ${url}. ` +
+                    `Start the dev server first (e.g., npm run dev, python app.py). ` +
+                    `Do NOT skip testing - start the server and try again.`;
+            }
+
+            if (error.includes('ENOTFOUND') || error.includes('net::ERR_NAME_NOT_RESOLVED')) {
+                return `❌ HOST NOT FOUND: Cannot resolve ${url}. Check the URL is correct.`;
+            }
+
+            if (error.includes('timeout') || error.includes('Timeout')) {
+                return `❌ TIMEOUT: Page at ${url} took too long to load. ` +
+                    `Server may be starting slowly - wait a few seconds and retry.`;
+            }
+
+            // Generic error with actionable guidance
+            return `❌ NAVIGATION FAILED: ${error}. ` +
+                `IMPORTANT: Report this specific error to user before considering alternative verification methods.`;
         }
     }
 

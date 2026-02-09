@@ -3960,6 +3960,29 @@ Steps:
 PHASE 4: TEST & VERIFY (MANDATORY - Cannot Skip) ⚠️
 ═══════════════════════════════════════════════════════════════════════════════
 
+🚨 **CRITICAL: ATTEMPT TESTING FIRST - NO PREEMPTIVE SKIPPING**
+
+You MUST attempt automated browser testing BEFORE considering alternatives:
+
+1. **DO NOT ASSUME SECRETS ARE MISSING** - User may have them configured
+   → Actually try to start the server
+   → If it fails, report the SPECIFIC error to user
+
+2. **AUTH IS HANDLED VIA LoginCheckpoint** - User can complete auth when prompted
+   → If login page appears, LoginCheckpoint popup will show
+   → Wait for user to complete authentication
+   → Testing continues after auth - DO NOT SKIP
+
+3. **REPORT SPECIFIC ERRORS BEFORE FALLBACK**:
+   → "Server failed with: ECONNREFUSED on port 3000"
+   → "Missing environment variable: DATABASE_URL"
+   → "Authentication required at: /login"
+   → ASK USER how to proceed - do not decide to skip on your own
+
+4. **ONLY SKIP IF USER EXPLICITLY SAYS SO**:
+   → User: "skip automated testing" → OK to use alternatives
+   → You assuming "it probably won't work" → NOT OK, try first
+
 📋 **STEP 4a: ENVIRONMENT SETUP (MUST DO FIRST)**
 - **Check for environment requirements**:
   a) Look for .env.example, .env.template, or README mentioning environment variables

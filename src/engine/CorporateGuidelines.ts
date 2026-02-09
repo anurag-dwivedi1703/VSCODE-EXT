@@ -344,6 +344,16 @@ export const TESTING_GUIDELINES: GuidelineRule[] = [
         badExample: 'test("test1", () => ...)',
         goodExample: 'test("should return empty array when no users match filter", () => ...)'
     },
+    {
+        id: 'TEST-006',
+        description: 'MUST attempt automated browser testing before falling back to manual verification',
+        enforcement: 'strict',
+        autoDetect: false,
+        reason: 'User may have secrets configured and can complete auth via LoginCheckpoint. Never assume testing will fail - try first and report specific errors.',
+        category: 'testing',
+        badExample: 'Skipping browser testing because auth is required',
+        goodExample: 'Attempted browser testing, got AUTH_REQUIRED at /login. Waiting for user to complete LoginCheckpoint.'
+    },
 ];
 
 // ============================================
@@ -416,7 +426,7 @@ export const DEFAULT_GUIDELINES_CONFIG: CorporateGuidelinesConfig = {
 export function getEnabledGuidelines(config: Partial<CorporateGuidelinesConfig>): GuidelineRule[] {
     const mergedConfig = { ...DEFAULT_GUIDELINES_CONFIG, ...config };
     const rules: GuidelineRule[] = [];
-    
+
     if (mergedConfig.security) {
         rules.push(...SECURITY_GUIDELINES);
     }
@@ -432,7 +442,7 @@ export function getEnabledGuidelines(config: Partial<CorporateGuidelinesConfig>)
     if (mergedConfig.accessibility) {
         rules.push(...ACCESSIBILITY_GUIDELINES);
     }
-    
+
     return rules;
 }
 
@@ -447,7 +457,7 @@ export function guidelinesToAgentConstraints(guidelines: GuidelineRule[]): {
     const must: AgentRule[] = [];
     const mustNot: AgentRule[] = [];
     const should: AgentRule[] = [];
-    
+
     for (const rule of guidelines) {
         const agentRule: AgentRule = {
             id: rule.id,
@@ -458,7 +468,7 @@ export function guidelinesToAgentConstraints(guidelines: GuidelineRule[]): {
             reason: rule.reason,
             category: rule.category
         };
-        
+
         // Categorize based on enforcement and description
         if (rule.enforcement === 'strict') {
             // Check if it's a "don't do" rule
@@ -480,7 +490,7 @@ export function guidelinesToAgentConstraints(guidelines: GuidelineRule[]): {
             should.push(agentRule);
         }
     }
-    
+
     return { must, mustNot, should };
 }
 
@@ -495,7 +505,7 @@ export function getGuidelineById(id: string): GuidelineRule | undefined {
         ...TESTING_GUIDELINES,
         ...ACCESSIBILITY_GUIDELINES
     ];
-    
+
     return allGuidelines.find(g => g.id === id);
 }
 
@@ -523,18 +533,18 @@ export function getGuidelinesByCategory(category: GuidelineCategory): GuidelineR
  * Format guidelines for display in UI
  */
 export function formatGuidelineForDisplay(rule: GuidelineRule): string {
-    const icon = rule.enforcement === 'strict' ? '🔴' : 
-                 rule.enforcement === 'warning' ? '🟡' : '🟢';
-    
+    const icon = rule.enforcement === 'strict' ? '🔴' :
+        rule.enforcement === 'warning' ? '🟡' : '🟢';
+
     let text = `${icon} **${rule.id}**: ${rule.description}`;
-    
+
     if (rule.referenceId) {
         text += ` (${rule.referenceId})`;
     }
-    
+
     if (rule.reason) {
         text += `\n   *${rule.reason}*`;
     }
-    
+
     return text;
 }
