@@ -6,6 +6,7 @@ import {
     WorkspaceAnalysis,
     createEmptyConstitution,
     constitutionToMarkdown,
+    agentConstraintsToMarkdown,
     parseMarkdownConstitution,
     validateConstitutionMarkdown,
     repairConstitutionMarkdown,
@@ -193,7 +194,9 @@ export class SpecManager {
             fs.writeFileSync(this._constitutionPath, finalContent, 'utf-8');
             this._constitution = finalContent;
             // Parse into structured form so regenerateWithGuidelines() can work
-            this._structuredConstitution = parseMarkdownConstitution(finalContent);
+            // Pass existing structured constitution to preserve data that fails to parse from new markdown
+            // This prevents data loss when AI-generated markdown doesn't match expected format
+            this._structuredConstitution = parseMarkdownConstitution(finalContent, this._structuredConstitution || undefined);
             console.log(`[SpecManager] Saved constitution to ${this._constitutionPath} (valid: ${validation.isValid})`);
         } catch (error) {
             console.error(`[SpecManager] Failed to save constitution:`, error);
@@ -720,19 +723,31 @@ Output ONLY the markdown content. No preamble.`;
      * the markdown -- all without an AI call.
      * 
      * Does NOT save to disk (that happens on Approve).
+     * 
+     * @param config - The corporate guidelines configuration
+     * @param editedContent - Optional user-edited markdown to patch (preserves user edits)
      */
-    regenerateWithGuidelines(config: CorporateGuidelinesConfig): string | null {
+    regenerateWithGuidelines(config: CorporateGuidelinesConfig, editedContent?: string): string | null {
         if (!this._structuredConstitution) {
             console.warn('[SpecManager] No structured constitution in memory for guideline regeneration');
+            return null;
+        }
+
+        // CRITICAL: Use user's edited content if provided, otherwise fall back to original
+        // This preserves any edits the user has made in the review modal
+        const sourceMarkdown = editedContent || this._constitution;
+        if (!sourceMarkdown) {
+            console.warn('[SpecManager] No constitution markdown in memory for guideline regeneration');
             return null;
         }
 
         // Set live preview flag to prevent file watcher from triggering reload
         this._isInLivePreview = true;
 
+        // sourceMarkdown is what we'll patch - either user's edits or original
+
         try {
             // DEEP CLONE to prevent mutation issues on repeated toggles
-            // This ensures each toggle starts from a clean state
             const workingConstitution = JSON.parse(JSON.stringify(this._structuredConstitution)) as ConstitutionV2;
 
             // Guideline rule ID prefixes to strip
@@ -762,15 +777,37 @@ Output ONLY the markdown content. No preamble.`;
             // Update the structured constitution AFTER successful manipulation
             this._structuredConstitution = workingConstitution;
 
-            // Re-render to markdown
-            const markdown = constitutionToMarkdown(workingConstitution);
+            // CRITICAL FIX: SURGICAL PATCHING - Only replace Section 7 in the original markdown
+            // This preserves all other sections (like Critical Dependencies) that may not parse correctly
+            // but are present in the original AI-generated markdown.
+            const newSection7 = agentConstraintsToMarkdown(workingConstitution.agentConstraints);
 
-            // Update in-memory markdown (but do NOT write to disk during preview)
-            // Disk write should only happen on Approve to prevent corruption
-            this._constitution = markdown;
-            console.log(`[SpecManager] Regenerated constitution preview with guidelines: ${JSON.stringify(config)}`);
+            // Find and replace Section 7 in the original markdown
+            // Pattern: Match "## 7. Agent Constraints" until the next section (## 8) or end
+            const section7Regex = /## 7\. Agent Constraints[\s\S]*?(?=## 8\.|$)/i;
 
-            return markdown;
+            let patchedMarkdown: string;
+            if (section7Regex.test(sourceMarkdown)) {
+                // Replace section 7 with new content, add newlines for proper spacing
+                patchedMarkdown = sourceMarkdown.replace(section7Regex, newSection7 + '\n\n');
+                console.log(`[SpecManager] Surgically patched Section 7 Agent Constraints (preserved Critical Dependencies)`);
+            } else {
+                // Fallback: If section 7 doesn't exist, append it before section 8 or at end
+                const section8Regex = /## 8\./;
+                if (section8Regex.test(sourceMarkdown)) {
+                    patchedMarkdown = sourceMarkdown.replace(section8Regex, newSection7 + '\n\n## 8.');
+                } else {
+                    patchedMarkdown = sourceMarkdown + '\n\n' + newSection7;
+                }
+                console.log(`[SpecManager] Appended Section 7 Agent Constraints to markdown`);
+            }
+
+            // Log for debugging
+            console.log(`[SpecManager] Guideline regeneration complete - guidelines: ${JSON.stringify(config)}`);
+
+            // Return the patched markdown for display in the review modal
+            // Note: We do NOT update this._constitution - the original is preserved
+            return patchedMarkdown;
         } finally {
             // Always clear the live preview flag
             this._isInLivePreview = false;

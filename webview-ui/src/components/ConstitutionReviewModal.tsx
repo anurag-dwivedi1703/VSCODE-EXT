@@ -17,7 +17,8 @@ interface ConstitutionReviewModalProps {
     corporateGuidelines?: CorporateGuidelinesConfig;
     onApprove: (editedContent?: string, guidelinesConfig?: CorporateGuidelinesConfig) => void;
     onReject: () => void;
-    onGuidelinesChange?: (config: CorporateGuidelinesConfig) => void;
+    // editedContent param allows backend to patch user's edits when toggling guidelines
+    onGuidelinesChange?: (config: CorporateGuidelinesConfig, editedContent?: string) => void;
 }
 
 // Rule templates for quick additions
@@ -174,11 +175,13 @@ export const ConstitutionReviewModal: React.FC<ConstitutionReviewModalProps> = (
     }, [content, isEditing]);
 
     // Update guidelines and notify parent
+    // CRITICAL: Pass editedContent so backend patches user's edits, not original
     const toggleGuideline = useCallback((key: keyof CorporateGuidelinesConfig) => {
         const newConfig = { ...guidelinesConfig, [key]: !guidelinesConfig[key] };
         setGuidelinesConfig(newConfig);
-        onGuidelinesChange?.(newConfig);
-    }, [guidelinesConfig, onGuidelinesChange]);
+        // Pass editedContent so backend can patch user's edited markdown
+        onGuidelinesChange?.(newConfig, editedContent);
+    }, [guidelinesConfig, onGuidelinesChange, editedContent]);
 
     const getTitle = () => {
         switch (type) {

@@ -504,6 +504,53 @@ export function createEmptyConstitution(projectName: string = 'Unknown'): Consti
 }
 
 /**
+ * Generate markdown for ONLY the Agent Constraints section (Section 7).
+ * This is used for surgical patching during live preview to preserve
+ * sections that failed to parse correctly (like Critical Dependencies).
+ */
+export function agentConstraintsToMarkdown(agentConstraints: ConstitutionV2['agentConstraints']): string {
+    const lines: string[] = [];
+
+    lines.push('## 7. Agent Constraints (ENFORCED)');
+    lines.push('');
+
+    if (agentConstraints.must.length > 0) {
+        lines.push('### MUST');
+        for (const rule of agentConstraints.must) {
+            lines.push(`- ✅ ${rule.description}`);
+            if (rule.reason) {
+                lines.push(`  - *Reason: ${rule.reason}*`);
+            }
+        }
+        lines.push('');
+    }
+
+    if (agentConstraints.mustNot.length > 0) {
+        lines.push('### MUST NOT');
+        for (const rule of agentConstraints.mustNot) {
+            lines.push(`- ❌ ${rule.description}`);
+            if (rule.reason) {
+                lines.push(`  - *Reason: ${rule.reason}*`);
+            }
+        }
+        lines.push('');
+    }
+
+    if (agentConstraints.should.length > 0) {
+        lines.push('### SHOULD');
+        for (const rule of agentConstraints.should) {
+            lines.push(`- 💡 ${rule.description}`);
+            if (rule.reason) {
+                lines.push(`  - *Reason: ${rule.reason}*`);
+            }
+        }
+        lines.push('');
+    }
+
+    return lines.join('\n');
+}
+
+/**
  * Convert ConstitutionV2 to markdown for display/storage
  */
 export function constitutionToMarkdown(constitution: ConstitutionV2): string {
@@ -774,16 +821,20 @@ export function parseMarkdownConstitution(markdown: string, existingConstitution
             const boundarySection = boundariesMatch[0];
             const boundaryLines = boundarySection.match(/\*\*([^*]+)\*\*:\s*([^\n]+)/g) || [];
 
-            constitution.architectureRules.moduleBoundaries = [];
+            const parsedBoundaries: ModuleBoundary[] = [];
             for (const line of boundaryLines) {
                 const match = line.match(/\*\*([^*]+)\*\*:\s*([^\n]+)/);
                 if (match) {
-                    constitution.architectureRules.moduleBoundaries.push({
+                    parsedBoundaries.push({
                         name: match[1].trim(),
                         purpose: match[2].trim(),
                         includes: [match[1].trim().toLowerCase()]
                     });
                 }
+            }
+            // Preserve existing if parsing returned nothing
+            if (parsedBoundaries.length > 0 || constitution.architectureRules.moduleBoundaries.length === 0) {
+                constitution.architectureRules.moduleBoundaries = parsedBoundaries;
             }
         }
 
@@ -793,17 +844,21 @@ export function parseMarkdownConstitution(markdown: string, existingConstitution
             const importSection = importRulesMatch[0];
             const ruleLines = importSection.split('\n').filter(l => l.trim().startsWith('-'));
 
-            constitution.architectureRules.importRules = [];
+            const parsedImportRules: ImportRule[] = [];
             for (let i = 0; i < ruleLines.length; i++) {
                 const line = ruleLines[i].replace(/^-\s*/, '').trim();
                 if (line.includes('cannot import') || line.includes('should not import')) {
-                    constitution.architectureRules.importRules.push({
+                    parsedImportRules.push({
                         id: `import-rule-${i}`,
                         from: 'auto-detected',
                         cannotImport: [],
                         reason: line
                     });
                 }
+            }
+            // Preserve existing if parsing returned nothing
+            if (parsedImportRules.length > 0 || constitution.architectureRules.importRules.length === 0) {
+                constitution.architectureRules.importRules = parsedImportRules;
             }
         }
     }
@@ -816,7 +871,7 @@ export function parseMarkdownConstitution(markdown: string, existingConstitution
         const section = forbiddenMatch[0];
         const patterns = section.split(/(?=- ❌|\*\*[^*]+\*\*)/);
 
-        constitution.forbiddenPatterns = [];
+        const parsedPatterns: ForbiddenPattern[] = [];
 
         for (const pattern of patterns) {
             const descMatch = pattern.match(/(?:❌\s*)?(?:\*\*)?([^*\n]+)(?:\*\*)?/);
@@ -824,7 +879,7 @@ export function parseMarkdownConstitution(markdown: string, existingConstitution
             const insteadMatch = pattern.match(/Instead:\s*([^\n]+)/i);
 
             if (descMatch && descMatch[1].trim() && !descMatch[1].includes('Forbidden Patterns')) {
-                constitution.forbiddenPatterns.push({
+                parsedPatterns.push({
                     id: `forbidden-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
                     description: descMatch[1].trim().replace(/^-\s*/, ''),
                     reason: reasonMatch ? reasonMatch[1].trim() : 'Pattern forbidden by constitution',
@@ -833,6 +888,10 @@ export function parseMarkdownConstitution(markdown: string, existingConstitution
                     suggestion: insteadMatch ? insteadMatch[1].trim() : undefined
                 });
             }
+        }
+        // Preserve existing if parsing returned nothing
+        if (parsedPatterns.length > 0 || constitution.forbiddenPatterns.length === 0) {
+            constitution.forbiddenPatterns = parsedPatterns;
         }
     }
 
@@ -876,7 +935,10 @@ export function parseMarkdownConstitution(markdown: string, existingConstitution
         if (mustMatch) {
             const mustSection = mustMatch[0];
             const rules = parseAgentRules(mustSection, 'strict');
-            constitution.agentConstraints.must = rules;
+            // Preserve existing if parsing returned nothing
+            if (rules.length > 0 || constitution.agentConstraints.must.length === 0) {
+                constitution.agentConstraints.must = rules;
+            }
         }
 
         // Parse MUST NOT rules
@@ -884,7 +946,10 @@ export function parseMarkdownConstitution(markdown: string, existingConstitution
         if (mustNotMatch) {
             const mustNotSection = mustNotMatch[0];
             const rules = parseAgentRules(mustNotSection, 'strict');
-            constitution.agentConstraints.mustNot = rules;
+            // Preserve existing if parsing returned nothing
+            if (rules.length > 0 || constitution.agentConstraints.mustNot.length === 0) {
+                constitution.agentConstraints.mustNot = rules;
+            }
         }
 
         // Parse SHOULD rules
@@ -892,7 +957,10 @@ export function parseMarkdownConstitution(markdown: string, existingConstitution
         if (shouldMatch) {
             const shouldSection = shouldMatch[0];
             const rules = parseAgentRules(shouldSection, 'suggestion');
-            constitution.agentConstraints.should = rules;
+            // Preserve existing if parsing returned nothing
+            if (rules.length > 0 || constitution.agentConstraints.should.length === 0) {
+                constitution.agentConstraints.should = rules;
+            }
         }
     }
 
@@ -904,7 +972,7 @@ export function parseMarkdownConstitution(markdown: string, existingConstitution
         const customRulesSection = customRulesMatch[0];
         const ruleLines = customRulesSection.split('\n').filter(line => line.trim().startsWith('- '));
 
-        constitution.customRules = [];
+        const parsedCustomRules: AgentRule[] = [];
 
         for (const line of ruleLines) {
             const cleanLine = line.replace(/^-\s*[🔴🟡🟢❌✅💡]*\s*/, '').trim();
@@ -924,7 +992,7 @@ export function parseMarkdownConstitution(markdown: string, existingConstitution
             }
 
             if (description && !description.startsWith('[') && !description.startsWith('*')) {
-                constitution.customRules.push({
+                parsedCustomRules.push({
                     id: `custom-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
                     description,
                     enforcement,
@@ -932,6 +1000,10 @@ export function parseMarkdownConstitution(markdown: string, existingConstitution
                     userDefined: true
                 });
             }
+        }
+        // Preserve existing if parsing returned nothing
+        if (parsedCustomRules.length > 0 || constitution.customRules.length === 0) {
+            constitution.customRules = parsedCustomRules;
         }
     }
 

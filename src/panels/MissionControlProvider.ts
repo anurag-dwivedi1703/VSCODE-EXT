@@ -838,9 +838,13 @@ export class MissionControlProvider {
                         return;
                     case 'toggleConstitutionGuidelines': {
                         // Live preview: regenerate constitution with updated guidelines
+                        // CRITICAL: Pass editedContent so we patch user's edits, not just original
                         const specManager = this._taskRunner.getSpecManager(message.taskId);
                         if (specManager && message.guidelinesConfig) {
-                            const updatedMarkdown = specManager.regenerateWithGuidelines(message.guidelinesConfig);
+                            const updatedMarkdown = specManager.regenerateWithGuidelines(
+                                message.guidelinesConfig,
+                                message.editedContent  // User's edited markdown (if any)
+                            );
                             if (updatedMarkdown) {
                                 this.safePostMessage({
                                     command: 'constitutionGuidelinesUpdated',

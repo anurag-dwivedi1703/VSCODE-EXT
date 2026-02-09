@@ -975,12 +975,14 @@ function App() {
     };
 
     // Live guidelines toggle: send to backend to regenerate constitution preview
-    const handleGuidelinesChange = (config: any) => {
+    // CRITICAL: Pass editedContent so backend patches user's edits, not original
+    const handleGuidelinesChange = (config: any, editedContent?: string) => {
         if (!constitutionReview) return;
         vscode.postMessage({
             command: 'toggleConstitutionGuidelines',
             taskId: constitutionReview.taskId,
-            guidelinesConfig: config
+            guidelinesConfig: config,
+            editedContent: editedContent  // Pass user's edited content for patching
         });
     };
 
