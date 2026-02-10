@@ -2862,7 +2862,49 @@ ${contextData}
                         currentPrompt = "Proceed."; // Default for next time, but we break now.
                         break;
                     } else {
-                        // "MISSION COMPLETE" detected
+                        // "MISSION COMPLETE" detected - VERIFY BEFORE FINISHING
+
+                        // ========================================
+                        // VERIFICATION GATE: Enforce browser_verify_ui for code changes
+                        // ========================================
+
+                        // 1. Detect ANY source code changes (excluding docs/tests)
+                        const isCodeChange = task.fileEdits?.some(edit => {
+                            const ext = path.extname(edit.path).toLowerCase();
+                            // Docs and config files that don't affect runtime logic
+                            const isDoc = ['.md', '.txt', '.json', '.yml', '.yaml', '.gitignore', '.npmignore', '.eslintignore', '.prettierrc'].includes(ext);
+                            // Test files are not "runtime code" in this context
+                            const isTest = edit.path.includes('.test.') || edit.path.includes('.spec.') || edit.path.includes('__tests__');
+                            return !isDoc && !isTest;
+                        });
+
+                        // 2. Detect Valid UI Verification
+                        // We check for 'browser_verify_ui' tool calls in the logs
+                        const hasUiVerification = task.logs.some(log =>
+                            log.includes('[Tool Call]: browser_verify_ui')
+                        );
+
+                        // 3. The Gate
+                        if (isCodeChange && !hasUiVerification) {
+                            // Check for explicit "skip testing" override in prompt
+                            const skipTesting = task.prompt.toLowerCase().includes('skip testing') ||
+                                task.prompt.toLowerCase().includes('no testing') ||
+                                task.prompt.toLowerCase().includes('skip verification');
+
+                            if (skipTesting) {
+                                task.logs.push(`> [System]: Verification skipped due to user override.`);
+                                break;
+                            }
+
+                            // REJECT COMPLETION
+                            const rejMsg = "⛔ COMPLETION REJECTED: You modified code but did not run 'browser_verify_ui()'. Even for backend changes, you MUST verify that the UI behaviors and data flow remain correct. Background tests (npm test) are NOT sufficient. Please visually verify the application now.";
+                            task.logs.push(`> [System]: ${rejMsg}`);
+
+                            // Feed rejection back to the agent
+                            currentPrompt = rejMsg;
+                            continue; // Force another turn loop
+                        }
+
                         break;
                     }
                 }
@@ -3918,6 +3960,16 @@ Allowed tools: write_file ONLY to these paths:
   - .vibearchitect/task.md
   - .vibearchitect/implementation_plan.md
 Forbidden: write_file to ANY other path, apply_diff, run_command
+
+⚠️ CRITICAL ARTIFACT RULES:
+- The following 4 artifacts are IMMUTABLE Single Sources of Truth. You MUST NOT split, refactor, or rename them:
+  1. '.vibearchitect/constitution.md' (Rules)
+  2. '.vibearchitect/prd.md' (Requirements)
+  3. '.vibearchitect/task.md' (Checklist)
+  4. '.vibearchitect/implementation_plan.md' (Technical Plan)
+- NEVER create derivative specification files like "Tech-Spec.md", "Test-Spec.md", or "Design-Doc.md".
+- All implementation details go into '.vibearchitect/implementation_plan.md'.
+- All progress tracking goes into '.vibearchitect/task.md'.
 
 ⚠️ WORKFLOW GUARD SYSTEM (Active in this mode):
 If you try to write/modify files OTHER than the plan files before creating them:

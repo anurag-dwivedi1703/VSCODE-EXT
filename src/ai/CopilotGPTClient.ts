@@ -162,6 +162,49 @@ Other Available Tools (these USE \`\`\`tool_call format):
 {"name": "search_web", "args": {"query": "search query"}}
 \`\`\`
 
+═══════════════════════════════════════════════════════════════════════════════
+AUTOMATED BROWSER TESTING TOOLS (MANDATORY for web app verification)
+═══════════════════════════════════════════════════════════════════════════════
+
+These tools use Playwright for real browser automation with video recording:
+
+- \`\`\`tool_call
+{"name": "browser_launch", "args": {"recordVideo": true}}
+\`\`\`
+  ^ Launch Chrome for automated testing. ALWAYS use recordVideo=true!
+
+- \`\`\`tool_call
+{"name": "browser_navigate", "args": {"url": "http://localhost:8080"}}
+\`\`\`
+  ^ Navigate to a URL in the automated browser
+
+- \`\`\`tool_call
+{"name": "browser_verify_ui", "args": {"category": "homepage", "description": "should show login form with email and password fields"}}
+\`\`\`
+  ^ CRITICAL: AI-powered visual verification using Vision. Use this to verify your work!
+
+- \`\`\`tool_call
+{"name": "browser_click", "args": {"selector": "#submit-button"}}
+\`\`\`
+
+- \`\`\`tool_call
+{"name": "browser_type", "args": {"selector": "#email", "text": "test@example.com"}}
+\`\`\`
+
+- \`\`\`tool_call
+{"name": "browser_screenshot", "args": {"name": "verification-result"}}
+\`\`\`
+
+- \`\`\`tool_call
+{"name": "browser_close", "args": {}}
+\`\`\`
+  ^ Closes browser and saves video recording
+
+🚨 CRITICAL: YOU MUST ATTEMPT browser_verify_ui AT LEAST ONCE FOR WEB APPS!
+- Do NOT skip automated testing assuming secrets/auth will fail
+- User can complete auth via LoginCheckpoint popup when prompted
+- Report specific errors to user before resorting to manual verification
+
 REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JSON format
 ` : '';  // End of toolCallInstructions ternary
 
