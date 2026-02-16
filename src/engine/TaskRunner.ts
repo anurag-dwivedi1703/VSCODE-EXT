@@ -1059,7 +1059,19 @@ Please complete the login in the browser window, then click **"I've Logged In"**
         // Save PRD to .vibearchitect folder for persistence and AI access
         let prdRelativePath = '';
         if (task.worktreePath) {
-            // Save PRD to mission-specific subfolder (or create one if needed)
+            // FIX: Ensure mission folder is initialized (critical for resumed refinement tasks)
+            if (!task.missionFolder) {
+                const missionDir = path.join(task.worktreePath, '.vibearchitect', 'missions', taskId);
+                try {
+                    fs.mkdirSync(missionDir, { recursive: true });
+                    task.missionFolder = missionDir;
+                    console.log(`[TaskRunner] (PRD Save) Initialized mission folder: ${missionDir}`);
+                } catch (e) {
+                    console.warn(`[TaskRunner] Failed to init mission folder for PRD save:`, e);
+                }
+            }
+
+            // Save PRD to mission-specific subfolder
             const missionDir = task.missionFolder || path.join(task.worktreePath, '.vibearchitect');
             try {
                 fs.mkdirSync(missionDir, { recursive: true });
@@ -1072,18 +1084,13 @@ Please complete the login in the browser window, then click **"I've Logged In"**
                 console.log(`[TaskRunner] Saved PRD to ${prdFilePath}`);
                 task.logs.push(`> [System]: PRD saved to ${prdRelativePath}`);
 
-                // Also save a copy directly to .vibearchitect/prd.md as backup
-                // This ensures the AI can find the PRD even if mission folder routing fails
-                const backupPrdPath = path.join(task.worktreePath, '.vibearchitect', 'prd.md');
-                fs.writeFileSync(backupPrdPath, prdContent, 'utf-8');
-                console.log(`[TaskRunner] Also saved backup PRD to ${backupPrdPath}`);
+                // REMOVED: Backup save to root .vibearchitect/prd.md (enforcing isolation)
 
-                // Verify PRD files exist after save
+                // Verify PRD file exists
                 const primaryExists = fs.existsSync(prdFilePath);
-                const backupExists = fs.existsSync(backupPrdPath);
-                console.log(`[TaskRunner] PRD verification - mission folder: ${primaryExists}, backup: ${backupExists}`);
-                if (!primaryExists || !backupExists) {
-                    console.error(`[TaskRunner] PRD verification FAILED - files may not have saved correctly!`);
+                console.log(`[TaskRunner] PRD verification - mission folder: ${primaryExists}`);
+                if (!primaryExists) {
+                    console.error(`[TaskRunner] PRD verification FAILED - file may not have saved correctly!`);
                 }
             } catch (error) {
                 console.error(`[TaskRunner] Failed to save PRD file: ${error}`);
