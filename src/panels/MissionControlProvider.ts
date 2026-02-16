@@ -722,10 +722,31 @@ export class MissionControlProvider {
                         const task = this._taskRunner.getTask(taskId);
 
                         if (task) {
-                            // Normalize path
+                            // Normalize path and resolve to mission folder if it's an artifact
                             let fsPath = message.path;
-                            if (!path.isAbsolute(fsPath) && task.worktreePath) {
-                                fsPath = path.join(task.worktreePath, fsPath);
+
+                            // Check if this is an artifact that should be loaded from mission folder
+                            const isArtifact = ['.md', '.txt', '.json'].some(ext => fsPath.endsWith(ext)) &&
+                                (fsPath.includes('task.md') ||
+                                    fsPath.includes('implementation_plan.md') ||
+                                    fsPath.includes('mission_summary.md') ||
+                                    fsPath.includes('prd.md'));
+
+                            // Try to resolve from mission folder first if it's an artifact
+                            if (isArtifact && task.missionFolder) {
+                                const filename = path.basename(fsPath);
+                                const missionArtifactPath = path.join(task.missionFolder, filename);
+                                if (fs.existsSync(missionArtifactPath)) {
+                                    fsPath = missionArtifactPath;
+                                } else if (!path.isAbsolute(fsPath) && task.worktreePath) {
+                                    // Fallback to worktree/legacy logic
+                                    fsPath = path.join(task.worktreePath, fsPath);
+                                }
+                            } else {
+                                // Standard resolution for non-artifacts or if mission folder not set
+                                if (!path.isAbsolute(fsPath) && task.worktreePath) {
+                                    fsPath = path.join(task.worktreePath, fsPath);
+                                }
                             }
 
                             console.log(`[MissionControl] Previewing artifact: ${fsPath}`);
@@ -742,7 +763,7 @@ export class MissionControlProvider {
                                 } else {
                                     // Fallback: Check archived location for known artifact files
                                     const fileName = path.basename(fsPath);
-                                    const artifactFiles = ['task.md', 'implementation_plan.md', 'mission_summary.md'];
+                                    const artifactFiles = ['task.md', 'implementation_plan.md', 'mission_summary.md', 'prd.md'];
 
                                     if (artifactFiles.includes(fileName)) {
                                         const archivedPath = path.join(
@@ -759,8 +780,20 @@ export class MissionControlProvider {
                                                 content: content
                                             });
                                         } else {
-                                            vscode.window.showErrorMessage(`File not found: ${fsPath}`);
-                                            console.error(`[MissionControl] Artifact not found at ${fsPath} or ${archivedPath}`);
+                                            // Try one last check in default .vibearchitect folder (legacy)
+                                            const legacyPath = task.worktreePath ? path.join(task.worktreePath, '.vibearchitect', fileName) : '';
+                                            if (legacyPath && fs.existsSync(legacyPath)) {
+                                                console.log(`[MissionControl] Found legacy artifact: ${legacyPath}`);
+                                                const content = fs.readFileSync(legacyPath, 'utf-8');
+                                                this.safePostMessage({
+                                                    command: 'fileContent',
+                                                    path: legacyPath,
+                                                    content: content
+                                                });
+                                            } else {
+                                                vscode.window.showErrorMessage(`File not found: ${fsPath}`);
+                                                console.error(`[MissionControl] Artifact not found at ${fsPath} or ${archivedPath}`);
+                                            }
                                         }
                                     } else {
                                         vscode.window.showErrorMessage(`File not found: ${fsPath}`);
