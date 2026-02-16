@@ -21,7 +21,7 @@ import { ContextHarvester } from '../services/ContextHarvester';
 import { getRefinementManager } from './refinement';
 import { DiffAggregator } from '../utils/DiffAggregator';
 import { TokenManager } from '../utils/TokenManager';
-import { MissionFolderManager } from '../utils/MissionFolderManager';
+// MissionFolderManager removed - mission-scoped folders now managed directly via task.missionFolder
 import { getAttachmentProcessor, Attachment } from '../services/AttachmentProcessor';
 import { createRuleEnforcer, RuleEnforcer, FileEdit as RuleFileEdit } from '../services/RuleEnforcer';
 
@@ -70,6 +70,7 @@ interface AgentTask {
     };
     // Chat-specific mission folder support
     chatId?: string;           // Unique chat/session identifier
+    missionFolder?: string;    // Path to this task's dedicated artifact subfolder (.vibearchitect/missions/<taskId>/)
 }
 
 export class TaskRunner {
@@ -692,12 +693,27 @@ Please complete the login in the browser window, then click **"I've Logged In"**
      * CRITICAL: Also clears the 'current' symlink/folder contents to prevent
      * the AI from finding old mission_summary.md files and thinking the mission is done.
      */
-    private clearWorkspaceArtifacts(workspacePath: string): void {
+    private clearWorkspaceArtifacts(workspacePath: string, missionFolder?: string): void {
         const artifactsDir = path.join(workspacePath, '.vibearchitect');
         // CRITICAL: Include prd.md to prevent old refinement PRDs from bleeding into new missions
         const filesToClear = ['task.md', 'implementation_plan.md', 'mission_summary.md', 'prd.md'];
 
-        // Clear files in root .vibearchitect folder
+        // Clear mission-specific subfolder if provided
+        if (missionFolder && fs.existsSync(missionFolder)) {
+            for (const file of filesToClear) {
+                const filePath = path.join(missionFolder, file);
+                if (fs.existsSync(filePath)) {
+                    try {
+                        fs.unlinkSync(filePath);
+                        console.log(`[TaskRunner] Cleared mission artifact: ${file}`);
+                    } catch (err) {
+                        console.warn(`[TaskRunner] Failed to clear mission artifact ${file}:`, err);
+                    }
+                }
+            }
+        }
+
+        // Also clear root .vibearchitect backup files to prevent bleeding
         for (const file of filesToClear) {
             const filePath = path.join(artifactsDir, file);
             if (fs.existsSync(filePath)) {
@@ -710,54 +726,25 @@ Please complete the login in the browser window, then click **"I've Logged In"**
             }
         }
 
-        // CRITICAL: Clear the 'current' symlink/folder to prevent old artifacts bleeding
+        // Remove legacy 'current' symlink/directory if it exists
         const currentPath = path.join(artifactsDir, 'current');
         if (fs.existsSync(currentPath)) {
             try {
-                const stats = fs.lstatSync(currentPath);
-                if (stats.isSymbolicLink()) {
-                    // It's a symlink - clear the contents of the target folder
-                    const targetPath = fs.realpathSync(currentPath);
-                    for (const file of filesToClear) {
-                        const targetFile = path.join(targetPath, file);
-                        if (fs.existsSync(targetFile)) {
-                            fs.unlinkSync(targetFile);
-                            console.log(`[TaskRunner] Cleared current/ artifact: ${file}`);
-                        }
-                    }
-                } else if (stats.isDirectory()) {
-                    // It's a junction or regular directory - clear its contents
-                    for (const file of filesToClear) {
-                        const targetFile = path.join(currentPath, file);
-                        if (fs.existsSync(targetFile)) {
-                            fs.unlinkSync(targetFile);
-                            console.log(`[TaskRunner] Cleared current/ artifact: ${file}`);
-                        }
-                    }
-                }
-
-                // Also remove the symlink/junction itself to ensure clean slate
-                try {
-                    fs.unlinkSync(currentPath);
-                    console.log(`[TaskRunner] Removed current symlink/junction`);
-                } catch {
-                    // On Windows, junctions might need rmdir
-                    try {
-                        fs.rmdirSync(currentPath);
-                        console.log(`[TaskRunner] Removed current junction via rmdir`);
-                    } catch (e) {
-                        console.warn(`[TaskRunner] Could not remove current: ${e}`);
-                    }
-                }
+                fs.rmSync(currentPath, { recursive: true, force: true });
+                console.log(`[TaskRunner] Cleared legacy current/ folder`);
             } catch (err) {
                 console.warn(`[TaskRunner] Failed to clear current/ folder:`, err);
             }
         }
+
+        // NOTE: Do NOT delete .vibearchitect/missions/ subfolders here.
+        // Other parallel missions may be using them. Isolation is enforced
+        // by AgentTools filtering listFiles() to only show this task's folder.
     }
 
     /**
      * Archive mission artifacts to chats/<taskId>/ folder.
-     * Called on mission complete.
+     * Called on mission complete and on mission failure (to preserve artifacts).
      */
     private archiveMissionArtifacts(task: AgentTask): void {
         if (!task.worktreePath) {
@@ -765,39 +752,34 @@ Please complete the login in the browser window, then click **"I've Logged In"**
             return;
         }
 
-        const srcDir = path.join(task.worktreePath, '.vibearchitect');
+        // Prefer mission-specific subfolder, fall back to root .vibearchitect
+        const missionDir = task.missionFolder;
+        const rootDir = path.join(task.worktreePath, '.vibearchitect');
         const destDir = path.join(this.storageDir, 'chats', task.id);
 
         try {
             fs.mkdirSync(destDir, { recursive: true });
-            // Include prd.md in archive to preserve refinement output
             const files = ['task.md', 'implementation_plan.md', 'mission_summary.md', 'prd.md'];
             let archivedCount = 0;
 
-            for (const file of files) {
-                const src = path.join(srcDir, file);
-                if (fs.existsSync(src)) {
-                    fs.copyFileSync(src, path.join(destDir, file));
-                    archivedCount++;
+            // Archive from mission-specific subfolder first
+            if (missionDir && fs.existsSync(missionDir)) {
+                for (const file of files) {
+                    const src = path.join(missionDir, file);
+                    if (fs.existsSync(src)) {
+                        fs.copyFileSync(src, path.join(destDir, file));
+                        archivedCount++;
+                    }
                 }
             }
 
-            // Also check the 'current' folder for artifacts
-            const currentDir = path.join(srcDir, 'current');
-            if (fs.existsSync(currentDir)) {
-                try {
-                    const stats = fs.lstatSync(currentDir);
-                    const targetDir = stats.isSymbolicLink() ? fs.realpathSync(currentDir) : currentDir;
-                    for (const file of files) {
-                        const src = path.join(targetDir, file);
-                        const dest = path.join(destDir, file);
-                        if (fs.existsSync(src) && !fs.existsSync(dest)) {
-                            fs.copyFileSync(src, dest);
-                            archivedCount++;
-                        }
-                    }
-                } catch (e) {
-                    console.warn('[TaskRunner] Could not archive from current/', e);
+            // Also check root .vibearchitect for any files not found in mission subfolder
+            for (const file of files) {
+                const src = path.join(rootDir, file);
+                const dest = path.join(destDir, file);
+                if (fs.existsSync(src) && !fs.existsSync(dest)) {
+                    fs.copyFileSync(src, dest);
+                    archivedCount++;
                 }
             }
 
@@ -1077,28 +1059,22 @@ Please complete the login in the browser window, then click **"I've Logged In"**
         // Save PRD to .vibearchitect folder for persistence and AI access
         let prdRelativePath = '';
         if (task.worktreePath) {
-            const chatId = task.chatId || 'default';
-            const missionFolderManager = new MissionFolderManager(task.worktreePath);
-            const baseDir = missionFolderManager.getBaseDir();
+            // Save PRD to mission-specific subfolder (or create one if needed)
+            const missionDir = task.missionFolder || path.join(task.worktreePath, '.vibearchitect');
+            try {
+                fs.mkdirSync(missionDir, { recursive: true });
+            } catch { /* already exists */ }
 
-            // Get or create the mission folder for this chat
-            const missionFolder = missionFolderManager.getMissionFolder(chatId);
-
-            // Save PRD to the mission folder
-            const prdFilePath = path.join(missionFolder, 'prd.md');
+            const prdFilePath = path.join(missionDir, 'prd.md');
             try {
                 fs.writeFileSync(prdFilePath, prdContent, 'utf-8');
                 prdRelativePath = path.relative(task.worktreePath, prdFilePath).replace(/\\/g, '/');
                 console.log(`[TaskRunner] Saved PRD to ${prdFilePath}`);
                 task.logs.push(`> [System]: PRD saved to ${prdRelativePath}`);
 
-                // Update the current symlink to point to this mission folder
-                missionFolderManager.updateCurrentSymlink(missionFolder);
-                task.logs.push(`> [System]: Mission folder set to current: .vibearchitect/current/prd.md`);
-
-                // CRITICAL: Also save a copy directly to .vibearchitect/prd.md as backup
-                // This ensures the AI can find the PRD even if symlink fails
-                const backupPrdPath = path.join(baseDir, 'prd.md');
+                // Also save a copy directly to .vibearchitect/prd.md as backup
+                // This ensures the AI can find the PRD even if mission folder routing fails
+                const backupPrdPath = path.join(task.worktreePath, '.vibearchitect', 'prd.md');
                 fs.writeFileSync(backupPrdPath, prdContent, 'utf-8');
                 console.log(`[TaskRunner] Also saved backup PRD to ${backupPrdPath}`);
 
@@ -1675,6 +1651,16 @@ ${contextData}
 
             task.worktreePath = workspaceRoot; // Ensure it is set
 
+            // Create mission-specific artifact subfolder for parallel isolation
+            const missionArtifactsDir = path.join(workspaceRoot, '.vibearchitect', 'missions', taskId);
+            try {
+                fs.mkdirSync(missionArtifactsDir, { recursive: true });
+                task.missionFolder = missionArtifactsDir;
+                console.log(`[TaskRunner] Created mission artifact folder: .vibearchitect/missions/${taskId}`);
+            } catch (err) {
+                console.warn(`[TaskRunner] Could not create mission folder, falling back to root:`, err);
+            }
+
             // Clean up stale artifacts from previous missions to prevent session bleeding
             // CRITICAL: Skip cleanup if this task is transitioning from refinement mode
             // because we just saved the PRD and don't want to delete it!
@@ -1683,7 +1669,7 @@ ${contextData}
                 console.log(`[TaskRunner] Skipping artifact cleanup - task came from refinement mode, PRD must be preserved`);
                 delete (task as any)._fromRefinement; // Clear the flag
             } else {
-                this.clearWorkspaceArtifacts(workspaceRoot);
+                this.clearWorkspaceArtifacts(workspaceRoot, task.missionFolder);
                 this.clearCurrentArtifacts();
             }
 
@@ -2044,7 +2030,8 @@ ${contextData}
                     this.requestLoginCheckpoint(checkpointTaskId, loginUrl, ssoProvider),
                 taskDisplayName, // Task name for terminal display
                 this._globalAgentMode, // Agent mode for plan-first enforcement
-                taskContext.ruleEnforcer // Constitution rule enforcement
+                taskContext.ruleEnforcer, // Constitution rule enforcement
+                task.missionFolder // Mission-scoped artifact subfolder
             );
 
             // Step 3: Start Gemini Session
@@ -2060,6 +2047,13 @@ ${contextData}
             - write_file(path, content): Write file content (auto-creates dirs). Use for NEW files only.
                                           CRITICAL: ALL non-code/temporary files (notes, poems, plans) MUST go into .vibearchitect/ folder.
                                           NEVER create .txt/.md files at workspace root unless explicitly asked for documentation.
+${task.missionFolder ? `
+            === MISSION ARTIFACTS (ISOLATION) ===
+            Your mission artifacts folder is: .vibearchitect/missions/${taskId}/
+            ⚠️ NEVER browse or read artifacts from other mission folders in .vibearchitect/missions/.
+            Only access YOUR folder: .vibearchitect/missions/${taskId}/
+            The system will transparently route your .vibearchitect/ artifact reads/writes there.
+` : ''}
             - apply_diff(path, diff): Apply SEARCH/REPLACE diff to modify existing files. PREFERRED for edits.
             - list_files(path): List directory.
             - run_command(command): Execute shell command (git, npm, etc).
@@ -2850,6 +2844,25 @@ ${contextData}
                     continue;
 
                 } else {
+                    // Check if the AI returned an error rather than a conversational response
+                    const isErrorResponse = text.startsWith('Error:') ||
+                        text.includes('API Error') ||
+                        text.includes('access denied') ||
+                        text.includes('Copilot Response Filtered') ||
+                        text.includes('not initialized') ||
+                        text.includes('model not found') ||
+                        text.includes('service unavailable') ||
+                        text.includes('rate limit');
+
+                    if (isErrorResponse) {
+                        // This is an API/service error, NOT a question awaiting user input
+                        task.logs.push(`\n> [!CAUTION]\n> **AI API Error**: ${text.substring(0, 300)}`);
+                        this.updateStatus(taskId, 'failed', task.progress, `AI Error: ${text.substring(0, 100)}`);
+                        this._onTaskUpdate.fire({ taskId, task });
+                        this.saveTask(task);
+                        break;
+                    }
+
                     if (!text.includes("MISSION COMPLETE")) {
                         // If the model provides a text response without tools, it's likely asking for input or explaining something.
                         // However, if we have pending user messages, we should continue processing them immediately.
@@ -2930,7 +2943,13 @@ ${contextData}
                 let summaryText = '';
 
                 if (task.worktreePath) {
-                    const summaryPath = path.join(task.worktreePath, '.vibearchitect', 'mission_summary.md');
+                    // Check mission-specific subfolder first, fall back to root
+                    const missionDir = task.missionFolder || path.join(task.worktreePath, '.vibearchitect');
+                    let summaryPath = path.join(missionDir, 'mission_summary.md');
+                    if (!fs.existsSync(summaryPath)) {
+                        // Fall back to root .vibearchitect
+                        summaryPath = path.join(task.worktreePath, '.vibearchitect', 'mission_summary.md');
+                    }
                     if (fs.existsSync(summaryPath)) {
                         try {
                             summaryText = fs.readFileSync(summaryPath, 'utf-8');
@@ -2981,7 +3000,7 @@ ${contextData}
                 // ========================================
                 this.archiveMissionArtifacts(task);
                 if (task.worktreePath) {
-                    this.clearWorkspaceArtifacts(task.worktreePath);
+                    this.clearWorkspaceArtifacts(task.worktreePath, task.missionFolder);
                 }
                 this.clearCurrentArtifacts();
 
@@ -3080,20 +3099,22 @@ ${contextData}
 
             } else {
 
-                // Did we stop because of user input?
-                // If the last thing was "Proceed", likely user input or just a break?
-                // Actually, I set currentPrompt="Proceed." in line 450.
-
-                // If currentPrompt is "Proceed." and NOT complete...
-                // Actually, I set currentPrompt="Proceed." in line 450.
-
-                if (currentPrompt === "Proceed.") {
+                // Guard: don't overwrite status if already marked failed (e.g., API error detection at L2863)
+                if (task.status === 'failed') {
+                    // Already handled by error detection — preserve status
+                    // Archive artifacts for failed missions so they're preserved in chats/<taskId>/
+                    // but do NOT clear .vibearchitect/ — user may resume via replyToTask
+                    console.log('[TaskRunner] Task already marked as failed, preserving status and archiving artifacts');
+                    this.archiveMissionArtifacts(task);
+                } else if (currentPrompt === "Proceed.") {
                     // Paused for user interaction (implicit or explicit)
                     this.updateStatus(taskId, 'completed', task.progress, 'Waiting for user input...');
                 } else {
                     // TIMEOUT (Loop finished without setting currentPrompt="Proceed." and without Mission Complete)
                     this.updateStatus(taskId, 'failed', 100, 'Task paused (Max turns reached). Ask agent to continue.');
                     task.logs.push(`\n> [System]: **Maximum turns reached.** The agent has paused to prevent infinite loops. You can reply "Continue" to resume.`);
+                    // Archive artifacts for max-turns failures too
+                    this.archiveMissionArtifacts(task);
                 }
             }
 
@@ -3279,7 +3300,7 @@ ${contextData}
                     const hasPrdFromRefinement = task.prompt.includes('## Approved Product Requirement Document (PRD)');
                     if (isNewMission && !hasPrdFromRefinement) {
                         task.logs.push(`> [System]: New mission detected - clearing old artifacts to prevent context bleeding.`);
-                        this.clearWorkspaceArtifacts(worktreePath);
+                        this.clearWorkspaceArtifacts(worktreePath, task.missionFolder);
                         this.clearCurrentArtifacts();
                     } else if (isNewMission && hasPrdFromRefinement) {
                         task.logs.push(`> [System]: New mission detected but PRD from refinement is active - preserving artifacts.`);
@@ -3463,6 +3484,18 @@ ${contextData}
                     const replyTaskContext = this.taskContexts.get(taskId);
                     const replyActiveCopilotClient = replyTaskContext?.copilotClaude || replyTaskContext?.copilotGPT || replyTaskContext?.copilotGemini;
 
+                    // FIX: Ensure mission folder is set (for resumed tasks or legacy tasks)
+                    if (worktreePath && !task.missionFolder) {
+                        const missionDir = path.join(worktreePath, '.vibearchitect', 'missions', taskId);
+                        try {
+                            fs.mkdirSync(missionDir, { recursive: true });
+                            task.missionFolder = missionDir;
+                            console.log(`[TaskRunner] (Resume) Initialized mission folder: ${missionDir}`);
+                        } catch (e) {
+                            console.warn(`[TaskRunner] Failed to init mission folder:`, e);
+                        }
+                    }
+
                     const tools = new AgentTools(
                         worktreePath,
                         terminalManager,
@@ -3476,7 +3509,10 @@ ${contextData}
                         // Login checkpoint callback - shows "I've Logged In" button in UI
                         (checkpointTaskId: string, loginUrl: string, ssoProvider?: string) =>
                             this.requestLoginCheckpoint(checkpointTaskId, loginUrl, ssoProvider),
-                        taskDisplayName // Task name for terminal display
+                        taskDisplayName, // Task name for terminal display
+                        undefined, // agentMode (use default for reply)
+                        undefined, // ruleEnforcer
+                        task.missionFolder // Mission-scoped artifact subfolder
                     );
                     this.runExecutionLoop(taskId, session, tools);
                 } else {

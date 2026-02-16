@@ -36,7 +36,8 @@ export class AgentTools {
         private readonly loginCheckpointCallback?: LoginCheckpointCallback,
         taskName?: string,
         private readonly agentMode: 'auto' | 'review-enabled' = 'auto',
-        private readonly ruleEnforcer?: RuleEnforcer
+        private readonly ruleEnforcer?: RuleEnforcer,
+        private readonly missionFolder?: string  // Mission-scoped artifact subfolder
     ) {
         // Derive workspace name from path
         this.workspaceName = worktreeRoot.split(/[\\/]/).pop() || worktreeRoot;
@@ -58,6 +59,10 @@ export class AgentTools {
         if (this.taskId && this.terminalManager) {
             this.terminalManager.getTerminalForTask(this.taskId, this.taskName, this.workspaceName);
         }
+
+        if (this.missionFolder) {
+            console.log(`[AgentTools] Mission folder routing active: ${this.missionFolder}`);
+        }
     }
 
 
@@ -70,12 +75,52 @@ export class AgentTools {
     }
 
     /**
+     * Transparently reroute .vibearchitect artifact paths to mission-scoped subfolder.
+     * AI writes to '.vibearchitect/task.md' but this resolves to '.vibearchitect/missions/<taskId>/task.md'.
+     * Constitution.md stays at root (workspace-wide artifact).
+     */
+    private resolveMissionPath(relativePath: string): string {
+        if (!this.missionFolder) {
+            return relativePath;
+        }
+
+        const normalized = relativePath.replace(/\\/g, '/');
+        // Mission-scoped artifact files that should be rerouted
+        const missionArtifacts = ['task.md', 'implementation_plan.md', 'mission_summary.md', 'prd.md'];
+
+        for (const artifact of missionArtifacts) {
+            const artifactPath = `.vibearchitect/${artifact}`;
+            // Robust matching: exact match or ending with /artifactPath (handles ./ or /)
+            if (normalized === artifactPath || normalized.endsWith('/' + artifactPath)) {
+                // Compute relative path from worktreeRoot to missionFolder
+                const relMissionFolder = path.relative(this.worktreeRoot, this.missionFolder);
+                const rerouted = path.join(relMissionFolder, artifact).replace(/\\/g, '/');
+                console.log(`[AgentTools] Rerouting artifact: ${relativePath} → ${rerouted}`);
+                return rerouted;
+            }
+        }
+
+        // Also handle .vibearchitect/current/ legacy paths
+        if (normalized.startsWith('.vibearchitect/current/')) {
+            const filename = normalized.substring('.vibearchitect/current/'.length);
+            if (missionArtifacts.includes(filename)) {
+                const relMissionFolder = path.relative(this.worktreeRoot, this.missionFolder);
+                const rerouted = path.join(relMissionFolder, filename).replace(/\\/g, '/');
+                console.log(`[AgentTools] Rerouting legacy current/ artifact: ${relativePath} → ${rerouted}`);
+                return rerouted;
+            }
+        }
+
+        return relativePath;
+    }
+
+    /**
      * Check if plan files exist in .vibearchitect folder.
      * Used by plan-first guard in review-enabled mode.
      */
     private async planFilesExist(): Promise<{ taskExists: boolean, planExists: boolean }> {
-        const taskPath = '.vibearchitect/task.md';
-        const planPath = '.vibearchitect/implementation_plan.md';
+        const taskPath = this.resolveMissionPath('.vibearchitect/task.md');
+        const planPath = this.resolveMissionPath('.vibearchitect/implementation_plan.md');
 
         let taskExists = false;
         let planExists = false;
@@ -103,12 +148,17 @@ export class AgentTools {
     private isPlanFile(relativePath: string): boolean {
         const normalized = relativePath.replace(/\\/g, '/');
         return normalized.includes('.vibearchitect/task.md') ||
-            normalized.includes('.vibearchitect/implementation_plan.md');
+            normalized.includes('.vibearchitect/implementation_plan.md') ||
+            normalized.includes('.vibearchitect/missions/') && (
+                normalized.endsWith('/task.md') ||
+                normalized.endsWith('/implementation_plan.md')
+            );
     }
 
     async readFile(relativePath: string): Promise<string> {
         try {
-            const fileUri = this.getUri(relativePath);
+            const resolvedPath = this.resolveMissionPath(relativePath);
+            const fileUri = this.getUri(resolvedPath);
             const uint8Array = await vscode.workspace.fs.readFile(fileUri);
             return new TextDecoder().decode(uint8Array);
         } catch (error: any) {
@@ -168,7 +218,8 @@ Fix the violations and try again. These rules are defined in .vibearchitect/cons
                 }
             }
 
-            const fileUri = this.getUri(relativePath);
+            const resolvedPath = this.resolveMissionPath(relativePath);
+            const fileUri = this.getUri(resolvedPath);
             const absolutePath = fileUri.fsPath;
 
             // ==================== SECURITY CHECKS ====================
@@ -684,7 +735,22 @@ TIP: You can add line hints for faster matching:
         try {
             const dirUri = this.getUri(relativePath);
             const entries = await vscode.workspace.fs.readDirectory(dirUri);
-            const formatted = entries.map(([name, type]) => {
+
+            // CRITICAL: Filter out other missions' folders for parallel isolation.
+            // When listing '.vibearchitect/missions/', only show THIS task's folder.
+            const normalized = relativePath.replace(/\\/g, '/');
+            const isMissionsDir = normalized === '.vibearchitect/missions' ||
+                normalized === '.vibearchitect/missions/';
+
+            const filtered = entries.filter(([name, type]) => {
+                if (isMissionsDir && this.taskId && type === vscode.FileType.Directory) {
+                    // Only show this task's own mission folder
+                    return name === this.taskId;
+                }
+                return true;
+            });
+
+            const formatted = filtered.map(([name, type]) => {
                 const typeName = type === vscode.FileType.Directory ? 'DIR' : 'FILE';
                 return `${typeName}\t${name}`;
             }).join('\n');
