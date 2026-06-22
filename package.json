@@ -2,7 +2,7 @@
     "name": "vibearchitect",
     "displayName": "VibeArchitect Agent Manager",
     "description": "Manage autonomous AI agents that complete coding missions end-to-end. Assign tasks, agents execute autonomously, you review results. Features Mission Control dashboard, multi-model support (Claude, GPT-5, Gemini), and automated browser testing.",
-    "publisher": "deere-parts",
+    "publisher": "anuragdwivedi",
     "icon": "media/logo.png",
     "repository": {
         "type": "git",
