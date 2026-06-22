@@ -330,12 +330,26 @@ function parseLogs(
                 status: shouldBeRunning ? 'running' : 'completed'
             };
         }
-        // Refinement State/System Messages (e.g., > [Refinement]:)
-        else if (log.startsWith('> [Refinement]') || log.startsWith('> [Context]:') || log.includes('[Refinement]')) {
-            // These are system/debug logs - append to system group, don't create step bubbles
+        // Refinement Discovery Progress (e.g., > [Refinement]: 🔍 Exploring codebase...)
+        // Show these inline in the current step card so users see live exploration status
+        else if (log.startsWith('> [Refinement]:')) {
+            const progressText = log.replace(/^> \[Refinement\]:\s*/, '').trim();
+            if (currentStep && progressText) {
+                // Replace (not append) so only the latest progress line shows
+                currentStep.markdown = progressText;
+            } else {
+                // No active step yet - fall through to system group
+                if (!systemGroup) {
+                    systemGroup = { type: 'system', content: 'Refinement Mode', details: [] };
+                }
+                systemGroup.details?.push(log);
+            }
+        }
+        // Other Refinement/Context/System messages — collapse into system group
+        else if (log.startsWith('> [Context]:') || log.includes('[Refinement]') || log.startsWith('> [System]:')) {
             commitStep();
             if (!systemGroup) {
-                systemGroup = { type: 'system', content: 'Refinement Mode', details: [] };
+                systemGroup = { type: 'system', content: 'System', details: [] };
             }
             systemGroup.details?.push(log);
         }
@@ -441,7 +455,7 @@ function App() {
 
     // Pending Approval State (for Review Enabled mode, Refinement Mode, and Login Checkpoints)
     const [pendingApproval, setPendingApproval] = useState<{
-        type: 'plan' | 'command' | 'prd' | 'login-checkpoint';
+        type: 'plan' | 'command' | 'prd' | 'login-checkpoint' | 'turn-limit';
         content: string;
         taskId: string;
         riskReason?: string;
@@ -458,6 +472,7 @@ function App() {
 
     // Context Pane Tab Navigation (for switching between multiple open items)
     const [contextPaneIndex, setContextPaneIndex] = useState(0);
+    const [pendingFocusId, setPendingFocusId] = useState<string | null>(null);
 
     // Review Comment State (ephemeral - for current session)
     const [reviewComment, setReviewComment] = useState('');
@@ -493,6 +508,22 @@ function App() {
     // Browser Setup & Session Manager State
     const [showBrowserSetup, setShowBrowserSetup] = useState(false);
     const [showSessionManager, setShowSessionManager] = useState(false);
+
+    // Context Menu State (for right-click on workspaces/missions)
+    const [contextMenu, setContextMenu] = useState<{
+        x: number;
+        y: number;
+        type: 'workspace' | 'mission';
+        targetId: string;
+        targetName: string;
+    } | null>(null);
+
+    // Confirmation Modal State
+    const [confirmModal, setConfirmModal] = useState<{
+        title: string;
+        message: string;
+        onConfirm: () => void;
+    } | null>(null);
 
     // Auto-scroll logic - Smart scroll that respects user's scroll position
     const logsEndRef = useRef<HTMLDivElement>(null);
@@ -541,6 +572,7 @@ function App() {
                     }
                     return [...prev, { path: message.path, content: message.content }];
                 });
+                setPendingFocusId('preview-' + message.path);
                 setRightPaneTab('context'); // Switch to context pane when file opened
             }
             if (message.command === 'contextSelected') {
@@ -568,6 +600,7 @@ function App() {
                     before: message.before,
                     after: message.after
                 });
+                setPendingFocusId('diff');
                 setRightPaneTab('context');
             }
             // Handle approval requests from backend (Review Enabled mode)
@@ -600,6 +633,14 @@ function App() {
             if (message.command === 'loginCheckpoint') {
                 setPendingApproval({
                     type: 'login-checkpoint',
+                    content: message.content,
+                    taskId: message.taskId
+                });
+            }
+            // Handle turn limit reached
+            if (message.command === 'turnLimitReached') {
+                setPendingApproval({
+                    type: 'turn-limit',
                     content: message.content,
                     taskId: message.taskId
                 });
@@ -667,6 +708,17 @@ function App() {
         vscode.postMessage({ command: 'getTasks' });
         return () => window.removeEventListener('message', messageHandler);
     }, [expandedAgentId]);
+
+    // Notify backend when workspace selection changes (triggers language server warm-up)
+    // Only send for real filesystem paths, not placeholder IDs like '1'
+    useEffect(() => {
+        if (selectedWorkspace && (selectedWorkspace.includes('/') || selectedWorkspace.includes('\\'))) {
+            vscode.postMessage({
+                command: 'workspaceSelected',
+                workspaceId: selectedWorkspace
+            });
+        }
+    }, [selectedWorkspace]);
 
     // Auto-scroll to bottom of logs - only if user is near bottom
     // Uses smooth scrolling with a slight delay for better UX
@@ -922,6 +974,25 @@ function App() {
         setPendingApproval(null);
     };
 
+    // Turn Limit Handlers
+    const handleConfirmTurnLimit = () => {
+        if (!pendingApproval) return;
+        vscode.postMessage({
+            command: 'confirmTurnLimit',
+            taskId: pendingApproval.taskId
+        });
+        setPendingApproval(null);
+    };
+
+    const handleCancelTurnLimit = () => {
+        if (!pendingApproval) return;
+        vscode.postMessage({
+            command: 'cancelTurnLimit',
+            taskId: pendingApproval.taskId
+        });
+        setPendingApproval(null);
+    };
+
     // Questionnaire Handlers
     const handleQuestionnaireSubmit = (taskId: string, sessionId: string, responses: any[]) => {
         vscode.postMessage({
@@ -1105,6 +1176,31 @@ function App() {
                 </div>
             )}
 
+            {/* Turn Limit Confirmation Modal */}
+            {pendingApproval && pendingApproval.type === 'turn-limit' && (
+                <div className="modal-overlay">
+                    <div className="login-checkpoint-modal">
+                        <div className="modal-header">
+                            <span className="modal-icon">⏸</span>
+                            <h3>Mission Running Long</h3>
+                        </div>
+                        <div className="modal-body">
+                            <div className="login-instructions">
+                                <ReactMarkdown>{pendingApproval.content}</ReactMarkdown>
+                            </div>
+                        </div>
+                        <div className="modal-actions">
+                            <button className="cancel-btn" onClick={handleCancelTurnLimit}>
+                                ✕ Stop Mission
+                            </button>
+                            <button className="login-confirm-btn" onClick={handleConfirmTurnLimit}>
+                                ✓ Continue Mission
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Constitution Review Modal */}
             {constitutionReview && (
                 <ConstitutionReviewModal
@@ -1172,9 +1268,9 @@ function App() {
             <ResizableLayout
                 left={
                     /* LEFT PANE: WORKSPACE & MISSIONS */
-                    <aside className="pane-sidebar">
+                    <aside className="pane-sidebar" onClick={() => setContextMenu(null)}>
                         <div className="pane-header">
-                            <span className="title">VIBEARCHITECT v2.0.2</span>
+                            <span className="title">VIBEARCHITECT V{document.getElementById('root')?.getAttribute('data-extension-version') || '?'}</span>
                             <div className="header-tools">
                                 <button
                                     className="icon-btn-small"
@@ -1218,7 +1314,12 @@ function App() {
                                     // Actually, we show all known workspaces for structure
                                     return (
                                         <div key={ws.id} className="workspace-group">
-                                            <div className="workspace-header" onClick={() => setSelectedWorkspace(ws.id)}>
+                                            <div className="workspace-header" onClick={() => setSelectedWorkspace(ws.id)}
+                                                onContextMenu={(e) => {
+                                                    e.preventDefault();
+                                                    e.stopPropagation();
+                                                    setContextMenu({ x: e.clientX, y: e.clientY, type: 'workspace', targetId: ws.id, targetName: ws.name });
+                                                }}>
                                                 <div className="workspace-info">
                                                     <span className="workspace-icon">📂</span>
                                                     <span className="workspace-name">{ws.name}</span>
@@ -1241,6 +1342,11 @@ function App() {
                                                             onClick={() => {
                                                                 setExpandedAgentId(agent.id);
                                                                 if (agent.worktreePath) setSelectedWorkspace(agent.worktreePath);
+                                                            }}
+                                                            onContextMenu={(e) => {
+                                                                e.preventDefault();
+                                                                e.stopPropagation();
+                                                                setContextMenu({ x: e.clientX, y: e.clientY, type: 'mission', targetId: agent.id, targetName: (agent.displayPrompt || agent.prompt).substring(0, 40) });
                                                             }}>
                                                             <div className="mission-title">{(agent.displayPrompt || agent.prompt).substring(0, 30)}...</div>
                                                             <div className="mission-status">{agent.status}</div>
@@ -1274,7 +1380,11 @@ function App() {
                                                             className={`mission-item ${expandedAgentId === agent.id ? 'active' : ''}`}
                                                             onClick={() => {
                                                                 setExpandedAgentId(agent.id);
-                                                                // Don't switch workspace blindly if it's unknown
+                                                            }}
+                                                            onContextMenu={(e) => {
+                                                                e.preventDefault();
+                                                                e.stopPropagation();
+                                                                setContextMenu({ x: e.clientX, y: e.clientY, type: 'mission', targetId: agent.id, targetName: (agent.displayPrompt || agent.prompt).substring(0, 40) });
                                                             }}>
                                                             <div className="mission-title">{(agent.displayPrompt || agent.prompt).substring(0, 30)}...</div>
                                                             <div className="mission-status">{agent.status}</div>
@@ -2088,9 +2198,9 @@ function App() {
                                 }
 
                                 // Add all preview files to context items
-                                previewFiles.forEach((file, idx) => {
+                                previewFiles.forEach((file) => {
                                     contextItems.push({
-                                        id: `preview-${idx}`,
+                                        id: `preview-${file.path}`,
                                         render: () => (
                                             <div className="file-preview">
                                                 <div className="preview-header">
@@ -2111,8 +2221,23 @@ function App() {
                                     });
                                 });
 
+                                // Auto-focus newly added context item
+                                if (pendingFocusId) {
+                                    const targetIdx = contextItems.findIndex(item => item.id === pendingFocusId);
+                                    if (targetIdx >= 0) {
+                                        setTimeout(() => {
+                                            setContextPaneIndex(targetIdx);
+                                            setPendingFocusId(null);
+                                        }, 0);
+                                    } else {
+                                        setTimeout(() => setPendingFocusId(null), 0);
+                                    }
+                                }
+
                                 // Clamp index to valid range
-                                const safeIndex = Math.max(0, Math.min(contextPaneIndex, contextItems.length - 1));
+                                const safeIndex = pendingFocusId
+                                    ? Math.max(0, Math.min(contextItems.findIndex(item => item.id === pendingFocusId), contextItems.length - 1))
+                                    : Math.max(0, Math.min(contextPaneIndex, contextItems.length - 1));
                                 if (safeIndex !== contextPaneIndex && contextItems.length > 0) {
                                     // Reset index if it's out of bounds (item was removed)
                                     setTimeout(() => setContextPaneIndex(safeIndex), 0);
@@ -2129,30 +2254,53 @@ function App() {
                                     );
                                 }
 
+                                // Helper to derive a display name from a context item ID
+                                const getItemDisplayName = (id: string): string => {
+                                    if (id === 'questionnaire') return '📝 Questionnaire';
+                                    if (id === 'plan') return '📋 Implementation Plan';
+                                    if (id === 'prd') return '📝 PRD Review';
+                                    if (id === 'diff') return '🔀 Diff Viewer';
+                                    if (id.startsWith('preview-')) {
+                                        const filePath = id.replace('preview-', '');
+                                        return filePath.split(/[\\/]/).pop() || filePath;
+                                    }
+                                    return id;
+                                };
+
                                 return (
                                     <div className="context-list">
-                                        {/* Navigation bar when multiple items */}
-                                        {contextItems.length > 1 && (
-                                            <div className="context-nav-bar">
-                                                <button
-                                                    className="context-nav-btn"
-                                                    onClick={() => setContextPaneIndex(prev => Math.max(0, prev - 1))}
-                                                    disabled={safeIndex === 0}
-                                                >
-                                                    &lt;
-                                                </button>
-                                                <span className="context-nav-indicator">
-                                                    {safeIndex + 1} / {contextItems.length}
-                                                </span>
-                                                <button
-                                                    className="context-nav-btn"
-                                                    onClick={() => setContextPaneIndex(prev => Math.min(contextItems.length - 1, prev + 1))}
-                                                    disabled={safeIndex === contextItems.length - 1}
-                                                >
-                                                    &gt;
-                                                </button>
-                                            </div>
-                                        )}
+                                        {/* Artifact selector header */}
+                                        <div className="artifact-selector">
+                                            <div className="artifact-header">ARTIFACTS</div>
+                                            {contextItems.length > 1 ? (
+                                                <details className="artifact-dropdown">
+                                                    <summary className="artifact-current">
+                                                        <span className="artifact-current-name">{getItemDisplayName(contextItems[safeIndex].id)}</span>
+                                                        <span className="artifact-count">{safeIndex + 1}/{contextItems.length}</span>
+                                                    </summary>
+                                                    <ul className="artifact-list">
+                                                        {contextItems.map((item, i) => (
+                                                            <li
+                                                                key={item.id}
+                                                                className={`artifact-list-item${i === safeIndex ? ' active' : ''}`}
+                                                                onClick={(e) => {
+                                                                    setContextPaneIndex(i);
+                                                                    // Collapse the dropdown
+                                                                    const details = (e.currentTarget.closest('details') as HTMLDetailsElement);
+                                                                    if (details) details.open = false;
+                                                                }}
+                                                            >
+                                                                {getItemDisplayName(item.id)}
+                                                            </li>
+                                                        ))}
+                                                    </ul>
+                                                </details>
+                                            ) : (
+                                                <div className="artifact-current artifact-single">
+                                                    <span className="artifact-current-name">{getItemDisplayName(contextItems[safeIndex].id)}</span>
+                                                </div>
+                                            )}
+                                        </div>
                                         {/* Render current item */}
                                         {contextItems[safeIndex].render()}
                                     </div>
@@ -2164,6 +2312,71 @@ function App() {
                     </aside >
                 }
             />
+
+            {/* Right-click Context Menu */}
+            {contextMenu && (
+                <div
+                    className="ctx-menu-overlay"
+                    onClick={() => setContextMenu(null)}
+                    onContextMenu={(e) => { e.preventDefault(); setContextMenu(null); }}
+                >
+                    <div className="ctx-menu" style={{ top: contextMenu.y, left: contextMenu.x }} onClick={(e) => e.stopPropagation()}>
+                        <div
+                            className="ctx-menu-item danger"
+                            onClick={() => {
+                                const { type, targetId, targetName } = contextMenu;
+                                setContextMenu(null);
+                                setConfirmModal({
+                                    title: type === 'workspace' ? 'Delete Workspace' : 'Delete Mission',
+                                    message: type === 'workspace'
+                                        ? `Remove workspace "${targetName}" from VibeArchitect? This will not delete any files on disk.`
+                                        : `Delete mission "${targetName}"? This will remove it from the mission list.`,
+                                    onConfirm: () => {
+                                        if (type === 'workspace') {
+                                            vscode.postMessage({ command: 'deleteWorkspace', workspaceId: targetId });
+                                            // Remove all missions belonging to this workspace
+                                            const wsPath = targetId.toLowerCase().replace(/\\/g, '/');
+                                            setDynamicAgents(prev => prev.filter(a => {
+                                                if (!a.worktreePath) return true;
+                                                const agentPath = a.worktreePath.toLowerCase().replace(/\\/g, '/');
+                                                return agentPath !== wsPath && !agentPath.startsWith(wsPath + '/');
+                                            }));
+                                            if (expandedAgentId) {
+                                                const active = dynamicAgents.find(a => a.id === expandedAgentId);
+                                                if (active?.worktreePath) {
+                                                    const ap = active.worktreePath.toLowerCase().replace(/\\/g, '/');
+                                                    if (ap === wsPath || ap.startsWith(wsPath + '/')) setExpandedAgentId(null);
+                                                }
+                                            }
+                                        } else {
+                                            vscode.postMessage({ command: 'deleteMission', taskId: targetId });
+                                            setDynamicAgents(prev => prev.filter(a => a.id !== targetId));
+                                            if (expandedAgentId === targetId) setExpandedAgentId(null);
+                                        }
+                                        setConfirmModal(null);
+                                    }
+                                });
+                            }}
+                        >
+                            🗑 Delete {contextMenu.type === 'workspace' ? 'Workspace' : 'Mission'}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Confirmation Modal */}
+            {confirmModal && (
+                <div className="confirm-modal-overlay" onClick={() => setConfirmModal(null)}>
+                    <div className="confirm-modal" onClick={(e) => e.stopPropagation()}>
+                        <div className="confirm-modal-title">{confirmModal.title}</div>
+                        <div className="confirm-modal-message">{confirmModal.message}</div>
+                        <div className="confirm-modal-actions">
+                            <button className="confirm-modal-btn cancel" onClick={() => setConfirmModal(null)}>Cancel</button>
+                            <button className="confirm-modal-btn delete" onClick={confirmModal.onConfirm}>Delete</button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div >
     );
 }

@@ -19,6 +19,7 @@ export * from './RefinementTypes';
 export * from './RefinementPrompts';
 export { RefinementSession } from './RefinementSession';
 export { RefinementManager, getRefinementManager } from './RefinementManager';
+export { RefinementCheckpointManager } from './RefinementCheckpointManager';
 export { skeletonizeFile, skeletonizeFiles, skeletonizeDirectory } from './ContextSkeletonizer';
 export { RefinementTokenManager, createTokenAwareSkeleton } from './RefinementTokenManager';
 export { 

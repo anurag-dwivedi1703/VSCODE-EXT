@@ -35,6 +35,8 @@ export interface SearchOptions {
     caseSensitive?: boolean;
     /** Use regex pattern (default: false) */
     isRegex?: boolean;
+    /** Root directory to scope search to (uses RelativePattern) */
+    rootPath?: string;
 }
 
 export class FileSearch {
@@ -75,8 +77,11 @@ export class FileSearch {
             return [];
         }
 
-        // Find files to search
-        const files = await vscode.workspace.findFiles(include, exclude, maxFiles);
+        // Find files to search — scope to rootPath if provided
+        const includePattern = options.rootPath
+            ? new vscode.RelativePattern(vscode.Uri.file(options.rootPath), include)
+            : include;
+        const files = await vscode.workspace.findFiles(includePattern, exclude, maxFiles);
 
         // Search each file
         for (const file of files) {

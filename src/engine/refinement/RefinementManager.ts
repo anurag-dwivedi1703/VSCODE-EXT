@@ -11,8 +11,8 @@
 
 import * as vscode from 'vscode';
 import { RefinementSession } from './RefinementSession';
-import { RefinementArtifact, RefinementEvent, RefinementState } from './RefinementTypes';
-import { getPersonaPrompt, formatConstitutionForRefinement } from './RefinementPrompts';
+import { RefinementArtifact, RefinementEvent, RefinementState, DiscoveryExecutor, RefinementToolExecutor } from './RefinementTypes';
+import { getPersonaPrompt, formatConstitutionForRefinement, GPT_ANALYST_ENHANCEMENT, getDiscoveryInstructions } from './RefinementPrompts';
 import { GeminiClient, ISession } from '../../ai/GeminiClient';
 import { ClaudeClient } from '../../ai/ClaudeClient';
 import { CopilotClaudeClient } from '../../ai/CopilotClaudeClient';
@@ -20,6 +20,9 @@ import { CopilotGPTClient } from '../../ai/CopilotGPTClient';
 import { CopilotGeminiClient } from '../../ai/CopilotGeminiClient';
 import { SmartContextBuilder, SmartContext } from './SmartContextBuilder';
 import { RefinementTokenManager } from './RefinementTokenManager';
+import { RefinementCheckpointManager } from './RefinementCheckpointManager';
+import { FEATURE_FLAGS } from '../../utils/FeatureFlags';
+import { getRefinementDiscoveryTools } from '../../ai/CopilotToolDefinitions';
 
 /**
  * AI Client type union for flexibility.
@@ -29,6 +32,7 @@ type AIClient = GeminiClient | ClaudeClient | CopilotClaudeClient | CopilotGPTCl
 export class RefinementManager {
     private _sessions: Map<string, RefinementSession> = new Map();
     private _aiClients: Map<string, AIClient> = new Map();
+    private _discoveryEnabled: Map<string, boolean> = new Map();
     private _smartContextBuilder: SmartContextBuilder;
 
     // Event forwarding from sessions
@@ -63,6 +67,7 @@ export class RefinementManager {
      * @param workspaceRoot The workspace root to search for files (REQUIRED)
      * @param modelId Optional model identifier for token budget calculation
      * @param constitution Optional workspace constitution content
+     * @param missionFolder Optional mission folder path for checkpoint persistence
      * @returns The session ID
      */
     public async startSessionWithSmartContext(
@@ -71,7 +76,10 @@ export class RefinementManager {
         aiClient: AIClient,
         workspaceRoot: string,
         modelId?: string,
-        constitution?: string
+        constitution?: string,
+        missionFolder?: string,
+        discoveryExecutor?: DiscoveryExecutor,
+        toolExecutor?: RefinementToolExecutor
     ): Promise<string> {
         // Validate workspace root
         if (!workspaceRoot) {
@@ -81,8 +89,33 @@ export class RefinementManager {
         // Detect model ID from client if not provided
         const effectiveModelId = modelId || this.detectModelId(aiClient);
         
+        // Extract dynamic token limits from Copilot clients (if available)
+        const apiMaxInput = this.extractMaxInputTokens(aiClient);
+
+        // Check if discovery tools are enabled — if so, skip expensive SmartContext
+        const discoveryToolsEnabled = FEATURE_FLAGS.USE_REFINEMENT_DISCOVERY &&
+                                       FEATURE_FLAGS.USE_DISCOVERY_SUB_AGENTS &&
+                                       !!discoveryExecutor;
+
+        console.log(`[RefinementManager] Discovery check: flags=[DISCOVERY=${FEATURE_FLAGS.USE_REFINEMENT_DISCOVERY}, SUB_AGENTS=${FEATURE_FLAGS.USE_DISCOVERY_SUB_AGENTS}], hasExecutor=${!!discoveryExecutor}, hasToolExecutor=${!!toolExecutor}, result=${discoveryToolsEnabled}`);
+
+        if (discoveryToolsEnabled) {
+            // Agent has search tools — skip expensive SmartContext, provide minimal orientation
+            this._onEvent.fire({
+                type: 'progress', sessionId: taskId,
+                payload: 'Discovery tools enabled — agent will search codebase on-demand'
+            });
+
+            const minimalContext = await this.buildMinimalProjectContext(workspaceRoot);
+
+            console.log(`[RefinementManager] Using minimal project context (~${minimalContext.length} chars) instead of SmartContext`);
+
+            return this.startSession(taskId, userPrompt, aiClient, minimalContext,
+                modelId, constitution, missionFolder, discoveryExecutor, toolExecutor);
+        }
+
         // Calculate token budget for context based on model
-        const tokenManager = new RefinementTokenManager(effectiveModelId);
+        const tokenManager = new RefinementTokenManager(effectiveModelId, apiMaxInput);
         const tokenBudget = tokenManager.getAvailableTokensForStage('analyst');
         
         // Fire progress event for UI feedback
@@ -114,7 +147,7 @@ export class RefinementManager {
         });
         
         // Now start the session with the smart context and constitution
-        return this.startSession(taskId, userPrompt, aiClient, smartContext.content, modelId, constitution);
+        return this.startSession(taskId, userPrompt, aiClient, smartContext.content, modelId, constitution, missionFolder, discoveryExecutor, toolExecutor);
     }
 
     /**
@@ -125,6 +158,7 @@ export class RefinementManager {
      * @param skeletonContext The codebase skeleton context (or smart context)
      * @param modelId Optional model identifier for token budget calculation
      * @param constitution Optional workspace constitution content
+     * @param missionFolder Optional mission folder path for checkpoint persistence
      * @returns The session ID
      */
     public async startSession(
@@ -133,15 +167,21 @@ export class RefinementManager {
         aiClient: AIClient,
         skeletonContext: string,
         modelId?: string,
-        constitution?: string
+        constitution?: string,
+        missionFolder?: string,
+        discoveryExecutor?: DiscoveryExecutor,
+        toolExecutor?: RefinementToolExecutor
     ): Promise<string> {
         const sessionId = `refine-${taskId}-${Date.now()}`;
 
         // Detect model ID from client if not provided
         const effectiveModelId = modelId || this.detectModelId(aiClient);
 
+        // Extract dynamic token limits from Copilot clients (if available)
+        const apiMaxInput = this.extractMaxInputTokens(aiClient);
+
         // Create the session with model ID for token budget awareness
-        const session = new RefinementSession(sessionId, taskId, userPrompt, effectiveModelId);
+        const session = new RefinementSession(sessionId, taskId, userPrompt, effectiveModelId, apiMaxInput);
 
         // Subscribe to session events and forward them
         session.onEvent((event) => {
@@ -152,7 +192,7 @@ export class RefinementManager {
         // IMPORTANT: Pass false for includeToolInstructions to prevent AI from using tools in Refinement Mode
         // Inject constitution context into the system prompt if available
         const constitutionContext = formatConstitutionForRefinement(constitution);
-        const analystPrompt = constitutionContext 
+        let analystPrompt = constitutionContext 
             ? `${constitutionContext}\n\n${getPersonaPrompt('analyst')}`
             : getPersonaPrompt('analyst');
         
@@ -160,14 +200,53 @@ export class RefinementManager {
             console.log(`[RefinementManager] Injected constitution context into analyst prompt (${constitutionContext.length} chars)`);
         }
         
-        const aiSession = aiClient.startSession(analystPrompt, 'high', false);
+        // Apply GPT-specific prompt enhancement for GPT models
+        if (this.isGPTModel(aiClient)) {
+            analystPrompt += GPT_ANALYST_ENHANCEMENT;
+            console.log(`[RefinementManager] Applied GPT-specific prompt enhancement for better format compliance`);
+        }
+
+        const discoveryToolsEnabled = FEATURE_FLAGS.USE_REFINEMENT_DISCOVERY && 
+                                       FEATURE_FLAGS.USE_DISCOVERY_SUB_AGENTS && 
+                                       !!discoveryExecutor;
+
+        if (discoveryToolsEnabled) {
+            analystPrompt += getDiscoveryInstructions();
+        }
+
+        const aiSession = discoveryToolsEnabled
+            ? aiClient.startSession(analystPrompt, 'high', true, getRefinementDiscoveryTools())
+            : aiClient.startSession(analystPrompt, 'high', false);
         session.setAISession(aiSession);
 
         // Store the session and constitution for later persona switches
         this._sessions.set(sessionId, session);
         this._aiClients.set(sessionId, aiClient);
+        this._discoveryEnabled.set(sessionId, discoveryToolsEnabled);
         // Store constitution for use when switching to critic/refiner personas
         (session as any)._constitutionContext = constitutionContext;
+
+        // Provide a factory for creating stage-isolated sessions (used when flag is ON)
+        session.setSessionFactory((persona) => this.createStageSession(sessionId, persona));
+
+        // Enable discovery sub-agents if executor provided and flag is on
+        if (discoveryExecutor && FEATURE_FLAGS.USE_REFINEMENT_DISCOVERY) {
+            session.setDiscoveryExecutor(discoveryExecutor);
+            console.log(`[RefinementManager] Discovery sub-agents enabled for session ${sessionId}`);
+        }
+
+        // Enable lightweight tool executor if provided and flag is on
+        if (toolExecutor && FEATURE_FLAGS.USE_REFINEMENT_DISCOVERY) {
+            session.setToolExecutor(toolExecutor);
+            console.log(`[RefinementManager] Lightweight tools enabled for session ${sessionId}`);
+        }
+
+        // Initialize checkpoint manager for file-based state persistence
+        if (FEATURE_FLAGS.USE_STAGE_ISOLATED_SESSIONS && missionFolder) {
+            const checkpointMgr = new RefinementCheckpointManager(missionFolder, sessionId, taskId);
+            checkpointMgr.initCheckpoint(userPrompt, skeletonContext, constitutionContext || '');
+            session.setCheckpointManager(checkpointMgr);
+        }
 
         console.log(`[RefinementManager] Started session ${sessionId} for task ${taskId}`);
 
@@ -340,7 +419,63 @@ export class RefinementManager {
     private cleanupSession(sessionId: string): void {
         this._sessions.delete(sessionId);
         this._aiClients.delete(sessionId);
+        this._discoveryEnabled.delete(sessionId);
         console.log(`[RefinementManager] Cleaned up session ${sessionId}`);
+    }
+
+    /**
+     * Create a fresh ISession for a specific refinement stage.
+     * Each stage gets its own session with the correct persona system prompt,
+     * preventing cross-stage token accumulation.
+     */
+    private createStageSession(
+        sessionId: string,
+        persona: 'analyst' | 'critic' | 'refiner'
+    ): ISession {
+        const aiClient = this._aiClients.get(sessionId);
+        if (!aiClient) {
+            throw new Error(`No AI client for session: ${sessionId}`);
+        }
+
+        const session = this._sessions.get(sessionId);
+        const constitutionContext = (session as any)?._constitutionContext || '';
+
+        let systemPrompt = constitutionContext
+            ? `${constitutionContext}\n\n${getPersonaPrompt(persona)}`
+            : getPersonaPrompt(persona);
+
+        // Apply GPT enhancement for analyst on GPT models
+        if (persona === 'analyst' && this.isGPTModel(aiClient)) {
+            systemPrompt += GPT_ANALYST_ENHANCEMENT;
+        }
+
+        // Determine if this persona should get discovery tools
+        const discoveryEnabled = this._discoveryEnabled.get(sessionId) === true &&
+                                 (persona === 'analyst' || persona === 'refiner');
+
+        if (discoveryEnabled) {
+            systemPrompt += getDiscoveryInstructions();
+            return aiClient.startSession(systemPrompt, 'high', true, getRefinementDiscoveryTools());
+        } else {
+            return aiClient.startSession(systemPrompt, 'high', false);
+        }
+    }
+
+    /**
+     * Public wrapper for creating stage sessions (used by RefinementSession via factory).
+     */
+    public getStageSession(sessionId: string, persona: 'analyst' | 'critic' | 'refiner'): ISession {
+        return this.createStageSession(sessionId, persona);
+    }
+
+    /**
+     * Extract maxInputTokens from Copilot clients that expose getModelLimits().
+     */
+    private extractMaxInputTokens(client: AIClient): number | undefined {
+        if (client instanceof CopilotClaudeClient || client instanceof CopilotGPTClient || client instanceof CopilotGeminiClient) {
+            return client.getModelLimits().maxInputTokens;
+        }
+        return undefined;
     }
 
     /**
@@ -364,6 +499,67 @@ export class RefinementManager {
             return 'gemini-2.0-flash';
         }
         return 'default';
+    }
+
+    /**
+     * Check if the AI client is a GPT-based model.
+     * GPT models may need different prompt formatting than Claude/Gemini.
+     */
+    private isGPTModel(client: AIClient): boolean {
+        if (client instanceof CopilotGPTClient) {
+            return true;
+        }
+        // Also check if there's a modelId property that indicates GPT
+        const clientAny = client as any;
+        if (clientAny.modelId && typeof clientAny.modelId === 'string') {
+            const modelId = clientAny.modelId.toLowerCase();
+            return modelId.includes('gpt') || modelId.includes('o1') || modelId.includes('codex');
+        }
+        return false;
+    }
+
+    /**
+     * Build a minimal project context for discovery-enabled refinement sessions.
+     * Provides just enough orientation (~500 tokens) for the agent to start
+     * using search tools intelligently. Replaces the 21K+ token SmartContext.
+     */
+    private async buildMinimalProjectContext(workspaceRoot: string): Promise<string> {
+        const parts: string[] = [];
+        const path = await import('path');
+        const fs = await import('fs');
+
+        // 1. Project name
+        parts.push(`## Workspace: ${path.basename(workspaceRoot)}`);
+
+        // 2. package.json summary (if exists)
+        const pkgPath = path.join(workspaceRoot, 'package.json');
+        try {
+            if (fs.existsSync(pkgPath)) {
+                const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+                const deps = Object.keys(pkg.dependencies || {}).slice(0, 15).join(', ');
+                const devDeps = Object.keys(pkg.devDependencies || {}).slice(0, 10).join(', ');
+                parts.push(`**Project:** ${pkg.name || 'unknown'} — ${pkg.description || 'No description'}`);
+                if (deps) { parts.push(`**Dependencies:** ${deps}`); }
+                if (devDeps) { parts.push(`**Dev Dependencies:** ${devDeps}`); }
+            }
+        } catch { /* ignore parse errors */ }
+
+        // 3. Top-level directory listing
+        try {
+            const entries = fs.readdirSync(workspaceRoot, { withFileTypes: true });
+            const dirs = entries.filter((e: any) => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules')
+                .map((e: any) => e.name + '/').slice(0, 20);
+            const files = entries.filter((e: any) => e.isFile()).map((e: any) => e.name).slice(0, 15);
+            parts.push(`**Top-level directories:** ${dirs.join(', ')}`);
+            parts.push(`**Top-level files:** ${files.join(', ')}`);
+        } catch { /* ignore access errors */ }
+
+        // 4. Guidance
+        parts.push(`\nYou have grep_search, codebase_search, list_files, file_search, get_diagnostics, and spawn_analysis_agents tools available.`);
+        parts.push(`Use them to explore this codebase and understand it before drafting requirements.`);
+        parts.push(`Prefer codebase_search when exploring by concept (e.g., "authentication flow") and grep_search for exact text matches.`);
+
+        return parts.join('\n');
     }
 
     /**

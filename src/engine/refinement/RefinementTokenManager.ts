@@ -53,7 +53,7 @@ const RESPONSE_RESERVE_RATIO = 0.25;  // Reserve 25% for response
 
 // Maximum context sizes per refinement stage
 const STAGE_CONTEXT_LIMITS = {
-    analyst: 0.4,   // Analyst gets 40% of available tokens for context
+    analyst: 0.45,  // Analyst gets 45% of available tokens for context (increased for complex workspaces)
     critic: 0.3,    // Critic gets 30% (needs less context, more analysis)
     refiner: 0.5    // Refiner gets 50% (needs to see full draft + clarifications)
 };
@@ -82,16 +82,20 @@ export class RefinementTokenManager {
     private conversationTokens: number = 0;
     private systemPromptTokens: number = 0;
 
-    constructor(modelId: string = 'default') {
-        // Get model-specific limit or use default
-        const modelKey = Object.keys(MODEL_TOKEN_LIMITS).find(
-            key => modelId.toLowerCase().includes(key)
-        ) || 'default';
-        
-        this.maxTokens = MODEL_TOKEN_LIMITS[modelKey];
+    constructor(modelId: string = 'default', maxInputTokens?: number) {
+        if (maxInputTokens && maxInputTokens > 0) {
+            this.maxTokens = maxInputTokens;
+            console.log(`[RefinementTokenManager] Using API limit: ${this.maxTokens} tokens for ${modelId}`);
+        } else {
+            // Get model-specific limit or use default
+            const modelKey = Object.keys(MODEL_TOKEN_LIMITS).find(
+                key => modelId.toLowerCase().includes(key)
+            ) || 'default';
+            
+            this.maxTokens = MODEL_TOKEN_LIMITS[modelKey];
+            console.log(`[RefinementTokenManager] Using fallback: ${this.maxTokens} tokens for ${modelId}`);
+        }
         this.responseReserve = Math.floor(this.maxTokens * RESPONSE_RESERVE_RATIO);
-        
-        console.log(`[RefinementTokenManager] Initialized with ${this.maxTokens} tokens for model ${modelId}`);
     }
 
     // ========================================

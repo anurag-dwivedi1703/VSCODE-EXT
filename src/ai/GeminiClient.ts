@@ -48,11 +48,13 @@ export class GeminiClient {
                     functionDeclarations: [
                         {
                             name: "read_file",
-                            description: "Read the contents of a file",
+                            description: "Read the contents of a file. For large files (>300 lines), use startLine/endLine to read specific sections.",
                             parameters: {
                                 type: "OBJECT" as any,
                                 properties: {
-                                    path: { type: "STRING" as any, description: "Absolute path to the file" }
+                                    path: { type: "STRING" as any, description: "Relative path to the file" },
+                                    startLine: { type: "NUMBER" as any, description: "Start line number (1-indexed, inclusive). Omit to read from beginning." },
+                                    endLine: { type: "NUMBER" as any, description: "End line number (1-indexed, inclusive). Omit to read to end." }
                                 },
                                 required: ["path"]
                             }
@@ -221,6 +223,32 @@ export class GeminiClient {
                                 type: "OBJECT" as any,
                                 properties: {},
                                 required: []
+                            }
+                        },
+                        {
+                            name: "grep_search",
+                            description: "Search for text or regex pattern across workspace files. Returns matching lines with file paths and line numbers. Use this to find code before using read_file with line ranges.",
+                            parameters: {
+                                type: "OBJECT" as any,
+                                properties: {
+                                    query: { type: "STRING" as any, description: "Text or regex pattern to search for" },
+                                    includePattern: { type: "STRING" as any, description: "Glob pattern to filter files (e.g., 'src/**/*.ts'). Default: all files." },
+                                    isRegexp: { type: "BOOLEAN" as any, description: "Whether query is a regex pattern. Default: false." },
+                                    maxResults: { type: "NUMBER" as any, description: "Maximum results to return. Default: 50." }
+                                },
+                                required: ["query"]
+                            }
+                        },
+                        {
+                            name: "file_search",
+                            description: "Find files matching a glob pattern. Returns list of file paths.",
+                            parameters: {
+                                type: "OBJECT" as any,
+                                properties: {
+                                    pattern: { type: "STRING" as any, description: "Glob pattern (e.g., '**/*.ts', 'src/engine/*.ts')" },
+                                    maxResults: { type: "NUMBER" as any, description: "Maximum results. Default: 50." }
+                                },
+                                required: ["pattern"]
                             }
                         }
                     ]

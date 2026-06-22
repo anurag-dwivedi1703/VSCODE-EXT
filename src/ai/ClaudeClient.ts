@@ -27,11 +27,13 @@ export class ClaudeClient {
         const tools: Anthropic.Tool[] = includeToolInstructions ? [
             {
                 name: "read_file",
-                description: "Read the contents of a file",
+                description: "Read the contents of a file. For large files (>300 lines), use startLine/endLine to read specific sections.",
                 input_schema: {
                     type: "object" as const,
                     properties: {
-                        path: { type: "string", description: "Absolute path to the file" }
+                        path: { type: "string", description: "Relative path to the file" },
+                        startLine: { type: "number", description: "Start line number (1-indexed, inclusive). Omit to read from beginning." },
+                        endLine: { type: "number", description: "End line number (1-indexed, inclusive). Omit to read to end." }
                     },
                     required: ["path"]
                 }
@@ -200,6 +202,32 @@ export class ClaudeClient {
                     type: "object" as const,
                     properties: {},
                     required: []
+                }
+            },
+            {
+                name: "grep_search",
+                description: "Search for text or regex pattern across workspace files. Returns matching lines with file paths and line numbers. Use this to find code before using read_file with line ranges.",
+                input_schema: {
+                    type: "object" as const,
+                    properties: {
+                        query: { type: "string", description: "Text or regex pattern to search for" },
+                        includePattern: { type: "string", description: "Glob pattern to filter files (e.g., 'src/**/*.ts'). Default: all files." },
+                        isRegexp: { type: "boolean", description: "Whether query is a regex pattern. Default: false." },
+                        maxResults: { type: "number", description: "Maximum results to return. Default: 50." }
+                    },
+                    required: ["query"]
+                }
+            },
+            {
+                name: "file_search",
+                description: "Find files matching a glob pattern. Returns list of file paths.",
+                input_schema: {
+                    type: "object" as const,
+                    properties: {
+                        pattern: { type: "string", description: "Glob pattern (e.g., '**/*.ts', 'src/engine/*.ts')" },
+                        maxResults: { type: "number", description: "Maximum results. Default: 50." }
+                    },
+                    required: ["pattern"]
                 }
             }
         ] : [];  // Empty tools array when in refinement mode

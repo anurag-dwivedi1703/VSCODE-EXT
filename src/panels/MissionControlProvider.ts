@@ -134,6 +134,9 @@ export class MissionControlProvider {
                 case 'login-checkpoint':
                     command = 'loginCheckpoint';
                     break;
+                case 'turn-limit':
+                    command = 'turnLimitReached';
+                    break;
                 default:
                     command = 'awaitingApproval';
             }
@@ -216,6 +219,16 @@ export class MissionControlProvider {
         this._isDisposed = true;
         MissionControlProvider.currentPanel = undefined;
 
+        // Clean up any VA workspace folders
+        const folders = vscode.workspace.workspaceFolders;
+        if (folders) {
+            for (let i = folders.length - 1; i >= 0; i--) {
+                if (folders[i].name.startsWith('[VA] ')) {
+                    vscode.workspace.updateWorkspaceFolders(i, 1);
+                }
+            }
+        }
+
         // Dispose phase integration
         this._phaseIntegration.dispose();
 
@@ -226,6 +239,52 @@ export class MissionControlProvider {
             if (x) {
                 x.dispose();
             }
+        }
+    }
+
+    private prepareWorkspaceServices(workspacePath: string): void {
+        // Skip placeholder/default workspace IDs that aren't real paths
+        if (!path.isAbsolute(workspacePath)) {
+            console.log(`[MissionControl] Skipping non-absolute workspace path: ${workspacePath}`);
+            return;
+        }
+
+        // Skip if already an open workspace folder
+        const alreadyOpen = vscode.workspace.workspaceFolders?.some(
+            f => f.uri.fsPath.toLowerCase() === workspacePath.toLowerCase()
+        );
+        if (alreadyOpen) {
+            console.log(`[MissionControl] Workspace already open, skipping: ${workspacePath}`);
+            return;
+        }
+
+        // Find existing VA folder to replace (must combine remove+add in single call)
+        const folders = vscode.workspace.workspaceFolders;
+        const existingVAIndex = folders
+            ? folders.findIndex(f => f.name.startsWith('[VA] '))
+            : -1;
+
+        let added: boolean;
+        if (existingVAIndex >= 0) {
+            // Replace existing VA folder with new one in a single updateWorkspaceFolders call
+            console.log(`[MissionControl] Replacing VA folder: ${folders![existingVAIndex].name} at index ${existingVAIndex}`);
+            added = vscode.workspace.updateWorkspaceFolders(existingVAIndex, 1, {
+                uri: vscode.Uri.file(workspacePath),
+                name: `[VA] ${path.basename(workspacePath)}`
+            });
+        } else {
+            // No existing VA folder — append new one
+            const insertIndex = folders?.length ?? 0;
+            added = vscode.workspace.updateWorkspaceFolders(insertIndex, null, {
+                uri: vscode.Uri.file(workspacePath),
+                name: `[VA] ${path.basename(workspacePath)}`
+            });
+        }
+
+        if (added) {
+            console.log(`[MissionControl] Workspace services warming up for: ${workspacePath}`);
+        } else {
+            console.warn(`[MissionControl] Failed to add workspace folder: ${workspacePath}`);
         }
     }
 
@@ -509,8 +568,16 @@ export class MissionControlProvider {
         const scriptUri = webview.asWebviewUri(scriptPathOnDisk);
         const styleUri = webview.asWebviewUri(stylePathOnDisk);
 
-        // CSP: Allow scripts from our extension, styles, and frames from localhost for the browser preview
-        const csp = `default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'unsafe-eval'; frame-src http://localhost:* http://127.0.0.1:*;`;
+        // CSP: Allow scripts from our extension, styles, fonts, images, and frames from localhost for the browser preview
+        const csp = `default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'unsafe-eval'; font-src ${webview.cspSource} https:; img-src ${webview.cspSource} data:; connect-src ${webview.cspSource} https:; frame-src http://localhost:* http://127.0.0.1:*;`;
+
+        // Read version from package.json dynamically
+        let extensionVersion = 'unknown';
+        try {
+            const pkgPath = vscode.Uri.joinPath(this._extensionUri, 'package.json').fsPath;
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+            extensionVersion = pkg.version || 'unknown';
+        } catch { /* fallback to unknown */ }
 
         return `
             <!DOCTYPE html>
@@ -523,7 +590,7 @@ export class MissionControlProvider {
                 <title>Mission Control</title>
             </head>
             <body>
-                <div id="root"></div>
+                <div id="root" data-extension-version="${extensionVersion}"></div>
                 <script type="module" src="${scriptUri.toString()}?v=${Date.now()}"></script>
             </body>
             </html>
@@ -591,6 +658,29 @@ export class MissionControlProvider {
                     case 'getWorkspaces':
                         this.sendWorkspaces();
                         return;
+                    case 'deleteWorkspace': {
+                        const wsId = message.workspaceId;
+                        // Remove all missions associated with this workspace
+                        const wsPath = wsId.toLowerCase().replace(/\\/g, '/');
+                        const tasks = this._taskRunner.getTasks();
+                        for (const task of tasks) {
+                            if (task.worktreePath) {
+                                const taskPath = task.worktreePath.toLowerCase().replace(/\\/g, '/');
+                                if (taskPath === wsPath || taskPath.startsWith(wsPath + '/')) {
+                                    this._taskRunner.removeTask(task.id);
+                                }
+                            }
+                        }
+                        this._workspaces = this._workspaces.filter(w => w.id !== wsId);
+                        this.saveWorkspaces();
+                        this.sendWorkspaces();
+                        return;
+                    }
+                    case 'deleteMission': {
+                        const taskId = message.taskId;
+                        this._taskRunner.removeTask(taskId);
+                        return;
+                    }
                     case 'getTasks': {
                         const tasks = this._taskRunner.getTasks();
                         tasks.forEach(t => {
@@ -848,6 +938,13 @@ export class MissionControlProvider {
                     case 'cancelLogin':
                         this._taskRunner.cancelLoginCheckpoint(message.taskId);
                         return;
+                    // Turn Limit Handlers
+                    case 'confirmTurnLimit':
+                        this._taskRunner.confirmTurnLimitContinue(message.taskId);
+                        return;
+                    case 'cancelTurnLimit':
+                        this._taskRunner.cancelTurnLimit(message.taskId);
+                        return;
                     // Questionnaire Submission Handler (Refinement Mode)
                     case 'submitQuestionnaireAnswers':
                         this._taskRunner.handleQuestionnaireSubmit(
@@ -967,6 +1064,13 @@ export class MissionControlProvider {
                     case 'useSession':
                         this._handleUseSession(message.sessionId);
                         return;
+                    case 'workspaceSelected': {
+                        const workspacePath = message.workspaceId;
+                        if (workspacePath) {
+                            this.prepareWorkspaceServices(workspacePath);
+                        }
+                        return;
+                    }
                 }
             },
             undefined,

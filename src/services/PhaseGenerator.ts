@@ -8,6 +8,12 @@
  */
 
 import { ComplexityAnalyzer, ComplexityScore } from './ComplexityAnalyzer';
+import { 
+    ProjectTypeDetector, 
+    ProjectTypeDetectionResult, 
+    BrowserTestingSetting,
+    shouldRequireBrowserTesting 
+} from './ProjectTypeDetector';
 
 /**
  * Status of a phase in the execution lifecycle
@@ -220,6 +226,8 @@ const FEATURE_GROUPS = [
 export class PhaseGenerator {
     private config: PhaseGeneratorConfig;
     private complexityAnalyzer: ComplexityAnalyzer;
+    private projectTypeResult?: ProjectTypeDetectionResult;
+    private browserTestingSetting?: BrowserTestingSetting;
 
     constructor(
         complexityAnalyzer?: ComplexityAnalyzer,
@@ -227,6 +235,35 @@ export class PhaseGenerator {
     ) {
         this.config = { ...DEFAULT_CONFIG, ...config };
         this.complexityAnalyzer = complexityAnalyzer || new ComplexityAnalyzer();
+    }
+
+    /**
+     * Set the project type detection result for verification criteria generation
+     */
+    setProjectTypeDetection(result: ProjectTypeDetectionResult): void {
+        this.projectTypeResult = result;
+        console.log(`[PhaseGenerator] Project type set: ${result.projectType}, hasUI: ${result.hasUI}, confidence: ${result.confidence}`);
+    }
+
+    /**
+     * Set the browser testing setting from constitution
+     */
+    setBrowserTestingSetting(setting?: BrowserTestingSetting): void {
+        this.browserTestingSetting = setting;
+        if (setting) {
+            console.log(`[PhaseGenerator] Browser testing setting from constitution: ${setting}`);
+        }
+    }
+
+    /**
+     * Get whether browser testing should be required for mission completion
+     */
+    isBrowserTestingRequired(): boolean {
+        if (!this.projectTypeResult) {
+            // Default to requiring browser testing if we haven't detected project type
+            return true;
+        }
+        return shouldRequireBrowserTesting(this.projectTypeResult, this.browserTestingSetting);
     }
 
     /**
@@ -720,27 +757,66 @@ export class PhaseGenerator {
 
     /**
      * Generate verification criteria for a phase
+     * Now project-type aware to handle UI vs non-UI projects appropriately
      */
     private generateVerificationCriteria(phase: Phase): string[] {
         const criteria: string[] = [];
 
-        // Basic criteria
+        // Basic criteria - always applicable
         criteria.push('Code compiles/transpiles without errors');
+
+        // Determine if browser testing is required based on project type detection
+        const requiresBrowserTesting = this.isBrowserTestingRequired();
+        const projectType = this.projectTypeResult?.projectType || 'unknown';
+        const hasUI = this.projectTypeResult?.hasUI ?? true; // Default to true for safety
+
+        // Log the verification strategy being used
+        console.log(`[PhaseGenerator] Generating verification criteria for phase: ${phase.name}`);
+        console.log(`[PhaseGenerator] Project type: ${projectType}, hasUI: ${hasUI}, requiresBrowserTesting: ${requiresBrowserTesting}`);
 
         // Domain-specific criteria
         if (phase.domains.includes('frontend')) {
-            criteria.push('UI components render correctly');
-            criteria.push('No console errors in browser');
+            if (requiresBrowserTesting) {
+                criteria.push('UI components render correctly (browser verification required)');
+                criteria.push('No console errors in browser');
+                criteria.push('Visual UI verification passes (browser_verify_ui)');
+            } else {
+                // Alternative verification for frontend when browser testing is disabled
+                criteria.push('UI components compile without errors');
+                criteria.push('Component unit tests pass');
+            }
         }
 
         if (phase.domains.includes('backend')) {
             criteria.push('API endpoints respond correctly');
             criteria.push('No server errors in logs');
+            // Add API testing criteria for non-UI verification
+            if (!hasUI || !requiresBrowserTesting) {
+                criteria.push('API integration tests pass');
+            }
         }
 
         if (phase.domains.includes('database')) {
             criteria.push('Database migrations run successfully');
             criteria.push('Data integrity maintained');
+        }
+
+        // Project type-specific criteria
+        if (projectType === 'cli') {
+            criteria.push('CLI commands execute without errors');
+            criteria.push('CLI unit tests pass');
+        }
+
+        if (projectType === 'library') {
+            criteria.push('Library exports are valid');
+            criteria.push('Library unit tests pass');
+        }
+
+        // Alternative verification for non-UI projects
+        if (!hasUI && !requiresBrowserTesting) {
+            criteria.push('Unit tests pass (npm test or equivalent)');
+            criteria.push('Build verification succeeds');
+            criteria.push('Linting passes without critical errors');
         }
 
         // Deliverable-based criteria

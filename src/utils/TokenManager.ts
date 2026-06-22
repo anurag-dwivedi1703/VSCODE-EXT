@@ -60,7 +60,7 @@ const RESPONSE_RESERVE_RATIO = 0.2;  // Reserve 20% for response
 /** Context allocation by mode */
 const MODE_CONTEXT_RATIOS = {
     refinement: {
-        analyst: 0.4,    // Analyst gets 40% for context
+        analyst: 0.45,   // Analyst gets 45% for context (increased for complex workspaces)
         critic: 0.3,     // Critic gets 30%
         refiner: 0.5     // Refiner gets 50%
     },
@@ -508,7 +508,7 @@ export class TokenManager {
 
         // Special handling for compile/build output
         if (toolName === 'run_command') {
-            // TypeScript/build errors
+            // TypeScript/build errors - enhanced with categorization
             if (result.includes('error TS') || result.includes('Error:') || result.includes('error:')) {
                 const lines = result.split('\n');
                 const errorLines = lines.filter(l => 
@@ -517,15 +517,85 @@ export class TokenManager {
                 
                 if (errorLines.length > 0) {
                     const totalErrors = errorLines.length;
-                    const previewCount = Math.min(15, totalErrors);
-                    const preview = errorLines.slice(0, previewCount).join('\n');
-
-                    return `[COMPILE OUTPUT TRUNCATED - ${totalErrors} total errors/warnings]\n\n` +
-                        `First ${previewCount} errors:\n${preview}\n\n` +
-                        (totalErrors > previewCount
-                            ? `[...${totalErrors - previewCount} more truncated]\n\n`
-                            : '') +
-                        `ACTION: Fix the above issues first, then recompile.`;
+                    
+                    // Categorize errors by type (TS error codes)
+                    const errorCategories: Record<string, { count: number; examples: string[] }> = {};
+                    const fileErrors: Record<string, number> = {};
+                    
+                    for (const line of errorLines) {
+                        // Extract TypeScript error code (e.g., TS2345, TS2339)
+                        const tsMatch = line.match(/error (TS\d+)/);
+                        if (tsMatch) {
+                            const code = tsMatch[1];
+                            if (!errorCategories[code]) {
+                                errorCategories[code] = { count: 0, examples: [] };
+                            }
+                            errorCategories[code].count++;
+                            if (errorCategories[code].examples.length < 2) {
+                                errorCategories[code].examples.push(line.trim());
+                            }
+                        }
+                        
+                        // Extract file path for grouping
+                        const fileMatch = line.match(/^([^(:\s]+\.[a-z]+)/i);
+                        if (fileMatch) {
+                            const file = fileMatch[1];
+                            fileErrors[file] = (fileErrors[file] || 0) + 1;
+                        }
+                    }
+                    
+                    // Build categorized summary
+                    let summary = `[COMPILE ERRORS: ${totalErrors} total]\n\n`;
+                    
+                    // Top error categories
+                    const sortedCategories = Object.entries(errorCategories)
+                        .sort((a, b) => b[1].count - a[1].count)
+                        .slice(0, 5);
+                    
+                    if (sortedCategories.length > 0) {
+                        summary += `**Error Categories:**\n`;
+                        for (const [code, data] of sortedCategories) {
+                            const description = this.getTypeScriptErrorDescription(code);
+                            summary += `- ${code} (${description}): ${data.count} errors\n`;
+                            if (data.examples.length > 0) {
+                                summary += `  Example: ${data.examples[0].substring(0, 150)}...\n`;
+                            }
+                        }
+                        summary += '\n';
+                    }
+                    
+                    // Top affected files
+                    const sortedFiles = Object.entries(fileErrors)
+                        .sort((a, b) => b[1] - a[1])
+                        .slice(0, 5);
+                    
+                    if (sortedFiles.length > 0) {
+                        summary += `**Most Affected Files:**\n`;
+                        for (const [file, count] of sortedFiles) {
+                            summary += `- ${file}: ${count} errors\n`;
+                        }
+                        summary += '\n';
+                    }
+                    
+                    // Suggested fix order
+                    if (sortedCategories.length > 0) {
+                        const topCategory = sortedCategories[0];
+                        summary += `**Suggested Fix Priority:**\n`;
+                        summary += `Fix ${topCategory[0]} errors first (${topCategory[1].count} occurrences) - these may have cascading effects.\n\n`;
+                    }
+                    
+                    // Show first few actual errors for context
+                    const previewCount = Math.min(10, totalErrors);
+                    summary += `**First ${previewCount} errors:**\n`;
+                    summary += errorLines.slice(0, previewCount).join('\n');
+                    
+                    if (totalErrors > previewCount) {
+                        summary += `\n\n[...${totalErrors - previewCount} more errors truncated]`;
+                    }
+                    
+                    summary += '\n\nACTION: Fix the top error category first, then recompile.';
+                    
+                    return summary;
                 }
             }
 
@@ -545,6 +615,45 @@ export class TokenManager {
         return result.substring(0, maxChars) +
             `\n\n[OUTPUT TRUNCATED - original was ${result.length} chars]\n` +
             `TIP: Run a more specific command if you need more details.`;
+    }
+
+    /**
+     * Get human-readable description for TypeScript error codes.
+     */
+    private getTypeScriptErrorDescription(code: string): string {
+        const descriptions: Record<string, string> = {
+            'TS2345': 'type mismatch in argument',
+            'TS2339': 'property does not exist',
+            'TS2307': 'cannot find module',
+            'TS2304': 'cannot find name',
+            'TS2322': 'type not assignable',
+            'TS2531': 'possibly null/undefined',
+            'TS2532': 'possibly undefined',
+            'TS2769': 'no overload matches',
+            'TS2305': 'module has no export',
+            'TS2314': 'generic requires type args',
+            'TS2416': 'property not assignable to base',
+            'TS2551': 'property does not exist (did you mean)',
+            'TS2554': 'wrong number of arguments',
+            'TS2555': 'expected at least N arguments',
+            'TS2741': 'property missing in type',
+            'TS2739': 'missing properties',
+            'TS2352': 'conversion may be mistake',
+            'TS2353': 'object literal excess properties',
+            'TS2367': 'no overlap between types',
+            'TS2686': 'refers to UMD global',
+            'TS2694': 'namespace has no exported member',
+            'TS2792': 'cannot find module (Node resolution)',
+            'TS2835': 'relative import needs extension',
+            'TS7006': 'parameter implicitly has any',
+            'TS7016': 'could not find declaration file',
+            'TS7031': 'binding element implicitly has any',
+            'TS7053': 'element implicitly has any (index)',
+            'TS18046': 'is of type unknown',
+            'TS18047': 'is possibly null',
+            'TS18048': 'is possibly undefined'
+        };
+        return descriptions[code] || 'compilation error';
     }
 
     // =========================================================================

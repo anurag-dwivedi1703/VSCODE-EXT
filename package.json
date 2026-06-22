@@ -2,11 +2,13 @@
     "name": "vibearchitect",
     "displayName": "VibeArchitect Agent Manager",
     "description": "Manage autonomous AI agents that complete coding missions end-to-end. Assign tasks, agents execute autonomously, you review results. Features Mission Control dashboard, multi-model support (Claude, GPT-5, Gemini), and automated browser testing.",
+    "publisher": "deere-parts",
+    "icon": "media/logo.png",
     "repository": {
         "type": "git",
         "url": "https://github.com/vibearchitect/vibearchitect.git"
     },
-    "version": "2.0.5",
+    "version": "3.3.9",
     "engines": {
         "vscode": "^1.85.0"
     },
@@ -25,10 +27,28 @@
         "mission control"
     ],
     "activationEvents": [
-        "onCommand:vibearchitect.openMissionControl"
+        "onCommand:vibearchitect.openMissionControl",
+        "onView:vibearchitect-missions"
     ],
     "main": "./dist/extension.js",
     "contributes": {
+        "viewsContainers": {
+            "activitybar": [
+                {
+                    "id": "vibearchitect-sidebar",
+                    "title": "VibeArchitect",
+                    "icon": "$(robot)"
+                }
+            ]
+        },
+        "views": {
+            "vibearchitect-sidebar": [
+                {
+                    "id": "vibearchitect-missions",
+                    "name": "Missions"
+                }
+            ]
+        },
         "commands": [
             {
                 "command": "vibearchitect.openMissionControl",
@@ -58,7 +78,7 @@
                 },
                 "vibearchitect.useCopilotForClaude": {
                     "type": "boolean",
-                    "default": false,
+                    "default": true,
                     "description": "Use GitHub Copilot subscription for Claude instead of API key (requires Copilot extensions)"
                 },
                 "vibearchitect.browserRecordingsPath": {
@@ -151,6 +171,7 @@
         "eslint": "^8.56.0",
         "glob": "^8.1.0",
         "mocha": "^10.2.0",
+        "playwright-core": "^1.58.2",
         "ts-loader": "^9.5.1",
         "typescript": "^5.3.3",
         "webpack": "^5.89.0",
@@ -162,7 +183,6 @@
         "@google/generative-ai": "^0.24.1",
         "fs-extra": "^11.2.0",
         "pixelmatch": "^5.3.0",
-        "playwright-core": "^1.40.0",
         "pngjs": "^7.0.0",
         "simple-git": "^3.22.0"
     }

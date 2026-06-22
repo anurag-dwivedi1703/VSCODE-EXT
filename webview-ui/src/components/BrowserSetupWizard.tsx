@@ -159,6 +159,11 @@ export const BrowserSetupWizard: React.FC<BrowserSetupWizardProps> = ({
 
     const selectBrowser = (browser: BrowserInfo) => {
         setState(prev => ({ ...prev, selectedBrowser: browser }));
+        // Auto-confirm the selection immediately
+        vscode.postMessage({ 
+            type: 'selectBrowser', 
+            executablePath: browser.executablePath 
+        });
     };
 
     const confirmSelection = () => {
@@ -312,13 +317,8 @@ export const BrowserSetupWizard: React.FC<BrowserSetupWizardProps> = ({
 
             <div className="wizard-footer">
                 <button className="cancel-btn" onClick={onClose}>
-                    Cancel
+                    OK
                 </button>
-                {state.status === 'ready' && state.selectedBrowser && (
-                    <button className="confirm-btn" onClick={confirmSelection}>
-                        Use {state.selectedBrowser.name}
-                    </button>
-                )}
             </div>
         </div>
     );

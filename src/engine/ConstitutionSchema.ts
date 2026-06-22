@@ -316,6 +316,14 @@ export interface TestingRequirements {
         e2e?: string;
         all: string;
     };
+    /** 
+     * Browser testing requirement setting
+     * - 'required': Always require browser testing for mission completion
+     * - 'optional': Browser testing available but not required
+     * - 'disabled': Browser testing not required (for non-UI projects)
+     * If not specified, auto-detection determines the requirement
+     */
+    browserTesting?: 'required' | 'optional' | 'disabled';
 }
 
 // ============================================
@@ -660,6 +668,9 @@ export function constitutionToMarkdown(constitution: ConstitutionV2): string {
     if (constitution.testingRequirements.requiredTestTypes.length > 0) {
         lines.push(`- **Required Test Types**: ${constitution.testingRequirements.requiredTestTypes.join(', ')}`);
     }
+    if (constitution.testingRequirements.browserTesting) {
+        lines.push(`- **Browser Testing**: ${constitution.testingRequirements.browserTesting}`);
+    }
     lines.push('');
 
     // Agent Constraints
@@ -920,6 +931,15 @@ export function parseMarkdownConstitution(markdown: string, existingConstitution
         if (typesMatch) {
             const types = typesMatch[1].split(/[,\s]+/).filter(t => t.trim());
             constitution.testingRequirements.requiredTestTypes = types.map(t => t.toLowerCase().trim() as TestType);
+        }
+
+        // Parse Browser Testing setting
+        const browserTestingMatch = section.match(/\*\*Browser Testing\*\*:\s*([^\n]+)/i);
+        if (browserTestingMatch) {
+            const setting = browserTestingMatch[1].trim().toLowerCase();
+            if (setting === 'required' || setting === 'optional' || setting === 'disabled') {
+                constitution.testingRequirements.browserTesting = setting;
+            }
         }
     }
 

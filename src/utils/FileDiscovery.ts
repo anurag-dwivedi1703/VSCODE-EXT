@@ -27,9 +27,13 @@ export class FileDiscovery {
     static async findFiles(
         include: string,
         exclude?: string,
-        maxResults: number = 1000
+        maxResults: number = 1000,
+        rootPath?: string
     ): Promise<DiscoveryResult> {
-        const files = await vscode.workspace.findFiles(include, exclude, maxResults + 1);
+        const includePattern = rootPath
+            ? new vscode.RelativePattern(vscode.Uri.file(rootPath), include)
+            : include;
+        const files = await vscode.workspace.findFiles(includePattern, exclude, maxResults + 1);
 
         return {
             files: files.slice(0, maxResults),

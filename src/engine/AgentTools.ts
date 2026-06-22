@@ -16,6 +16,8 @@ import { DiffLogger, findBestMatch } from '../utils/DiffLogger';
 import { getIDEDiffApplier } from '../utils/IDEDiffApplier';
 import { getSymbolNavigator } from '../utils/SymbolNavigator';
 import { RuleEnforcer } from '../services/RuleEnforcer';
+import { FileSearch } from '../utils/FileSearch';
+import { FileDiscovery } from '../utils/FileDiscovery';
 
 export class AgentTools {
     private browserService: BrowserAutomationService | null = null;
@@ -155,14 +157,90 @@ export class AgentTools {
             );
     }
 
-    async readFile(relativePath: string): Promise<string> {
+    async readFile(relativePath: string, startLine?: number, endLine?: number): Promise<string> {
         try {
             const resolvedPath = this.resolveMissionPath(relativePath);
             const fileUri = this.getUri(resolvedPath);
             const uint8Array = await vscode.workspace.fs.readFile(fileUri);
-            return new TextDecoder().decode(uint8Array);
+            const fullContent = new TextDecoder().decode(uint8Array);
+
+            if (startLine !== undefined || endLine !== undefined) {
+                const lines = fullContent.split('\n');
+                const start = Math.max(1, startLine ?? 1) - 1; // Convert 1-indexed to 0-indexed
+                const end = Math.min(lines.length, endLine ?? lines.length);
+                const selectedLines = lines.slice(start, end);
+                const totalLines = lines.length;
+
+                let result = selectedLines.join('\n');
+                result = `[Lines ${start + 1}-${end} of ${totalLines}]\n` + result;
+                return result;
+            }
+
+            return fullContent;
         } catch (error: any) {
-            return `Error reading file ${relativePath}: ${error.message}`;
+            const basename = relativePath.split('/').pop() || relativePath;
+            const dirname = relativePath.includes('/') ? relativePath.substring(0, relativePath.lastIndexOf('/')) : '.';
+            return `Error: File not found: ${relativePath}
+→ Use file_search("**/*${basename}*") to find the correct path.
+→ Use list_files("${dirname}") to see what files exist in that directory.
+→ Do NOT guess paths — verify with file_search first.`;
+        }
+    }
+
+    async grepSearch(
+        query: string,
+        options: {
+            includePattern?: string;
+            isRegexp?: boolean;
+            maxResults?: number;
+        } = {}
+    ): Promise<string> {
+        try {
+            const { includePattern, isRegexp = false, maxResults = 50 } = options;
+            const matches = await FileSearch.search(query, {
+                include: includePattern || '**/*',
+                exclude: '**/node_modules/**',
+                maxResults,
+                isRegex: isRegexp,
+                caseSensitive: false,
+                rootPath: this.worktreeRoot
+            });
+
+            if (matches.length === 0) {
+                return 'No matches found.';
+            }
+
+            const workspaceRoot = this.worktreeRoot;
+            const lines = matches.map(m => {
+                const relPath = path.relative(workspaceRoot, m.uri.fsPath).replace(/\\/g, '/');
+                return `${relPath}:${m.line}: ${m.linePreview.trim()}`;
+            });
+
+            return lines.join('\n');
+        } catch (error: any) {
+            return `Error searching: ${error.message}`;
+        }
+    }
+
+    async fileSearch(pattern: string, maxResults: number = 50): Promise<string> {
+        try {
+            const result = await FileDiscovery.findFiles(pattern, '**/node_modules/**', maxResults, this.worktreeRoot);
+            const workspaceRoot = this.worktreeRoot;
+            const paths = result.files.map(f =>
+                path.relative(workspaceRoot, f.fsPath).replace(/\\/g, '/')
+            );
+
+            if (paths.length === 0) {
+                return 'No files found matching pattern.';
+            }
+
+            let output = paths.join('\n');
+            if (result.truncated) {
+                output += `\n\n[Results truncated: showing ${paths.length} of ${result.totalFound}+ matches]`;
+            }
+            return output;
+        } catch (error: any) {
+            return `Error searching files: ${error.message}`;
         }
     }
 
@@ -761,7 +839,28 @@ TIP: You can add line hints for faster matching:
     }
 
     async searchWeb(query: string): Promise<string> {
-        // Try Gemini first, then Claude API, then Copilot Claude
+        // Strategy 1: Use VS Code's built-in web_search tool if available (real Bing search)
+        const vsTools = vscode.lm.tools;
+        const hasWebSearch = vsTools.some(t => t.name === 'web_search');
+
+        if (hasWebSearch) {
+            try {
+                const result = await vscode.lm.invokeTool('web_search', {
+                    input: { query },
+                    toolInvocationToken: undefined
+                });
+                const textParts = result.content
+                    .filter((p: any) => p instanceof vscode.LanguageModelTextPart)
+                    .map((p: any) => p.value);
+                if (textParts.length > 0) {
+                    return textParts.join('\n');
+                }
+            } catch (e: any) {
+                console.warn(`[AgentTools] web_search via vscode.lm.invokeTool failed: ${e.message}, falling back to LLM`);
+            }
+        }
+
+        // Strategy 2: Fall back to existing LLM-based research
         if (this.geminiClient) {
             return await this.geminiClient.research(query);
         } else if (this.claudeClient) {
@@ -769,7 +868,115 @@ TIP: You can add line hints for faster matching:
         } else if (this.copilotClaudeClient) {
             return await this.copilotClaudeClient.research(query);
         }
-        return "Error: No AI client available for web search. Configure either Gemini or Claude API key.";
+        return "Error: No search capability available.";
+    }
+
+    async getDiagnostics(filePath?: string): Promise<string> {
+        if (filePath) {
+            // Resolve relative paths against worktreeRoot
+            const absolutePath = path.isAbsolute(filePath) ? filePath : path.join(this.worktreeRoot, filePath);
+            const uri = vscode.Uri.file(absolutePath);
+            const diagnostics = vscode.languages.getDiagnostics(uri);
+            if (diagnostics.length === 0) {
+                return 'No errors or warnings found.';
+            }
+            return diagnostics.map(d =>
+                `${this.severityLabel(d.severity)} Line ${d.range.start.line + 1}: ${d.message} [${d.source || ''}]`
+            ).join('\n');
+        }
+        // All files with diagnostics
+        const allDiagnostics = vscode.languages.getDiagnostics();
+        const errors = allDiagnostics
+            .filter(([_, diags]) => diags.some(d => d.severity === vscode.DiagnosticSeverity.Error))
+            .map(([uri, diags]) => {
+                const errs = diags.filter(d => d.severity === vscode.DiagnosticSeverity.Error);
+                return `${vscode.workspace.asRelativePath(uri)}:\n${errs.map(d =>
+                    `  Line ${d.range.start.line + 1}: ${d.message}`
+                ).join('\n')}`;
+            });
+        return errors.length === 0
+            ? 'No errors found across workspace.'
+            : errors.join('\n\n');
+    }
+
+    private severityLabel(severity: vscode.DiagnosticSeverity): string {
+        switch (severity) {
+            case vscode.DiagnosticSeverity.Error: return 'ERROR';
+            case vscode.DiagnosticSeverity.Warning: return 'WARNING';
+            case vscode.DiagnosticSeverity.Information: return 'INFO';
+            case vscode.DiagnosticSeverity.Hint: return 'HINT';
+        }
+    }
+
+    async codebaseSearch(query: string): Promise<string> {
+        const vsTools = vscode.lm.tools;
+        const toolName = vsTools.find(t => t.name === 'codebase')?.name
+            || vsTools.find(t => t.name === 'code_search')?.name;
+
+        if (toolName) {
+            try {
+                const result = await vscode.lm.invokeTool(toolName, {
+                    input: { query },
+                    toolInvocationToken: undefined
+                });
+                const textParts = result.content
+                    .filter((p: any) => p instanceof vscode.LanguageModelTextPart)
+                    .map((p: any) => p.value);
+                if (textParts.length > 0) {
+                    return textParts.join('\n');
+                }
+            } catch (e: any) {
+                console.warn(`[AgentTools] codebase_search via vscode.lm.invokeTool failed: ${e.message}, falling back to grep`);
+            }
+        }
+
+        // Fallback: use existing grep_search
+        return await this.grepSearch(query, { maxResults: 20 });
+    }
+
+    async runTests(testPattern?: string): Promise<string> {
+        const vsTools = vscode.lm.tools;
+        const testTool = vsTools.find(t =>
+            t.name === 'runTests' || t.name === 'run_tests'
+        );
+
+        if (testTool) {
+            try {
+                const input: Record<string, string> = {};
+                if (testPattern) { input.pattern = testPattern; }
+                const result = await vscode.lm.invokeTool(testTool.name, {
+                    input,
+                    toolInvocationToken: undefined
+                });
+                const textParts = result.content
+                    .filter((p: any) => p instanceof vscode.LanguageModelTextPart)
+                    .map((p: any) => p.value);
+                if (textParts.length > 0) {
+                    return textParts.join('\n');
+                }
+            } catch (e: any) {
+                console.warn(`[AgentTools] run_tests via vscode.lm.invokeTool failed: ${e.message}, falling back to command`);
+            }
+        }
+
+        // Fallback: Use run_command with test framework detection
+        const testCmd = await this.detectTestCommand();
+        const command = testPattern
+            ? `${testCmd} -- ${testPattern}`
+            : testCmd;
+        return await this.runCommand(command, 60000);
+    }
+
+    private async detectTestCommand(): Promise<string> {
+        try {
+            const pkgUri = vscode.Uri.file(path.join(this.worktreeRoot, 'package.json'));
+            const content = await vscode.workspace.fs.readFile(pkgUri);
+            const pkg = JSON.parse(Buffer.from(content).toString('utf-8'));
+            if (pkg.scripts?.test) {
+                return 'npm test';
+            }
+        } catch { /* fallback */ }
+        return 'npm test';
     }
 
     async reload_browser(): Promise<string> {
@@ -1134,7 +1341,7 @@ TIP: You can add line hints for faster matching:
                     const config = vscode.workspace.getConfiguration('vibearchitect');
                     const geminiApiKey = config.get<string>('geminiApiKey') || '';
                     if (geminiApiKey) {
-                        const { GeminiClient } = await import('../ai/GeminiClient');
+                        const { GeminiClient } = await import('../ai/GeminiClient.js');
                         visionClient = new GeminiClient(geminiApiKey, 'gemini-2.0-flash');
                         console.log('[AgentTools] Created on-demand Gemini API client for vision analysis');
                     }

@@ -150,7 +150,7 @@ export class ContextHarvester {
             }
 
             // 2. Directory Structure
-            const tree = await this.generateFileTree(workspaceRoot, 0, 3);
+            const tree = await this.generateFileTree(workspaceRoot, 0, 5);
             if (tree) {
                 contextBuffer += `## Project Structure\n\n\`\`\`\n${tree}\`\`\`\n\n`;
             }

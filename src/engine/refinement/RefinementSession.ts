@@ -21,7 +21,9 @@ import {
     CritiqueIssue,
     RefinementArtifact,
     RefinementEvent,
-    QuestionnaireEventPayload
+    QuestionnaireEventPayload,
+    DiscoveryExecutor,
+    RefinementToolExecutor
 } from './RefinementTypes';
 import {
     getPersonaPrompt,
@@ -34,6 +36,8 @@ import {
 } from './RefinementPrompts';
 import { ISession } from '../../ai/GeminiClient';
 import { RefinementTokenManager, createTokenAwareSkeleton } from './RefinementTokenManager';
+import { FEATURE_FLAGS } from '../../utils/FeatureFlags';
+import { RefinementCheckpointManager } from './RefinementCheckpointManager';
 
 /**
  * Confidence threshold below which more clarifying questions are triggered.
@@ -56,6 +60,11 @@ const AI_CALL_TIMEOUT_MS = 300000; // 5 minutes
 const TOKEN_WARNING_THRESHOLD = 0.8;
 
 /**
+ * Maximum refinement cycles (full analyst→critic→refiner loops) before warning.
+ */
+const MAX_CYCLES = 3;
+
+/**
  * Configuration for issue description validation.
  * These thresholds can be adjusted based on experience.
  */
@@ -74,9 +83,17 @@ export class RefinementSession {
     private _state: RefinementSessionState;
     private _aiSession: ISession | null = null;
     private _iterationCount = 0;
+    private _qaRoundCount = 0;  // Track Q&A rounds for forced progression
     private _tokenManager: RefinementTokenManager;
     private _modelId: string = 'default';
     private _skeletonContext: string = '';
+    private _sessionFactory: ((persona: 'analyst' | 'critic' | 'refiner') => ISession) | null = null;
+    private _stageSession: ISession | null = null;
+    private _lastPersona: 'analyst' | 'critic' | 'refiner' | null = null;
+    private _checkpointManager: RefinementCheckpointManager | null = null;
+    private _cycleCount = 1;
+    private _discoveryExecutor: DiscoveryExecutor | null = null;
+    private _toolExecutor: RefinementToolExecutor | null = null;
 
     // Event emitter for UI updates
     private _onEvent = new vscode.EventEmitter<RefinementEvent>();
@@ -86,7 +103,8 @@ export class RefinementSession {
         sessionId: string,
         taskId: string,
         originalPrompt: string,
-        modelId: string = 'default'
+        modelId: string = 'default',
+        maxInputTokens?: number
     ) {
         this._state = {
             sessionId,
@@ -99,7 +117,7 @@ export class RefinementSession {
             updatedAt: Date.now()
         };
         this._modelId = modelId;
-        this._tokenManager = new RefinementTokenManager(modelId);
+        this._tokenManager = new RefinementTokenManager(modelId, maxInputTokens);
     }
 
     // ========================================
@@ -143,6 +161,38 @@ export class RefinementSession {
      */
     public setAISession(session: ISession): void {
         this._aiSession = session;
+    }
+
+    /**
+     * Set the factory for creating stage-isolated sessions.
+     * Called by RefinementManager to provide persona-specific session creation.
+     */
+    public setSessionFactory(factory: (persona: 'analyst' | 'critic' | 'refiner') => ISession): void {
+        this._sessionFactory = factory;
+    }
+
+    /**
+     * Set the checkpoint manager for file-based state persistence.
+     * Called by RefinementManager when stage-isolated sessions are enabled.
+     */
+    public setCheckpointManager(manager: RefinementCheckpointManager): void {
+        this._checkpointManager = manager;
+    }
+
+    /**
+     * Set the discovery executor for sub-agent spawning during refinement.
+     * Called by RefinementManager when USE_REFINEMENT_DISCOVERY is enabled.
+     */
+    public setDiscoveryExecutor(executor: DiscoveryExecutor): void {
+        this._discoveryExecutor = executor;
+    }
+
+    /**
+     * Set the lightweight tool executor for direct search tools in refinement.
+     * Called by RefinementManager when USE_REFINEMENT_DISCOVERY is enabled.
+     */
+    public setToolExecutor(executor: RefinementToolExecutor): void {
+        this._toolExecutor = executor;
     }
 
     /**
@@ -195,7 +245,7 @@ export class RefinementSession {
         console.log(`[RefinementSession] Analyst prompt length: ${analystPrompt.length} chars (~${this._tokenManager.estimateTokens(analystPrompt)} tokens)`);
 
         // Call the AI with Analyst persona
-        const response = await this.callAI('analyst', analystPrompt);
+        const response = await this.callAIWithDiscovery('analyst', analystPrompt);
         console.log(`[RefinementSession] Analyst response:`, response.substring(0, 500));
 
         // Track token usage
@@ -226,6 +276,13 @@ export class RefinementSession {
                 questionCount: questionCount
             }
         });
+
+        // If analyst produced a draft with no questions on the first turn,
+        // auto-trigger critique instead of waiting for user input
+        if (hasDraft && questionCount === 0 && this._state.currentDraft) {
+            console.log(`[RefinementSession] Draft with no questions on first turn — auto-triggering critique`);
+            return this.triggerCritique();
+        }
 
         // If structured questionnaire was detected, also fire questionnaire event for interactive UI
         const structuredQuestionnaire = this.parseQuestionnaireBlock(response);
@@ -274,6 +331,24 @@ export class RefinementSession {
             throw new Error(`Cannot handle user response in state: ${this._state.state}`);
         }
 
+        // Checkpoint: persist user feedback and advance cycle
+        if (this._checkpointManager) {
+            const cycle = this._state.currentCycleNumber ?? 1;
+            this._checkpointManager.saveUserFeedback(cycle, response);
+            this._state.currentCycleNumber = cycle + 1;
+        }
+
+        // Track cycle count and warn if approaching limit
+        this._cycleCount++;
+        if (this._cycleCount > MAX_CYCLES) {
+            console.warn(`[RefinementSession] Cycle ${this._cycleCount} exceeds MAX_CYCLES (${MAX_CYCLES})`);
+            this._onEvent.fire({
+                type: 'progress',
+                sessionId: this.sessionId,
+                payload: `Warning: refinement cycle ${this._cycleCount} of ${MAX_CYCLES} maximum. Consider approving soon.`
+            });
+        }
+
         // Store the user's clarification
         const clarification: UserClarification = {
             questionId: `q-${Date.now()}`,
@@ -284,6 +359,7 @@ export class RefinementSession {
         this.addTurn('user', response);
 
         this._iterationCount++;
+        this._qaRoundCount++;
 
         if (this._iterationCount >= MAX_ITERATIONS) {
             // Force transition to refining to prevent infinite loops
@@ -299,12 +375,50 @@ export class RefinementSession {
         // Continue with Analyst to incorporate the answer
         this.transitionTo('DRAFTING');
 
-        // Use concise prompt for token efficiency
-        const prompt = `User clarification: "${response}"
+        // Build prompt with nudge if we've had multiple Q&A rounds without a draft
+        let prompt: string;
+        if (FEATURE_FLAGS.USE_STAGE_ISOLATED_SESSIONS && this._checkpointManager && (this._state.currentCycleNumber ?? 1) >= 2) {
+            // Stage-isolated cycle >= 2: fresh analyst session needs file-based context
+            const priorPrd = this._checkpointManager.getLatestRefinedPrd();
+            const feedbackHistory = this._checkpointManager.getAllUserFeedback();
+            prompt = `You are revising a PRD based on user feedback.
+
+## Prior PRD
+${priorPrd || this._state.currentDraft || '(no prior version)'}
+
+## User Feedback History
+${feedbackHistory.map((f, i) => `${i + 1}. ${f}`).join('\n')}
+
+## Latest Feedback
+${response}
+
+Produce a complete, updated PRD addressing all feedback. Include:
+- ## Problem Statement
+- ## Functional Requirements
+- ## Non-Functional Requirements
+- ## Acceptance Criteria`;
+        } else if (this._qaRoundCount >= 2 && !this._state.currentDraft) {
+            // Nudge the analyst to produce a draft after 2+ rounds
+            console.log(`[RefinementSession] Nudging analyst to produce draft after ${this._qaRoundCount} Q&A rounds`);
+            prompt = `User clarification: "${response}"
+
+You have now gathered sufficient context through ${this._qaRoundCount} rounds of Q&A. 
+
+**IMPORTANT: You MUST now produce a draft PRD.** Include these sections with EXACTLY these markdown headers:
+- ## Problem Statement
+- ## Functional Requirements  
+- ## Non-Functional Requirements
+- ## Acceptance Criteria
+
+Do NOT ask more questions. Produce the PRD draft now based on all information gathered.`;
+        } else {
+            // Use concise prompt for token efficiency
+            prompt = `User clarification: "${response}"
 
 Incorporate this into your requirements. If sufficient info, produce a PRD draft. Otherwise, ask 2-3 focused follow-up questions.`;
+        }
 
-        const aiResponse = await this.callAI('analyst', prompt);
+        const aiResponse = await this.callAIWithDiscovery('analyst', prompt);
         
         // Track token usage
         this._tokenManager.addConversationTokens(
@@ -414,9 +528,18 @@ Incorporate this into your requirements. If sufficient info, produce a PRD draft
             }
         }
 
+        // Enhance prompt with user feedback context for cycle >= 2
+        let feedbackContext = '';
+        if (FEATURE_FLAGS.USE_STAGE_ISOLATED_SESSIONS && this._checkpointManager && (this._state.currentCycleNumber ?? 1) >= 2) {
+            const feedbackHistory = this._checkpointManager.getAllUserFeedback();
+            if (feedbackHistory.length > 0) {
+                feedbackContext = `\n\n## User Feedback That Prompted This Revision\n${feedbackHistory.map((f, i) => `${i + 1}. ${f}`).join('\n')}\n`;
+            }
+        }
+
         const prompt = useEfficientPrompt
-            ? generateTokenEfficientCriticPrompt(draftForCritique)
-            : generateCriticPrompt(draftForCritique, this._skeletonContext);
+            ? generateTokenEfficientCriticPrompt(draftForCritique) + feedbackContext
+            : generateCriticPrompt(draftForCritique, this._skeletonContext) + feedbackContext;
 
         this._onEvent.fire({
             type: 'progress',
@@ -435,6 +558,12 @@ Incorporate this into your requirements. If sufficient info, produce a PRD draft
         
         const critique = this.parseCritiqueResponse(response);
         this._state.latestCritique = critique;
+
+        // Checkpoint: persist critique result
+        this._checkpointManager?.saveCritiqueResult(
+            this._state.currentCycleNumber ?? 1,
+            critique
+        );
 
         const turn: RefinementTurn = {
             role: 'critic',
@@ -549,7 +678,7 @@ Incorporate this into your requirements. If sufficient info, produce a PRD draft
                 ? generateTokenEfficientRefinerPrompt(draftForRefiner, critiqueSummary, clarificationsText)
                 : generateRefinerPrompt(draftForRefiner, critiqueSummary, clarificationsText);
 
-            response = await this.callAI('refiner', prompt);
+            response = await this.callAIWithDiscovery('refiner', prompt);
             
             // Track token usage
             this._tokenManager.addConversationTokens(
@@ -562,6 +691,12 @@ Incorporate this into your requirements. If sufficient info, produce a PRD draft
         
         const artifact = this.parseRefinedArtifact(response);
         this._state.finalArtifact = artifact;
+
+        // Checkpoint: persist refined PRD
+        this._checkpointManager?.saveRefinedPrd(
+            this._state.currentCycleNumber ?? 1,
+            artifact.rawMarkdown
+        );
 
         const turn: RefinementTurn = {
             role: 'refiner',
@@ -691,6 +826,7 @@ ${acceptanceCriteria || 'Not specified'}
             throw new Error('No artifact to approve');
         }
         this.transitionTo('APPROVED');
+        this._checkpointManager?.dispose();
     }
 
     /**
@@ -699,6 +835,7 @@ ${acceptanceCriteria || 'Not specified'}
      */
     public cancel(): void {
         this.transitionTo('CANCELLED');
+        this._checkpointManager?.dispose();
     }
 
     // ========================================
@@ -727,8 +864,23 @@ ${acceptanceCriteria || 'Not specified'}
     }
 
     private async callAI(persona: 'analyst' | 'critic' | 'refiner', prompt: string): Promise<string> {
-        if (!this._aiSession) {
-            throw new Error('No AI session configured');
+        let session: ISession;
+
+        if (FEATURE_FLAGS.USE_STAGE_ISOLATED_SESSIONS && this._sessionFactory) {
+            // Stage-isolated mode: create fresh session per stage transition
+            // For analyst Q&A within a cycle, reuse the same session
+            if (persona !== this._lastPersona) {
+                this._stageSession = this._sessionFactory(persona);
+                this._lastPersona = persona;
+                console.log(`[RefinementSession] Created fresh ${persona} session (stage-isolated mode)`);
+            }
+            session = this._stageSession!;
+        } else {
+            // Legacy mode: single shared session
+            if (!this._aiSession) {
+                throw new Error('No AI session configured');
+            }
+            session = this._aiSession;
         }
 
         const timeoutPromise = new Promise<never>((_, reject) => {
@@ -739,12 +891,10 @@ ${acceptanceCriteria || 'Not specified'}
 
         try {
             console.log(`[RefinementSession] Calling AI with persona: ${persona}`);
-            // Race the AI call against a timeout to prevent indefinite hang (e.g. on "Request Changes")
             const result = await Promise.race([
-                this._aiSession.sendMessage(prompt),
+                session.sendMessage(prompt),
                 timeoutPromise
             ]);
-            // response is an object, not a Promise
             const text = result.response.text();
             console.log(`[RefinementSession] AI response received (${text.length} chars)`);
             return text;
@@ -758,6 +908,160 @@ ${acceptanceCriteria || 'Not specified'}
             });
             throw error;
         }
+    }
+
+    /**
+     * Call AI with optional discovery tool support.
+     * Used by analyst and refiner personas when USE_REFINEMENT_DISCOVERY is enabled.
+     * 
+     * Unlike callAI(), this method:
+     * 1. Checks the response for functionCalls()
+     * 2. Lightweight tools (grep_search, list_files, file_search) dispatched via _toolExecutor
+     * 3. spawn_analysis_agents dispatched via _discoveryExecutor (limited to MAX_DISCOVERY_ROUNDS)
+     * 4. Total LLM round-trips capped at MAX_TOOL_ROUNDS
+     * 5. Falls back to callAI() if no executors are set or flags are off
+     */
+    private async callAIWithDiscovery(
+        persona: 'analyst' | 'refiner',
+        prompt: string
+    ): Promise<string> {
+        if (!FEATURE_FLAGS.USE_REFINEMENT_DISCOVERY ||
+            !FEATURE_FLAGS.USE_DISCOVERY_SUB_AGENTS ||
+            (!this._discoveryExecutor && !this._toolExecutor)) {
+            return this.callAI(persona, prompt);
+        }
+
+        const MAX_TOOL_ROUNDS = 30;
+        const MAX_DISCOVERY_ROUNDS = 2;
+        let discoveryRoundsUsed = 0;
+        let session: ISession;
+
+        if (FEATURE_FLAGS.USE_STAGE_ISOLATED_SESSIONS && this._sessionFactory) {
+            if (persona !== this._lastPersona) {
+                this._stageSession = this._sessionFactory(persona);
+                this._lastPersona = persona;
+            }
+            session = this._stageSession!;
+        } else {
+            if (!this._aiSession) {
+                throw new Error('No AI session configured');
+            }
+            session = this._aiSession;
+        }
+
+        const LIGHTWEIGHT_TOOLS = new Set(['grep_search', 'list_files', 'file_search', 'codebase_search', 'get_diagnostics']);
+        let currentPrompt: string | any[] = prompt;
+
+        for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+            const timeoutPromise = new Promise<never>((_, reject) => {
+                setTimeout(() => reject(new Error(
+                    `AI call (${persona}) timed out after ${AI_CALL_TIMEOUT_MS / 1000}s`
+                )), AI_CALL_TIMEOUT_MS);
+            });
+
+            const result = await Promise.race([
+                session.sendMessage(currentPrompt),
+                timeoutPromise
+            ]);
+
+            const text = result.response.text();
+            const functionCalls = result.response.functionCalls();
+
+            if (!functionCalls || functionCalls.length === 0) {
+                console.log(`[RefinementSession] ${persona} response received (${text.length} chars, ${round} tool rounds, ${discoveryRoundsUsed} discovery rounds)`);
+                return text;
+            }
+
+            const toolResults: any[] = [];
+            let hasDiscoveryCall = false;
+            const lightweightToolSummaries: string[] = [];
+
+            for (const call of functionCalls) {
+                if (LIGHTWEIGHT_TOOLS.has(call.name) && this._toolExecutor) {
+                    console.log(`[RefinementSession] ${persona} calling ${call.name} (round ${round + 1})`);
+                    // Build human-readable summary for progress
+                    if (call.name === 'grep_search') {
+                        lightweightToolSummaries.push(`searching for "${call.args.query}"`);
+                    } else if (call.name === 'list_files') {
+                        lightweightToolSummaries.push(`listing ${call.args.path || 'root'}`);
+                    } else if (call.name === 'file_search') {
+                        lightweightToolSummaries.push(`finding files: ${call.args.pattern}`);
+                    } else if (call.name === 'codebase_search') {
+                        lightweightToolSummaries.push(`semantic search: "${call.args.query}"`);
+                    } else if (call.name === 'get_diagnostics') {
+                        lightweightToolSummaries.push(`checking diagnostics${call.args.filePath ? `: ${call.args.filePath}` : ''}`);
+                    }
+                    try {
+                        const toolResult = await this._toolExecutor(call.name, call.args);
+                        toolResults.push({
+                            functionResponse: { name: call.name, response: { content: toolResult } }
+                        });
+                    } catch (err: any) {
+                        toolResults.push({
+                            functionResponse: { name: call.name, response: { content: `Tool error: ${err.message}` } }
+                        });
+                    }
+                } else if (call.name === 'spawn_analysis_agents' && this._discoveryExecutor) {
+                    hasDiscoveryCall = true;
+                    if (discoveryRoundsUsed >= MAX_DISCOVERY_ROUNDS) {
+                        toolResults.push({
+                            functionResponse: {
+                                name: call.name,
+                                response: { content: `Error: Maximum discovery rounds (${MAX_DISCOVERY_ROUNDS}) reached. Use grep_search/codebase_search/list_files/file_search for additional investigation, or produce your output now.` }
+                            }
+                        });
+                        continue;
+                    }
+                    console.log(`[RefinementSession] ${persona} requesting discovery (${discoveryRoundsUsed + 1}/${MAX_DISCOVERY_ROUNDS})`);
+                    const tasks = call.args.tasks as Array<{ id: string; description: string; files: string[]; question: string }>;
+                    const taskDescriptions = tasks.map(t => t.description).slice(0, 4).join(', ');
+                    this._onEvent.fire({
+                        type: 'progress', sessionId: this.sessionId,
+                        payload: `🔍 Launching ${tasks.length} sub-agents for deep analysis: ${taskDescriptions}`
+                    });
+                    try {
+                        const findings = await this._discoveryExecutor(tasks);
+                        toolResults.push({
+                            functionResponse: { name: call.name, response: { content: findings } }
+                        });
+                        discoveryRoundsUsed++;
+                        this._onEvent.fire({
+                            type: 'progress', sessionId: this.sessionId,
+                            payload: `✅ Sub-agent analysis complete — synthesizing findings...`
+                        });
+                    } catch (err: any) {
+                        toolResults.push({
+                            functionResponse: { name: call.name, response: { content: `Discovery failed: ${err.message}` } }
+                        });
+                    }
+                } else {
+                    toolResults.push({
+                        functionResponse: {
+                            name: call.name,
+                            response: { content: `Error: Tool "${call.name}" is not available in refinement mode. Available: grep_search, codebase_search, list_files, file_search, get_diagnostics, spawn_analysis_agents.` }
+                        }
+                    });
+                }
+            }
+
+            if (!hasDiscoveryCall && toolResults.length > 0) {
+                const summary = lightweightToolSummaries.length > 0
+                    ? lightweightToolSummaries.join(' · ')
+                    : `${functionCalls.length} tool call(s)`;
+                this._onEvent.fire({
+                    type: 'progress', sessionId: this.sessionId,
+                    payload: `🔍 Exploring codebase (${round + 1}/${MAX_TOOL_ROUNDS}): ${summary}`
+                });
+            }
+
+            currentPrompt = toolResults;
+        }
+
+        console.warn(`[RefinementSession] Max tool rounds (${MAX_TOOL_ROUNDS}) exhausted for ${persona}`);
+        const forceResult = await session.sendMessage(
+            'You have exhausted your tool call budget. Produce your text response NOW based on all information gathered.'
+        );
+        return forceResult.response.text();
     }
 
     /**
@@ -798,6 +1102,32 @@ ${acceptanceCriteria || 'Not specified'}
             const anyJsonMatch = response.match(/\{[\s\S]*?"questions"\s*:\s*\[[\s\S]*?\][\s\S]*?\}/);
             if (anyJsonMatch) {
                 jsonContent = anyJsonMatch[0];
+            }
+        }
+        
+        // Method 5: Plain code fence (``` without language) containing JSON with questions
+        if (!jsonContent) {
+            const plainFenceMatch = response.match(/```\s*\n?([\s\S]*?)```/);
+            if (plainFenceMatch) {
+                const content = plainFenceMatch[1].trim();
+                if (content.startsWith('{') && content.includes('"questions"')) {
+                    jsonContent = content;
+                }
+            }
+        }
+        
+        // Method 6: Raw JSON at the very start or end of response (GPT sometimes does this)
+        if (!jsonContent) {
+            // Check for JSON object at start of response (after optional whitespace)
+            const startJsonMatch = response.match(/^\s*(\{[\s\S]*?"questions"\s*:\s*\[[\s\S]*?\]\s*\})/);
+            if (startJsonMatch) {
+                jsonContent = startJsonMatch[1];
+            } else {
+                // Check for JSON object at end of response
+                const endJsonMatch = response.match(/(\{[\s\S]*?"questions"\s*:\s*\[[\s\S]*?\]\s*\})\s*$/);
+                if (endJsonMatch) {
+                    jsonContent = endJsonMatch[1];
+                }
             }
         }
         
@@ -852,19 +1182,91 @@ ${acceptanceCriteria || 'Not specified'}
         return cleaned.trim();
     }
 
+    /**
+     * Detect if a response contains a PRD draft using flexible pattern matching.
+     * Supports various header formats that GPT and other models may use.
+     * 
+     * @param response The analyst response to check
+     * @returns true if the response appears to contain a PRD draft
+     */
+    private detectDraftInResponse(response: string): boolean {
+        const indicators: RegExp[] = [
+            // Standard markdown headers (## Header)
+            /^##\s*(Functional|Non-Functional)\s*Requirements/im,
+            /^##\s*Problem\s*Statement/im,
+            /^##\s*User\s*Stories/im,
+            /^##\s*Acceptance\s*Criteria/im,
+            /^##\s*Technical\s*(Implementation|Requirements)/im,
+            
+            // H1 headers (# Header)
+            /^#\s+.*Requirements/im,
+            /^#\s+.*PRD/im,
+            /^#\s+.*Product\s*Requirement/im,
+            
+            // Headers without # prefix but with colon (GPT style)
+            /^(Functional|Non-Functional)\s*Requirements\s*:/im,
+            /^Problem\s*Statement\s*:/im,
+            /^User\s*Stories\s*:/im,
+            /^Acceptance\s*Criteria\s*:/im,
+            
+            // Bold headers (GPT style: **Header**)
+            /\*\*(Functional|Non-Functional)\s*Requirements\*\*/i,
+            /\*\*Problem\s*Statement\*\*/i,
+            /\*\*User\s*Stories\*\*/i,
+            /\*\*Acceptance\s*Criteria\*\*/i,
+            
+            // Numbered sections (1. Header or 1) Header)
+            /^\d+[.)]\s*(Functional|Non-Functional)\s*Requirements/im,
+            /^\d+[.)]\s*Problem\s*Statement/im,
+            /^\d+[.)]\s*User\s*Stories/im,
+            /^\d+[.)]\s*Acceptance\s*Criteria/im,
+            
+            // Underlined headers (Header followed by === or ---)
+            /(Functional|Non-Functional)\s*Requirements\s*\n[=-]+/im,
+            /Problem\s*Statement\s*\n[=-]+/im,
+        ];
+        
+        let matchCount = 0;
+        for (const pattern of indicators) {
+            if (pattern.test(response)) {
+                matchCount++;
+            }
+        }
+        
+        // Require 2+ indicators OR 1 indicator + substantial content (>500 chars after removing code blocks)
+        const contentWithoutCode = response.replace(/```[\s\S]*?```/g, '');
+        const substantialContent = contentWithoutCode.length > 500;
+        
+        if (matchCount >= 2) {
+            console.log(`[RefinementSession] Draft detected: ${matchCount} indicators found`);
+            return true;
+        }
+        if (matchCount >= 1 && substantialContent) {
+            console.log(`[RefinementSession] Draft detected: ${matchCount} indicator(s) + substantial content (${contentWithoutCode.length} chars)`);
+            return true;
+        }
+        
+        return false;
+    }
+
     private parseAnalystResponse(response: string): RefinementTurn {
         // First, try to parse structured questionnaire block
         const structuredQuestionnaire = this.parseQuestionnaireBlock(response);
         
-        // Check if response contains a PRD draft (look for structured headers)
-        const hasDraft = response.includes('## Functional Requirements') ||
-            response.includes('## Problem Statement') ||
-            response.includes('# ') && response.includes('Requirements');
+        // Check if response contains a PRD draft using flexible detection
+        const hasDraft = this.detectDraftInResponse(response);
 
         if (hasDraft) {
             this._state.currentDraft = response;
             // NOTE: Do NOT fire event here - let the calling code decide what to display
             // to avoid duplicate bubbles in the UI
+
+            // Checkpoint: persist analyst draft
+            this._checkpointManager?.saveAnalystDraft(
+                this._state.currentCycleNumber ?? 1,
+                response,
+                this._state.clarifications.map(c => c.response)
+            );
         }
 
         // If we have structured questions, use those

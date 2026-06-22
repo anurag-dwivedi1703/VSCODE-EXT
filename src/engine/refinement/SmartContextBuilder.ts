@@ -272,8 +272,8 @@ export class SmartContextBuilder {
                 const matches = await FileSearch.search(keyword, {
                     include: '**/*.{ts,tsx,js,jsx,py,java,go,rs,cs,vue,svelte}',
                     exclude: EXCLUDED_PATTERNS.join(','),
-                    maxResults: 100,  // Get more results to filter
-                    maxFiles: 300,
+                    maxResults: 150,
+                    maxFiles: 500,
                     caseSensitive: false
                 });
 
@@ -386,9 +386,9 @@ export class SmartContextBuilder {
         const skeletonParts: string[] = [];
         let currentTokens = 0;
 
-        // Reserve tokens for skeleton context (30% of budget)
-        const fullContentBudget = Math.floor(tokenBudget * 0.7);
-        const skeletonBudget = Math.floor(tokenBudget * 0.3);
+        // Reserve tokens for skeleton context (35% of budget for better structural coverage)
+        const fullContentBudget = Math.floor(tokenBudget * 0.65);
+        const skeletonBudget = Math.floor(tokenBudget * 0.35);
 
         const relevantFilePaths: string[] = [];
         let fullContentCount = 0;
@@ -434,8 +434,10 @@ export class SmartContextBuilder {
                     relevantFilePaths.push(file.relativePath);
                     fullContentCount++;
 
-                    // Limit to top 10 full content files
-                    if (fullContentCount >= 10) {
+                    // Adaptive full content file limit based on token budget
+                    // 128K+ models: 20 files, 50K+: 15 files, below: 10 files
+                    const maxFullContentFiles = tokenBudget >= 25000 ? 20 : tokenBudget >= 12500 ? 15 : 10;
+                    if (fullContentCount >= maxFullContentFiles) {
                         break;
                     }
                 }
@@ -519,7 +521,7 @@ export class SmartContextBuilder {
             const files = await vscode.workspace.findFiles(
                 searchPattern,
                 excludePattern,
-                500  // Get more files
+                1000
             );
 
             console.log(`[SmartContextBuilder] findFiles returned ${files.length} files`);

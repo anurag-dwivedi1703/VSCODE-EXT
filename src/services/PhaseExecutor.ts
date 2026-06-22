@@ -12,6 +12,13 @@ import { ComplexityAnalyzer, ComplexityScore, createComplexityAnalyzer } from '.
 import { PhaseGenerator, Phase, PhaseGenerationResult, createPhaseGenerator } from './PhaseGenerator';
 import { ContextMonitor, ContextBudget, createContextMonitor } from './ContextMonitor';
 import { PhaseStateManager, PhaseExecutionState, PhaseResult, createPhaseStateManager } from './PhaseStateManager';
+import { 
+    ProjectTypeDetector, 
+    ProjectTypeDetectionResult, 
+    BrowserTestingSetting,
+    detectProjectType,
+    shouldRequireBrowserTesting 
+} from './ProjectTypeDetector';
 
 /**
  * Execution mode for the phase executor
@@ -138,6 +145,9 @@ export class PhaseExecutor {
     private phaseGenerator: PhaseGenerator;
     private contextMonitor: ContextMonitor;
     private stateManager: PhaseStateManager | null = null;
+    private projectTypeResult?: ProjectTypeDetectionResult;
+    private browserTestingSetting?: BrowserTestingSetting;
+    private _browserVerificationCompleted: boolean = false;
     
     // Event emitters
     private _onModeDecided = new vscode.EventEmitter<{ mode: ExecutionMode; reason: string; phases?: number }>();
@@ -193,6 +203,164 @@ export class PhaseExecutor {
         if (existingState && existingState.taskId === taskId) {
             console.log(`[PhaseExecutor] Resuming execution for task ${taskId}`);
         }
+    }
+
+    /**
+     * Detect the project type for the given workspace and configure browser testing requirements
+     * 
+     * @param workspacePath - Root path of the workspace to analyze
+     * @param constitutionBrowserSetting - Browser testing setting from constitution (if specified)
+     */
+    async initializeProjectTypeDetection(
+        workspacePath: string, 
+        constitutionBrowserSetting?: BrowserTestingSetting
+    ): Promise<ProjectTypeDetectionResult> {
+        this.browserTestingSetting = constitutionBrowserSetting;
+        
+        console.log(`[PhaseExecutor] Detecting project type for workspace: ${workspacePath}`);
+        if (constitutionBrowserSetting) {
+            console.log(`[PhaseExecutor] Constitution browser testing setting: ${constitutionBrowserSetting}`);
+        }
+
+        // Detect project type
+        this.projectTypeResult = await detectProjectType(workspacePath, constitutionBrowserSetting);
+        
+        // Update the phase generator with project type info
+        this.phaseGenerator.setProjectTypeDetection(this.projectTypeResult);
+        this.phaseGenerator.setBrowserTestingSetting(constitutionBrowserSetting);
+
+        // Log the result
+        const summary = ProjectTypeDetector.getSummary(this.projectTypeResult);
+        console.log(`[PhaseExecutor] ${summary}`);
+
+        // Log suggestion for low confidence detections
+        const suggestion = ProjectTypeDetector.getLowConfidenceSuggestion(this.projectTypeResult);
+        if (suggestion) {
+            console.log(`[PhaseExecutor] ${suggestion}`);
+        }
+
+        return this.projectTypeResult;
+    }
+
+    /**
+     * Get the current project type detection result
+     */
+    getProjectTypeResult(): ProjectTypeDetectionResult | undefined {
+        return this.projectTypeResult;
+    }
+
+    /**
+     * Check if browser testing is required for mission completion
+     */
+    isBrowserTestingRequired(): boolean {
+        if (!this.projectTypeResult) {
+            // Default to requiring browser testing if we haven't detected project type
+            console.log('[PhaseExecutor] Project type not detected, defaulting to requiring browser testing');
+            return true;
+        }
+        return shouldRequireBrowserTesting(this.projectTypeResult, this.browserTestingSetting);
+    }
+
+    /**
+     * Mark that browser verification has been completed
+     */
+    markBrowserVerificationComplete(): void {
+        this._browserVerificationCompleted = true;
+        console.log('[PhaseExecutor] Browser verification marked as complete');
+    }
+
+    /**
+     * Check if browser verification has been completed
+     */
+    isBrowserVerificationCompleted(): boolean {
+        return this._browserVerificationCompleted;
+    }
+
+    /**
+     * Evaluate if mission can be completed based on verification requirements
+     * 
+     * @returns Object with canComplete flag and reasons
+     */
+    evaluateCompletionRequirements(): {
+        canComplete: boolean;
+        reasons: string[];
+        missingRequirements: string[];
+        verificationSummary: string;
+    } {
+        const missingRequirements: string[] = [];
+        const reasons: string[] = [];
+        
+        const requiresBrowser = this.isBrowserTestingRequired();
+        const projectType = this.projectTypeResult?.projectType || 'unknown';
+        const hasUI = this.projectTypeResult?.hasUI ?? true;
+
+        // Log current state
+        console.log(`[PhaseExecutor] Evaluating completion requirements:`);
+        console.log(`  - Project type: ${projectType}`);
+        console.log(`  - Has UI: ${hasUI}`);
+        console.log(`  - Browser testing required: ${requiresBrowser}`);
+        console.log(`  - Browser verification completed: ${this._browserVerificationCompleted}`);
+
+        if (requiresBrowser && !this._browserVerificationCompleted) {
+            missingRequirements.push('Browser UI verification (browser_verify_ui) has not been performed');
+            reasons.push(`Browser testing is required for ${projectType === 'unknown' ? 'this project' : projectType + ' projects'}`);
+        }
+
+        if (!requiresBrowser && !hasUI) {
+            reasons.push(`Browser testing not required for ${projectType} projects (no UI detected)`);
+        }
+
+        if (this._browserVerificationCompleted) {
+            reasons.push('Browser UI verification has been completed');
+        }
+
+        const canComplete = missingRequirements.length === 0;
+        
+        // Generate summary message
+        let verificationSummary: string;
+        if (canComplete) {
+            if (requiresBrowser) {
+                verificationSummary = `✅ Mission can complete: Browser verification passed for ${projectType} project`;
+            } else {
+                verificationSummary = `✅ Mission can complete: Browser testing not required for ${projectType} project (no UI)`;
+            }
+        } else {
+            verificationSummary = `❌ Mission cannot complete: ${missingRequirements.join(', ')}`;
+        }
+
+        console.log(`[PhaseExecutor] ${verificationSummary}`);
+
+        return {
+            canComplete,
+            reasons,
+            missingRequirements,
+            verificationSummary
+        };
+    }
+
+    /**
+     * Get a human-readable status message about verification requirements
+     */
+    getVerificationStatusMessage(): string {
+        if (!this.projectTypeResult) {
+            return 'Project type detection not performed. Browser testing will be required by default.';
+        }
+
+        const result = this.projectTypeResult;
+        const requiresBrowser = this.isBrowserTestingRequired();
+        
+        let message = `Project Type: ${result.projectType} (${result.confidence} confidence)\n`;
+        message += `Has UI Components: ${result.hasUI ? 'Yes' : 'No'}\n`;
+        message += `Browser Testing: ${requiresBrowser ? 'Required' : 'Not Required'}\n`;
+        
+        if (result.detectedIndicators.length > 0) {
+            message += `Detected Indicators: ${result.detectedIndicators.slice(0, 5).join(', ')}`;
+            if (result.detectedIndicators.length > 5) {
+                message += ` (and ${result.detectedIndicators.length - 5} more)`;
+            }
+        }
+
+        return message;
     }
 
     /**

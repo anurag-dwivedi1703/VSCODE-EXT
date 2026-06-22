@@ -1,15 +1,27 @@
 import * as vscode from 'vscode';
 import { ISession } from './GeminiClient';
+import { FEATURE_FLAGS } from '../utils/FeatureFlags';
 
 /**
  * GPT client using VS Code's Language Model API (vscode.lm)
  * This leverages the user's GitHub Copilot subscription for GPT-5-mini access
  */
+export interface CopilotModelLimits {
+    maxInputTokens: number | undefined;
+    // Future: maxOutputTokens when VS Code LM API exposes it
+}
+
 export class CopilotGPTClient {
     private model: vscode.LanguageModelChat | undefined;
 
     constructor() {
         // Model will be selected when session starts
+    }
+
+    public getModelLimits(): CopilotModelLimits {
+        return {
+            maxInputTokens: this.model?.maxInputTokens
+        };
     }
 
     public async initialize(targetModelId?: string): Promise<boolean> {
@@ -69,152 +81,81 @@ export class CopilotGPTClient {
         }
     }
 
-    public startSession(systemPrompt: string, _thinkingLevel: 'low' | 'high' = 'high', includeToolInstructions: boolean = true): ISession {
+    public startSession(systemPrompt: string, _thinkingLevel: 'low' | 'high' = 'high', includeToolInstructions: boolean = true, tools?: vscode.LanguageModelChatTool[]): ISession {
         const messages: vscode.LanguageModelChatMessage[] = [];
         const model = this.model;
 
-        // Inject tool call format instructions since vscode.lm doesn't support native function calling
-        // Only include if caller wants tool support (NOT for Refinement Mode)
-        const toolCallInstructions = includeToolInstructions ? `
+        // Determine if native tool calling should be used
+        const useNativeTools = FEATURE_FLAGS.USE_NATIVE_TOOL_CALLING && includeToolInstructions && !!tools && tools.length > 0;
 
-CRITICAL - TOOL CALL FORMAT:
-Since you're running through VS Code's Language Model API, you MUST output tool calls in this EXACT format:
+        // Store tool call parts from last response for result pairing (native mode only)
+        let lastToolCallParts: vscode.LanguageModelToolCallPart[] = [];
 
-\`\`\`tool_call
-{"name": "tool_name", "args": {"param1": "value1", "param2": "value2"}}
-\`\`\`
+        console.log(`[CopilotGPTClient] Session mode: ${useNativeTools ? 'NATIVE tool calling' : includeToolInstructions ? 'LEGACY text-parsed tool calling' : 'NO tools (refinement)'} (${tools?.length ?? 0} tools provided)`);
 
-═══════════════════════════════════════════════════════════════════════════════
-⚠️  MANDATORY: USE apply_diff FOR ALL FILE EDITS - DO NOT USE write_file!  ⚠️
-═══════════════════════════════════════════════════════════════════════════════
-
-When modifying existing files, you MUST use apply_diff. Using write_file on existing
-files causes catastrophic errors (1000+ TypeScript errors from broken code).
-
-✅ CORRECT - Use apply_diff with TEXT FORMAT (NOT JSON!):
-
-[APPLY_DIFF: src/file.ts]
-<<<<<<< SEARCH
-old code to find (must match file content EXACTLY)
-=======
-new replacement code
->>>>>>> REPLACE
-[END_DIFF]
-
-⚠️ IMPORTANT: apply_diff uses a SPECIAL TEXT FORMAT, not JSON tool_call!
-   The [APPLY_DIFF: path]...[END_DIFF] format is intentionally NOT JSON to avoid escaping issues.
-   Do NOT wrap apply_diff in \`\`\`tool_call blocks!
-
-For MULTIPLE changes in one file, use multiple SEARCH/REPLACE blocks:
-
-[APPLY_DIFF: src/file.ts]
-<<<<<<< SEARCH
-first code to find
-=======
-first replacement
->>>>>>> REPLACE
-
-<<<<<<< SEARCH
-second code to find
-=======
-second replacement
->>>>>>> REPLACE
-[END_DIFF]
-
-apply_diff Rules:
-1. SEARCH block must match file content EXACTLY (including whitespace and indentation)
-2. Include enough unique context (2-3 lines) to identify the exact location
-3. Before editing, ALWAYS read_file first to see exact current content
-
-❌ WRONG - Never use write_file to modify existing files:
-\`\`\`tool_call
-{"name": "write_file", "args": {"path": "src/file.ts", "content": "..."}}
-\`\`\`
-^ This will BREAK the codebase! Use apply_diff instead.
-
-═══════════════════════════════════════════════════════════════════════════════
-
-Other Available Tools (these USE \`\`\`tool_call format):
-- \`\`\`tool_call
-{"name": "list_files", "args": {"path": "."}}
-\`\`\`
-- \`\`\`tool_call
-{"name": "read_file", "args": {"path": "path/to/file"}}
-\`\`\`
-- \`\`\`tool_call
-{"name": "write_file", "args": {"path": "path/to/NEW/file", "content": "file content"}}
-\`\`\`
-  ^ Use ONLY for creating NEW files that don't exist yet!
-  ⚠️ STRICT RULE: Any non-code output (notes, creative writing, temporary files) MUST be written to ".vibearchitect/" directory.
-     Example: write_file(".vibearchitect/poem.txt", ...)
-     DO NOT pollute the workspace root with random text files.
-  
-- \`\`\`tool_call
-{"name": "run_command", "args": {"command": "npm start"}}
-\`\`\`
-- \`\`\`tool_call
-{"name": "reload_browser", "args": {}}
-\`\`\`
-- \`\`\`tool_call
-{"name": "navigate_browser", "args": {"url": "http://localhost:3000"}}
-\`\`\`
-- \`\`\`tool_call
-{"name": "search_web", "args": {"query": "search query"}}
-\`\`\`
-
-═══════════════════════════════════════════════════════════════════════════════
-AUTOMATED BROWSER TESTING TOOLS (MANDATORY for web app verification)
-═══════════════════════════════════════════════════════════════════════════════
-
-These tools use Playwright for real browser automation with video recording:
-
-- \`\`\`tool_call
-{"name": "browser_launch", "args": {"recordVideo": true}}
-\`\`\`
-  ^ Launch Chrome for automated testing. ALWAYS use recordVideo=true!
-
-- \`\`\`tool_call
-{"name": "browser_navigate", "args": {"url": "http://localhost:8080"}}
-\`\`\`
-  ^ Navigate to a URL in the automated browser
-
-- \`\`\`tool_call
-{"name": "browser_verify_ui", "args": {"category": "homepage", "description": "should show login form with email and password fields"}}
-\`\`\`
-  ^ CRITICAL: AI-powered visual verification using Vision. Use this to verify your work!
-
-- \`\`\`tool_call
-{"name": "browser_click", "args": {"selector": "#submit-button"}}
-\`\`\`
-
-- \`\`\`tool_call
-{"name": "browser_type", "args": {"selector": "#email", "text": "test@example.com"}}
-\`\`\`
-
-- \`\`\`tool_call
-{"name": "browser_screenshot", "args": {"name": "verification-result"}}
-\`\`\`
-
-- \`\`\`tool_call
-{"name": "browser_close", "args": {}}
-\`\`\`
-  ^ Closes browser and saves video recording
-
-🚨 CRITICAL: YOU MUST ATTEMPT browser_verify_ui AT LEAST ONCE FOR WEB APPS!
-- Do NOT skip automated testing assuming secrets/auth will fail
-- User can complete auth via LoginCheckpoint popup when prompted
-- Report specific errors to user before resorting to manual verification
-
-REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JSON format
-` : '';  // End of toolCallInstructions ternary
-
-
-        // Add system context as first user message (vscode.lm may not support system role)
-        // Only append tool instructions if they're enabled
-        const systemContext = toolCallInstructions
-            ? `[SYSTEM CONTEXT]\n${systemPrompt}\n${toolCallInstructions}\n[END SYSTEM CONTEXT]`
-            : `[SYSTEM CONTEXT]\n${systemPrompt}\n\nIMPORTANT: You are in analysis/refinement mode. Do NOT use tools like list_files, read_file, or write_file. Only provide text responses - questions, analysis, or structured documents.\n[END SYSTEM CONTEXT]`;
+        // Build system context — no tool format instructions needed for native mode
+        let systemContext: string;
+        if (useNativeTools) {
+            systemContext = `[SYSTEM CONTEXT]\n${systemPrompt}\n[END SYSTEM CONTEXT]`;
+        } else if (!includeToolInstructions) {
+            // Refinement mode — explicitly disable tool usage
+            systemContext = `[SYSTEM CONTEXT]\n${systemPrompt}\n\nIMPORTANT: You are in analysis/refinement mode. Do NOT use tools like list_files, read_file, or write_file. Only provide text responses - questions, analysis, or structured documents.\n[END SYSTEM CONTEXT]`;
+        } else {
+            // Legacy fallback: includeToolInstructions=true but native tools unavailable
+            systemContext = `[SYSTEM CONTEXT]\n${systemPrompt}\n[END SYSTEM CONTEXT]`;
+        }
         messages.push(vscode.LanguageModelChatMessage.User(systemContext));
+
+        // Token tracking for context window management
+        const maxTokens = model?.maxInputTokens ?? 128000;
+        const responseReserve = Math.max(8000, Math.floor(maxTokens * 0.05)); // 5% of context or 8000, whichever is larger
+        let estimatedTokensUsed = Math.ceil(systemContext.length / 4);
+
+        const estimateTokens = (text: string): number => Math.ceil(text.length / 4);
+        const getAvailableTokens = (): number => maxTokens - responseReserve - estimatedTokensUsed;
+
+        // Mid-session context pruning constants
+        const MAX_CONTEXT_MESSAGES = 40;
+        const PRUNED_KEEP_RECENT = 20;
+
+        console.log(`[CopilotGPTClient] Context pruning: ${FEATURE_FLAGS.ENABLE_CONTEXT_PRUNING ? 'enabled' : 'disabled'} (ENABLE_CONTEXT_PRUNING flag)`);
+
+        function pruneMessagesIfNeeded(): void {
+            if (!FEATURE_FLAGS.ENABLE_CONTEXT_PRUNING) {
+                return;  // Pruning disabled — sub-agent discovery prevents context accumulation
+            }
+            if (messages.length <= MAX_CONTEXT_MESSAGES) {
+                return;
+            }
+
+            const beforeCount = messages.length;
+
+            // Always keep messages[0] (system context)
+            const systemMessage = messages[0];
+
+            // Keep the most recent PRUNED_KEEP_RECENT messages
+            const recentMessages = messages.slice(-PRUNED_KEEP_RECENT);
+
+            // Clear in-place (preserves closure reference) and rebuild
+            messages.length = 0;
+            messages.push(systemMessage);
+            messages.push(...recentMessages);
+
+            // Recalculate estimatedTokensUsed from actual remaining messages
+            estimatedTokensUsed = 0;
+            for (const msg of messages) {
+                const textContent = msg.content
+                    .map((part: any) => part.value || part.text || '')
+                    .join('');
+                estimatedTokensUsed += estimateTokens(textContent);
+            }
+
+            console.log(
+                `[CopilotGPTClient] \u{1F504} Context pruned: ${beforeCount} \u{2192} ${messages.length} messages. ` +
+                `Tokens recalculated: ${estimatedTokensUsed}. ` +
+                `Kept: system(1) + recent(${recentMessages.length})`
+            );
+        }
 
         return {
             sendMessage: async (prompt: string | any[]) => {
@@ -228,92 +169,214 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
                 }
 
                 try {
-                    // Handle prompt - could be string or array of parts (for tool results)
                     let userMessage = '';
+                    let nativeToolResultsHandled = false;
 
                     if (typeof prompt === 'string') {
                         userMessage = prompt;
                     } else if (Array.isArray(prompt)) {
-                        // Check if this is a tool response
                         const toolResponses = prompt.filter((p: any) => p.functionResponse);
-                        if (toolResponses.length > 0) {
-                            // Format tool responses as text (vscode.lm doesn't support native tool_use)
+                        if (toolResponses.length > 0 && useNativeTools && lastToolCallParts.length > 0) {
+                            // ==================== NATIVE TOOL RESULT HANDLING ====================
+                            const assistantParts: (vscode.LanguageModelTextPart | vscode.LanguageModelToolCallPart)[] = [...lastToolCallParts];
+                            messages.push(vscode.LanguageModelChatMessage.Assistant(assistantParts));
+
+                            const resultParts: (vscode.LanguageModelToolResultPart)[] = toolResponses.map((tr: any, index: number) => {
+                                const matchedCall = lastToolCallParts[Math.min(index, lastToolCallParts.length - 1)];
+                                if (index >= lastToolCallParts.length) {
+                                    console.warn(`[CopilotGPTClient] Tool result index ${index} exceeds lastToolCallParts length ${lastToolCallParts.length}, using last call ID`);
+                                }
+                                const resultText = typeof tr.functionResponse.response?.content === 'string'
+                                    ? tr.functionResponse.response.content
+                                    : JSON.stringify(tr.functionResponse.response);
+                                return new vscode.LanguageModelToolResultPart(matchedCall.callId, [new vscode.LanguageModelTextPart(resultText)]);
+                            });
+                            messages.push(vscode.LanguageModelChatMessage.User(resultParts));
+
+                            const resultTokens = resultParts.reduce((sum, rp) => {
+                                const textContent = rp.content.map((c: any) => c.value || '').join('');
+                                return sum + estimateTokens(textContent);
+                            }, 0);
+                            estimatedTokensUsed += resultTokens;
+
+                            nativeToolResultsHandled = true;
+                            console.log(`[CopilotGPTClient] Native tool results: ${toolResponses.length} results paired with ${lastToolCallParts.length} call(s)`);
+                        } else if (toolResponses.length > 0) {
                             userMessage = toolResponses.map((tr: any) =>
                                 `[TOOL RESULT: ${tr.functionResponse.name}]\n${JSON.stringify(tr.functionResponse.response, null, 2)}\n[END TOOL RESULT]`
                             ).join('\n\n');
                         } else {
-                            // Regular text parts
                             userMessage = prompt.map((p: any) => p.text || '').join('\n');
                         }
                     }
 
-                    if (userMessage) {
+                    if (userMessage && !nativeToolResultsHandled) {
+                        const messageTokens = estimateTokens(userMessage);
+                        estimatedTokensUsed += messageTokens;
+
+                        const utilizationPct = Math.round((estimatedTokensUsed / (maxTokens - responseReserve)) * 100);
+                        if (utilizationPct > 80) {
+                            console.warn(`[CopilotGPTClient] WARNING: Token usage at ${utilizationPct}% (${estimatedTokensUsed}/${maxTokens - responseReserve})`);
+                        }
+
+                        const available = getAvailableTokens();
+                        if (messageTokens > available && available > 1000) {
+                            const maxChars = available * 4;
+                            userMessage = userMessage.slice(0, maxChars - 100) +
+                                '\n\n[MESSAGE TRUNCATED - context limit reached. Please complete current work before reading more files.]';
+                            console.warn(`[CopilotGPTClient] Truncated message from ${messageTokens} to ${estimateTokens(userMessage)} tokens`);
+                        }
+
+                        pruneMessagesIfNeeded();
                         messages.push(vscode.LanguageModelChatMessage.User(userMessage));
                     }
 
-                    // Send request to model
                     const cancellationToken = new vscode.CancellationTokenSource().token;
-                    const response = await model.sendRequest(
-                        messages,
-                        {},
-                        cancellationToken
-                    );
-
-                    // Collect response text
                     let responseText = '';
-                    for await (const fragment of response.text) {
-                        responseText += fragment;
+                    let currentToolCallParts: vscode.LanguageModelToolCallPart[] = [];
+                    const MAX_API_RETRIES = 3;
+                    const RETRY_BACKOFF_MS = [1000, 2000, 4000];
+                    let lastApiError: any = null;
+
+                    const requestOptions: vscode.LanguageModelChatRequestOptions = {};
+                    if (useNativeTools && tools && tools.length > 0) {
+                        requestOptions.tools = tools;
+                        requestOptions.toolMode = vscode.LanguageModelChatToolMode.Auto;
                     }
 
-                    // ==================== TRUNCATION RECOVERY ====================
-                    // Check if response was truncated (incomplete code block, SEARCH/REPLACE, etc.)
-                    if (this.detectTruncation(responseText)) {
-                        console.log('[CopilotGPTClient] Truncation detected! Initiating recovery...');
+                    for (let attempt = 0; attempt < MAX_API_RETRIES; attempt++) {
+                        try {
+                            responseText = '';
+                            currentToolCallParts = [];
+                            const response = await model.sendRequest(
+                                messages,
+                                requestOptions,
+                                cancellationToken
+                            );
 
-                        // Add truncated response to history so model has context
-                        messages.push(vscode.LanguageModelChatMessage.Assistant(responseText));
-                        messages.push(vscode.LanguageModelChatMessage.User(
-                            "Your previous response was truncated. Continue EXACTLY where you left off. " +
-                            "Do not repeat any content. Complete the tool call or code block."
-                        ));
+                            if (useNativeTools) {
+                                for await (const part of response.stream) {
+                                    if (part instanceof vscode.LanguageModelTextPart) {
+                                        responseText += part.value;
+                                    } else if (part instanceof vscode.LanguageModelToolCallPart) {
+                                        currentToolCallParts.push(part);
+                                    }
+                                }
+                            } else {
+                                for await (const fragment of response.text) {
+                                    responseText += fragment;
+                                }
+                            }
 
-                        // Get continuation(s)
-                        const continuation = await this.continueGeneration(model, messages, cancellationToken, 0);
-                        responseText = this.stitchResponses(responseText, continuation);
+                            lastApiError = null;
+                            break;
+                        } catch (retryErr: any) {
+                            lastApiError = retryErr;
+                            const isTransient = CopilotGPTClient.isTransientError(retryErr);
 
-                        console.log(`[CopilotGPTClient] Recovery complete. Total response: ${responseText.length} chars`);
-                    }
-                    // ==================== END TRUNCATION RECOVERY ====================
-
-                    // Add final (possibly recovered) response to history
-                    messages.push(vscode.LanguageModelChatMessage.Assistant(responseText));
-
-                    // ==================== PARSE TOOL CALLS ====================
-                    // FIRST: Check for text-based [APPLY_DIFF:] blocks (preferred format, no JSON escaping issues)
-                    const textDiffs = this.parseTextDiffs(responseText);
-
-                    // SECOND: Parse JSON tool_call blocks (for other tools + backward compatibility)
-                    const jsonToolCalls = this.parseToolCalls(responseText);
-
-                    // Combine: text diffs take priority (they're more reliable)
-                    const functionCalls = [...textDiffs, ...jsonToolCalls];
-
-                    console.log(`[CopilotGPTClient] Parsed ${textDiffs.length} text diffs, ${jsonToolCalls.length} JSON tool calls`);
-
-                    // Strip tool call blocks AND text diff blocks from text to avoid showing in UI
-                    let cleanedText = this.stripToolCallsFromText(responseText);
-                    cleanedText = this.stripTextDiffsFromText(cleanedText);
-
-                    return {
-                        response: {
-                            text: () => cleanedText,
-                            functionCalls: () => functionCalls.length > 0 ? functionCalls : undefined
+                            if (isTransient && attempt < MAX_API_RETRIES - 1) {
+                                const waitMs = RETRY_BACKOFF_MS[attempt];
+                                console.warn(
+                                    `[CopilotGPTClient] ⚠️ RETRY ${attempt + 1}/${MAX_API_RETRIES} - Transient error: "${retryErr.message}". ` +
+                                    `Waiting ${waitMs}ms before retry. Messages in context: ${messages.length}`
+                                );
+                                await new Promise(r => setTimeout(r, waitMs));
+                                responseText = '';
+                                currentToolCallParts = [];
+                                continue;
+                            }
+                            const errorCode = (retryErr as any).code || 'unknown';
+                            console.error(
+                                `[CopilotGPTClient] ❌ API call failed after ${attempt + 1} attempt(s): "${retryErr.message}" ` +
+                                `[code=${errorCode}, transient=${isTransient}, messages=${messages.length}, tokens=${estimatedTokensUsed}]`
+                            );
+                            break;
                         }
-                    };
-                } catch (error: any) {
-                    console.error('[CopilotGPTClient] API Error:', error.message);
+                    }
 
-                    // Check for consent error
+                    if (lastApiError) {
+                        if (userMessage && !nativeToolResultsHandled) {
+                            messages.pop();
+                        } else if (nativeToolResultsHandled) {
+                            messages.pop();
+                            messages.pop();
+                        }
+                        if (userMessage && !nativeToolResultsHandled) {
+                            const messageTokens = estimateTokens(userMessage);
+                            estimatedTokensUsed -= messageTokens;
+                        } else if (nativeToolResultsHandled) {
+                            const reversedTokens = lastToolCallParts.length > 0 ? estimateTokens(JSON.stringify(lastToolCallParts.map(p => p.input))) : 0;
+                            estimatedTokensUsed = Math.max(0, estimatedTokensUsed - reversedTokens);
+                        }
+                        console.error(
+                            `[CopilotGPTClient] 🛑 All ${MAX_API_RETRIES} retries exhausted. Context cleaned up ` +
+                            `(messages: ${messages.length}, tokens: ${estimatedTokensUsed}). Error: ${lastApiError.message}`
+                        );
+                        throw lastApiError;
+                    }
+
+                    lastToolCallParts = currentToolCallParts;
+
+                    const responseTokens = estimateTokens(responseText);
+                    estimatedTokensUsed += responseTokens;
+
+                    const finalUtilization = Math.round((estimatedTokensUsed / (maxTokens - responseReserve)) * 100);
+                    console.log(`[CopilotGPTClient] Context: ${estimatedTokensUsed} tokens used (${finalUtilization}% of ${maxTokens})`);
+
+                    if (useNativeTools) {
+                        const functionCalls = currentToolCallParts.map(tc => ({
+                            name: tc.name,
+                            args: tc.input
+                        }));
+
+                        if (functionCalls.length > 0) {
+                            console.log(`[CopilotGPTClient] Native tool calls: ${functionCalls.map(c => c.name).join(', ')}`);
+                        }
+
+                        if (currentToolCallParts.length === 0 && responseText) {
+                            messages.push(vscode.LanguageModelChatMessage.Assistant(responseText));
+                        }
+
+                        return {
+                            response: {
+                                text: () => responseText,
+                                functionCalls: () => functionCalls.length > 0 ? functionCalls : undefined
+                            }
+                        };
+                    } else {
+                        if (this.detectTruncation(responseText)) {
+                            console.log('[CopilotGPTClient] Truncation detected! Initiating recovery...');
+                            messages.push(vscode.LanguageModelChatMessage.Assistant(responseText));
+                            messages.push(vscode.LanguageModelChatMessage.User(
+                                "Your previous response was truncated. Continue EXACTLY where you left off. " +
+                                "Do not repeat any content. Complete the tool call or code block."
+                            ));
+                            const continuation = await this.continueGeneration(model, messages, cancellationToken, 0);
+                            responseText = this.stitchResponses(responseText, continuation);
+                            console.log(`[CopilotGPTClient] Recovery complete. Total response: ${responseText.length} chars`);
+                        }
+
+                        messages.push(vscode.LanguageModelChatMessage.Assistant(responseText));
+
+                        const textDiffs = this.parseTextDiffs(responseText);
+                        const jsonToolCalls = this.parseToolCalls(responseText);
+                        const functionCalls = [...textDiffs, ...jsonToolCalls];
+
+                        console.log(`[CopilotGPTClient] Parsed ${textDiffs.length} text diffs, ${jsonToolCalls.length} JSON tool calls`);
+
+                        let cleanedText = this.stripToolCallsFromText(responseText);
+                        cleanedText = this.stripTextDiffsFromText(cleanedText);
+
+                        return {
+                            response: {
+                                text: () => cleanedText,
+                                functionCalls: () => functionCalls.length > 0 ? functionCalls : undefined
+                            }
+                        };
+                    }
+                } catch (error: any) {
+                    console.error(`[CopilotGPTClient] API Error (after retries): ${error.message}`);
+
                     if (error.message?.includes('consent') || error.message?.includes('permission')) {
                         return {
                             response: {
@@ -321,17 +384,47 @@ REMEMBER: apply_diff = special text format, all other tools = \`\`\`tool_call JS
                                 functionCalls: () => undefined
                             }
                         };
+                    } else if (error.message?.includes('filtered') || error.message?.includes('content policy')) {
+                        return {
+                            response: {
+                                text: () => `**⚠️ Copilot Response Filtered**\n\nThe response was blocked by your organization's Copilot content filters (Responsible AI).\n\n**Why this happens:**\n- Code might resemble a security violation\n- System prompt complexity triggering safety guards\n- Enterprise policy restrictions\n\n**Workaround:**\nTry using a different AI model or API mode.`,
+                                functionCalls: () => undefined
+                            }
+                        };
                     }
 
+                    const isTransient = CopilotGPTClient.isTransientError(error);
+                    const errorPrefix = isTransient ? 'TransientError' : 'Error';
                     return {
                         response: {
-                            text: () => `Error: ${error.message}`,
+                            text: () => `${errorPrefix}: ${error.message}`,
                             functionCalls: () => undefined
                         }
                     };
                 }
             }
         };
+    }
+
+    /**
+     * Classify whether an error is transient (worth retrying) vs fatal.
+     */
+    public static isTransientError(err: any): boolean {
+        const msg = (err.message || '').toLowerCase();
+        return msg.includes('no choices') ||
+            msg.includes('response contained no choices') ||
+            msg.includes('timeout') ||
+            msg.includes('timed out') ||
+            msg.includes('503') ||
+            msg.includes('429') ||
+            msg.includes('rate limit') ||
+            msg.includes('service unavailable') ||
+            msg.includes('server error') ||
+            msg.includes('overloaded') ||
+            msg.includes('capacity') ||
+            msg.includes('temporarily') ||
+            msg.includes('econnreset') ||
+            msg.includes('socket hang up');
     }
 
     /**

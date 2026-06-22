@@ -524,3 +524,81 @@ Produce final PRD with these sections (be concise):
 
 Address all listed issues. No verbose explanations.`;
 }
+
+/**
+ * GPT-specific enhancement for the Analyst prompt.
+ * GPT models sometimes use different formatting conventions than Claude.
+ * This enhancement ensures they produce output in the expected format.
+ */
+export const GPT_ANALYST_ENHANCEMENT = `
+
+## CRITICAL OUTPUT FORMATTING REQUIREMENTS
+
+When producing a PRD draft, you MUST use these EXACT markdown headers (with ## prefix):
+- \`## Problem Statement\`
+- \`## Functional Requirements\`
+- \`## Non-Functional Requirements\`
+- \`## User Stories\`
+- \`## Acceptance Criteria\`
+
+⚠️ The headers MUST start with \`## \` (two hash symbols followed by a space). This is required for the system to detect your draft.
+
+When asking clarifying questions, you MUST use the \`\`\`questionnaire code fence format:
+
+\`\`\`questionnaire
+{
+  "contextSummary": "Brief summary of your analysis",
+  "questions": [
+    {
+      "id": "q1",
+      "question": "Your question here?",
+      "category": "requirement",
+      "options": ["Option 1", "Option 2", "Other"],
+      "inputType": "select",
+      "required": true
+    }
+  ]
+}
+\`\`\`
+
+⚠️ Use \`\`\`questionnaire (NOT \`\`\`json) as the code fence language. This is required for the interactive UI.
+`;
+
+/**
+ * Returns discovery instructions to append to analyst/refiner prompts
+ * when USE_REFINEMENT_DISCOVERY is enabled.
+ */
+export function getDiscoveryInstructions(): string {
+    return `
+
+## Codebase Discovery Tools
+
+You have access to tools for investigating the codebase. Use them to produce better, more accurate requirements.
+
+### Direct Search Tools (fast, use freely)
+- **grep_search** — Search for text/regex patterns across files. Returns matching lines with file paths. Max 20 results.
+- **codebase_search** — Search the codebase semantically by concept. Unlike grep_search (exact text), this finds conceptually related code. Use when you don't know exact names — e.g., "authentication middleware", "database connection setup", "error handling patterns".
+- **list_files** — List files and directories at a path. Use to understand project structure.
+- **file_search** — Find files matching a glob pattern (e.g., '**/*.controller.ts'). Max 20 results.
+- **get_diagnostics** — Get compiler errors and warnings from the IDE. Use to check project health.
+
+### Deep Analysis Tool (heavyweight, max 2 uses)
+- **spawn_analysis_agents** — Spawn parallel sub-agents for multi-file analysis. Use for complex questions that need reasoning across multiple files. Max 8 tasks per call, max 2 calls total.
+
+### Strategy
+1. Start with list_files on root and key directories to understand project structure
+2. Use codebase_search to explore concepts (e.g., "how is auth handled", "payment processing") — faster than guessing grep keywords
+3. Use grep_search to verify specific technology choices, patterns, and naming conventions
+4. Use file_search to find specific file types relevant to the user's request
+5. Use spawn_analysis_agents ONLY for deep cross-file analysis that greps can't answer
+6. Then engage the user with targeted, informed questions
+
+### Rules
+- Use tools BEFORE asking the user questions that the codebase can answer
+- Do NOT explore aimlessly — have a specific question before each tool call
+- Do NOT use tools as a substitute for user engagement — you still need their intent and preferences
+- Do NOT use read_file — it is not available. Use grep_search for targeted content, codebase_search for conceptual exploration, or spawn_analysis_agents for deep analysis.
+
+**Your primary job remains requirements/specification, NOT code exploration.**
+`;
+}

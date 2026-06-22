@@ -4,6 +4,7 @@ import { ClaudeClient } from '../ai/ClaudeClient';
 import { CopilotClaudeClient } from '../ai/CopilotClaudeClient';
 import { CopilotGPTClient } from '../ai/CopilotGPTClient';
 import { CopilotGeminiClient } from '../ai/CopilotGeminiClient';
+import { getMainAgentTools, getSubAgentTools } from '../ai/CopilotToolDefinitions';
 import { Part } from '@google/generative-ai';
 import { WorktreeManager } from './WorktreeManager';
 import { AgentTools } from './AgentTools';
@@ -18,12 +19,17 @@ import { FileLockManager } from '../services/FileLockManager';
 import { detectSecrets, detectPII } from '../ai/SecurityInstructions';
 import { SpecManager, SpecPhase } from './SpecManager';
 import { ContextHarvester } from '../services/ContextHarvester';
-import { getRefinementManager } from './refinement';
+import { getRefinementManager, DiscoveryExecutor, RefinementToolExecutor } from './refinement';
 import { DiffAggregator } from '../utils/DiffAggregator';
 import { TokenManager } from '../utils/TokenManager';
+import { TurnManager } from '../utils/TurnManager';
+import { FEATURE_FLAGS, turnManagerLoggingEnabled } from '../utils/FeatureFlags';
 // MissionFolderManager removed - mission-scoped folders now managed directly via task.missionFolder
 import { getAttachmentProcessor, Attachment } from '../services/AttachmentProcessor';
 import { createRuleEnforcer, RuleEnforcer, FileEdit as RuleFileEdit } from '../services/RuleEnforcer';
+import { detectProjectType, shouldRequireBrowserTesting, BrowserTestingSetting } from '../services/ProjectTypeDetector';
+
+const DEFAULT_TOKEN_LIMIT = 128000;
 
 interface TaskContext {
     shadowRepo: ShadowRepository;
@@ -37,6 +43,7 @@ interface TaskContext {
     diffAggregator?: DiffAggregator;  // Aggregates multiple diffs to same file
     tokenManager?: TokenManager;  // Unified token budget management
     ruleEnforcer?: RuleEnforcer;  // Constitution rule enforcement
+    turnManager?: TurnManager;  // Phase-aware context management (feature flagged)
 }
 
 interface FileEdit {
@@ -64,7 +71,7 @@ interface AgentTask {
     fileEdits?: FileEdit[];
     // Pending approval state for Agent Decides mode
     awaitingApproval?: {
-        type: 'plan' | 'command' | 'constitution' | 'constitution-update' | 'constitution-drift' | 'prd' | 'login-checkpoint';
+        type: 'plan' | 'command' | 'constitution' | 'constitution-update' | 'constitution-drift' | 'prd' | 'login-checkpoint' | 'turn-limit';
         content: string;
         riskReason?: string;
     };
@@ -89,7 +96,7 @@ export class TaskRunner {
     public readonly onNavigateBrowser = this._onNavigateBrowser.event;
 
     // Approval events for Agent Decides mode and constitution review
-    private _onAwaitingApproval = new vscode.EventEmitter<{ taskId: string, type: 'plan' | 'command' | 'constitution' | 'constitution-update' | 'constitution-drift' | 'prd' | 'login-checkpoint', content: string, riskReason?: string }>();
+    private _onAwaitingApproval = new vscode.EventEmitter<{ taskId: string, type: 'plan' | 'command' | 'constitution' | 'constitution-update' | 'constitution-drift' | 'prd' | 'login-checkpoint' | 'turn-limit', content: string, riskReason?: string }>();
     public readonly onAwaitingApproval = this._onAwaitingApproval.event;
 
     private _onApprovalComplete = new vscode.EventEmitter<{ taskId: string }>();
@@ -117,6 +124,27 @@ export class TaskRunner {
         return Array.from(this.tasks.values());
     }
 
+    public removeTask(taskId: string): boolean {
+        const task = this.tasks.get(taskId);
+        if (!task) return false;
+        this.tasks.delete(taskId);
+        this.taskContexts.delete(taskId);
+        this.runningTasks.delete(taskId);
+        this.sessions.delete(taskId);
+        this._approvalResolvers.delete(taskId);
+        this._lastApprovalFeedback.delete(taskId);
+        // Delete persisted JSON file from disk
+        try {
+            const taskPath = path.join(this.storageDir, `${taskId}.json`);
+            if (fs.existsSync(taskPath)) {
+                fs.unlinkSync(taskPath);
+            }
+        } catch (error) {
+            console.error(`Failed to delete task file ${taskId}:`, error);
+        }
+        return true;
+    }
+
     // Get/Set global agent mode
     public getAgentMode(): 'auto' | 'review-enabled' {
         return this._globalAgentMode;
@@ -132,6 +160,9 @@ export class TaskRunner {
         const task = this.tasks.get(taskId);
         if (!task || task.status !== 'awaiting-approval') { return; }
 
+        // Capture approval type BEFORE clearing — needed to route feedback correctly
+        const approvalType = task.awaitingApproval?.type;
+
         // Persist guidelines config if provided (from constitution review modal)
         if (guidelinesConfig) {
             const specManager = this.taskContexts.get(taskId)?.specManager;
@@ -145,8 +176,16 @@ export class TaskRunner {
         task.awaitingApproval = undefined;
         task.status = 'executing';
 
-        // If feedback provided, inject it as a user message
-        if (feedback && feedback.trim()) {
+        // Inject feedback as a user message ONLY for plan reviews.
+        // Constitution approvals (constitution, constitution-update, constitution-drift)
+        // must NOT inject into userMessages — the full constitution text would poison
+        // the AI's first turn, causing chat-only responses instead of tool calls.
+        // Constitution feedback is persisted to disk via _lastApprovalFeedback below.
+        const isConstitutionApproval = approvalType === 'constitution' ||
+            approvalType === 'constitution-update' ||
+            approvalType === 'constitution-drift';
+
+        if (feedback && feedback.trim() && !isConstitutionApproval) {
             task.userMessages.push({ text: `[User Feedback on Plan]: ${feedback}`, attachments: [] });
             task.logs.push(`> [User Feedback]: ${feedback}`);
         }
@@ -244,6 +283,48 @@ export class TaskRunner {
         const resolver = this._approvalResolvers.get(taskId);
         if (resolver) {
             resolver.resolve(true);
+            this._approvalResolvers.delete(taskId);
+        }
+        this._onApprovalComplete.fire({ taskId });
+        this._onTaskUpdate.fire({ taskId, task });
+        this.saveTask(task);
+    }
+
+    /**
+     * Continue mission past turn limit (user chose to continue).
+     */
+    public confirmTurnLimitContinue(taskId: string) {
+        const task = this.tasks.get(taskId);
+        if (!task || task.awaitingApproval?.type !== 'turn-limit') { return; }
+
+        task.awaitingApproval = undefined;
+        task.status = 'executing';
+        task.logs.push(`> [System]: ✅ User confirmed to continue mission. Resuming execution...`);
+
+        const resolver = this._approvalResolvers.get(taskId);
+        if (resolver) {
+            resolver.resolve(true);
+            this._approvalResolvers.delete(taskId);
+        }
+        this._onApprovalComplete.fire({ taskId });
+        this._onTaskUpdate.fire({ taskId, task });
+        this.saveTask(task);
+    }
+
+    /**
+     * Abort mission at turn limit (user chose to stop).
+     */
+    public cancelTurnLimit(taskId: string) {
+        const task = this.tasks.get(taskId);
+        if (!task) { return; }
+
+        task.awaitingApproval = undefined;
+        task.status = 'failed';
+        task.logs.push(`> [System]: ❌ Mission aborted by user at turn limit.`);
+
+        const resolver = this._approvalResolvers.get(taskId);
+        if (resolver) {
+            resolver.resolve(false);
             this._approvalResolvers.delete(taskId);
         }
         this._onApprovalComplete.fire({ taskId });
@@ -497,7 +578,7 @@ Please complete the login in the browser window, then click **"I've Logged In"**
      */
     private async waitForApproval(
         taskId: string,
-        type: 'plan' | 'command' | 'constitution' | 'constitution-update' | 'constitution-drift' | 'prd' | 'login-checkpoint',
+        type: 'plan' | 'command' | 'constitution' | 'constitution-update' | 'constitution-drift' | 'prd' | 'login-checkpoint' | 'turn-limit',
         content: string,
         riskReason?: string
     ): Promise<boolean> {
@@ -537,6 +618,9 @@ Please complete the login in the browser window, then click **"I've Logged In"**
                     break;
                 case 'login-checkpoint':
                     logMessage = '🔐 Login Required - Please complete authentication in the browser window';
+                    break;
+                case 'turn-limit':
+                    logMessage = '⏸ Turn limit reached - Awaiting user decision to continue or stop';
                     break;
                 default:
                     logMessage = 'Approval required';
@@ -595,13 +679,16 @@ Please complete the login in the browser window, then click **"I've Logged In"**
      * @param maxChars - Maximum characters (default 8000, ~2K tokens)
      */
     private truncateToolResult(toolName: string, result: string, tokenManager?: TokenManager, maxChars: number = 8000): string {
+        // Allow larger output for shell commands (agents use these for exploration)
+        const effectiveMax = toolName === 'run_command' ? Math.max(maxChars, 16000) : maxChars;
+
         // Use TokenManager if available for smarter truncation
         if (tokenManager) {
-            return tokenManager.truncateToolResult(toolName, result, maxChars);
+            return tokenManager.truncateToolResult(toolName, result, effectiveMax);
         }
 
         // Fallback to inline implementation
-        if (result.length <= maxChars) {
+        if (result.length <= effectiveMax) {
             return result;
         }
 
@@ -645,9 +732,9 @@ Please complete the login in the browser window, then click **"I've Logged In"**
         }
 
         // Default truncation with note
-        return result.substring(0, maxChars) +
+        return result.substring(0, effectiveMax) +
             `\n\n[OUTPUT TRUNCATED - original was ${result.length} chars]\n` +
-            `TIP: If you need more details, run a more specific command or check specific parts of the output.`;
+            `TIP: If you need more details, run a more specific command or use grep_search to find specific content.`;
     }
 
     private get storageDir(): string {
@@ -1097,22 +1184,19 @@ Please complete the login in the browser window, then click **"I've Logged In"**
             }
         }
 
-        // Prepend PRD to prompt for the planning phase
+        // Lead with the original user request so the model treats it as a concrete task.
+        // CRITICAL: Do NOT embed PRD inline — that eliminates the model's need to call
+        // read_file, causing it to fall into text-only "describe the plan" mode instead
+        // of entering the agentic tool-calling loop. Keep PRD on disk only; the model's
+        // first read_file call is the behavioral activation that starts tool use.
         const originalPrompt = task.displayPrompt || task.prompt;
-        const prdReference = prdRelativePath
-            ? `\n\n**IMPORTANT**: The full PRD is saved at \`.vibearchitect/prd.md\` (also at \`${prdRelativePath}\`). You MUST read this file first and implement according to its specifications.`
-            : '';
+        const prdPath = prdRelativePath || '.vibearchitect/missions/' + taskId + '/prd.md';
 
-        task.prompt = `## Approved Product Requirement Document (PRD)
+        task.prompt = `${originalPrompt}
 
-The following PRD has been approved by the user after requirement refinement. Implement it exactly as specified.${prdReference}
+## Approved Product Requirement Document (PRD)
 
-${prdContent}
-
----
-
-## Original User Request
-${originalPrompt}`;
+The approved PRD has been saved to \`${prdPath}\`. You MUST start Phase 1 Discovery by calling read_file to read the FULL PRD before doing anything else. The PRD is the ONLY source of truth for all requirements — your plans MUST implement its requirements exactly.`;
 
         // Update status and log
         task.status = 'pending';
@@ -1557,6 +1641,18 @@ ${contextData}
         this._onTaskUpdate.fire({ taskId, task });
 
         try {
+            // Ensure mission folder exists before refinement so checkpoint manager can use it
+            if (!task.missionFolder && workspaceRoot) {
+                const missionDir = path.join(workspaceRoot, '.vibearchitect', 'missions', taskId);
+                try {
+                    fs.mkdirSync(missionDir, { recursive: true });
+                    task.missionFolder = missionDir;
+                    console.log(`[TaskRunner] Created mission folder for refinement: .vibearchitect/missions/${taskId}`);
+                } catch (e) {
+                    console.warn(`[TaskRunner] Could not create mission folder for refinement:`, e);
+                }
+            }
+
             // Now start the session with SMART context building
             // SmartContextBuilder will:
             // 1. Extract keywords from user's prompt
@@ -1565,13 +1661,89 @@ ${contextData}
             // 4. Stay within token budget
             // CRITICAL: Pass workspaceRoot to ensure we ONLY search the selected workspace
             // Also pass constitution so PRD respects workspace rules
+
+            // Create a discovery executor bound to this task's tools and workspace
+            let discoveryExecutor: DiscoveryExecutor | undefined;
+            // Minimal read-only AgentTools for discovery — declared outside if-block
+            // so toolExecutor closure can reference it too
+            const discoveryTools = new AgentTools(workspaceRoot);
+            if (FEATURE_FLAGS.USE_REFINEMENT_DISCOVERY && FEATURE_FLAGS.USE_DISCOVERY_SUB_AGENTS) {
+                // Store a minimal task context so runDiscoverySubAgents can find the Copilot client
+                const copilotClientKey = isClaudeModel ? 'copilotClaude' :
+                    isGPTModel ? 'copilotGPT' : 'copilotGemini';
+                if (!this.taskContexts.has(taskId)) {
+                    this.taskContexts.set(taskId, {
+                        shadowRepo: null as any,
+                        revertManager: null as any,
+                        [copilotClientKey]: aiClient
+                    });
+                }
+
+                discoveryExecutor = async (tasks) => {
+                    return this.runDiscoverySubAgents(
+                        taskId, tasks, workspaceRoot, discoveryTools, task.missionFolder
+                    );
+                };
+            }
+
+            // Create lightweight tool executor for direct search tools
+            const REFINEMENT_MAX_RESULTS = 20;
+            const toolExecutor: RefinementToolExecutor | undefined =
+                FEATURE_FLAGS.USE_REFINEMENT_DISCOVERY && FEATURE_FLAGS.USE_DISCOVERY_SUB_AGENTS
+                    ? async (toolName, args) => {
+                        switch (toolName) {
+                            case 'grep_search':
+                                return discoveryTools.grepSearch(
+                                    args.query as string,
+                                    {
+                                        includePattern: args.includePattern as string | undefined,
+                                        isRegexp: args.isRegexp as boolean | undefined,
+                                        maxResults: Math.min(
+                                            (args.maxResults as number) || REFINEMENT_MAX_RESULTS,
+                                            REFINEMENT_MAX_RESULTS
+                                        )
+                                    }
+                                );
+                            case 'list_files':
+                                return discoveryTools.listFiles(args.path as string);
+                            case 'file_search':
+                                return discoveryTools.fileSearch(
+                                    args.pattern as string,
+                                    Math.min(
+                                        (args.maxResults as number) || REFINEMENT_MAX_RESULTS,
+                                        REFINEMENT_MAX_RESULTS
+                                    )
+                                );
+                            case 'get_diagnostics':
+                                return discoveryTools.getDiagnostics(args.filePath as string | undefined);
+                            case 'codebase_search':
+                                return discoveryTools.codebaseSearch(args.query as string);
+                            default:
+                                return `Error: Tool "${toolName}" is not available via the refinement tool executor.`;
+                        }
+                    }
+                    : undefined;
+
+            // Diagnostic: log all inputs to startSessionWithSmartContext
+            console.log(`[TaskRunner] Refinement discovery diagnostics:`, {
+                USE_REFINEMENT_DISCOVERY: FEATURE_FLAGS.USE_REFINEMENT_DISCOVERY,
+                USE_DISCOVERY_SUB_AGENTS: FEATURE_FLAGS.USE_DISCOVERY_SUB_AGENTS,
+                hasDiscoveryExecutor: !!discoveryExecutor,
+                hasToolExecutor: !!toolExecutor,
+                discoveryExecutorType: typeof discoveryExecutor,
+                toolExecutorType: typeof toolExecutor
+            });
+
             const actualSessionId = await refinementManager.startSessionWithSmartContext(
                 taskId,
                 task.prompt,
                 aiClient,
                 workspaceRoot,  // CRITICAL: Only search within this workspace
                 task.model,  // Pass model ID for token budget calculation
-                constitution  // Pass constitution for constraint-aware PRD generation
+                constitution,  // Pass constitution for constraint-aware PRD generation
+                task.missionFolder,  // Pass mission folder for checkpoint persistence
+                discoveryExecutor,  // Discovery executor for sub-agent spawning
+                toolExecutor   // Lightweight tool executor for direct search
             );
 
             // Log session start to console only - don't add to task.logs to keep content bubble as last log
@@ -1671,6 +1843,9 @@ ${contextData}
             // Clean up stale artifacts from previous missions to prevent session bleeding
             // CRITICAL: Skip cleanup if this task is transitioning from refinement mode
             // because we just saved the PRD and don't want to delete it!
+            // NOTE: fromRefinement is also used later to skip constitution drift detection —
+            // the constitution was JUST created/approved during refinement, no code has been
+            // written, so drift detection would only produce false positives.
             const fromRefinement = (task as any)._fromRefinement;
             if (fromRefinement) {
                 console.log(`[TaskRunner] Skipping artifact cleanup - task came from refinement mode, PRD must be preserved`);
@@ -1718,12 +1893,39 @@ ${contextData}
             // Initialize RuleEnforcer for constitution rule validation
             const ruleEnforcer = createRuleEnforcer();
 
+            // Initialize TurnManager for phase-aware context management (if feature flag enabled)
+            let turnManager: TurnManager | undefined;
+            if (FEATURE_FLAGS.USE_TURN_MANAGER) {
+                const implementationPlanPath = task.missionFolder 
+                    ? path.join(task.missionFolder, 'implementation_plan.md')
+                    : path.join(workspaceRoot, '.vibearchitect', 'implementation_plan.md');
+                
+                turnManager = new TurnManager({
+                    maxRecentTurns: 10,
+                    maxTokens: tokenManager.getMaxTokens(),
+                    implementationPlanPath,
+                    workspaceRoot
+                });
+                
+                // Load implementation plan if it exists
+                await turnManager.loadImplementationPlan(implementationPlanPath);
+                
+                if (turnManagerLoggingEnabled()) {
+                    console.log(`[TaskRunner] TurnManager initialized for task ${taskId}`);
+                    const progress = turnManager.getPhaseProgress();
+                    if (progress) {
+                        console.log(`[TaskRunner] Phase progress: ${progress.current}/${progress.total}, current phase tasks: ${progress.currentPhaseTasks}`);
+                    }
+                }
+            }
+
             const taskContext: TaskContext = {
                 shadowRepo,
                 revertManager,
                 diffAggregator,
                 tokenManager,
-                ruleEnforcer
+                ruleEnforcer,
+                turnManager
             };
             this.taskContexts.set(taskId, taskContext);
 
@@ -1874,6 +2076,17 @@ ${contextData}
                     task.logs.push(`> [Constitution]: Approved by user`);
                 } else {
                     // Existing constitution - check for drift
+                    // CRITICAL: Skip drift detection when transitioning from refinement mode.
+                    // The constitution was JUST created/approved during the refinement phase of
+                    // this same task. No code has been written yet — only the PRD was saved by
+                    // the system. Running drift detection here produces false positives (it sees
+                    // .vibearchitect/ artifacts as "changes") and the approval flow injects the
+                    // constitution text as a user message, poisoning the first AI turn and
+                    // causing chat-only responses instead of tool calls.
+                    if (fromRefinement) {
+                        task.logs.push(`> [Constitution]: Found existing constitution (skipping drift detection — fresh from refinement)`);
+                        console.log(`[TaskRunner] Skipping constitution drift detection — task came from refinement, constitution is fresh`);
+                    } else {
                     task.logs.push(`> [Constitution]: Found existing constitution`);
                     specManager.setPhase(SpecPhase.DRIFT_DETECTION);
                     this.updateStatus(taskId, 'planning', 8, 'Checking for constitution drift...');
@@ -1939,6 +2152,7 @@ ${contextData}
                     } else {
                         task.logs.push(`> [Constitution]: No drift detected, proceeding with existing constitution`);
                     }
+                    } // end else (not fromRefinement) — drift detection block
                 }
 
                 specManager.setPhase(SpecPhase.SPECIFICATION);
@@ -2006,6 +2220,19 @@ ${contextData}
                 taskContext.gemini = new GeminiClient(geminiApiKey, modelId);
             }
 
+            // Update token limits from the actual VS Code LM API (Copilot clients only)
+            const activeCopilotForLimits = taskContext.copilotClaude || taskContext.copilotGPT || taskContext.copilotGemini;
+            if (activeCopilotForLimits) {
+                const apiLimits = activeCopilotForLimits.getModelLimits();
+                if (apiLimits?.maxInputTokens && apiLimits.maxInputTokens > 0) {
+                    taskContext.tokenManager = new TokenManager(apiLimits.maxInputTokens, 'vscode-api');
+                    if (taskContext.turnManager) {
+                        taskContext.turnManager.updateMaxTokens(apiLimits.maxInputTokens);
+                    }
+                    console.log(`[TaskRunner] Updated token limits from API: ${apiLimits.maxInputTokens}`);
+                }
+            }
+
             // We default search tool to use Gemini if available, or fail if not?
             // If using Claude, we might not have Gemini client for search.
             // But we can create a separate Gemini client just for search if key exists?
@@ -2049,108 +2276,7 @@ ${contextData}
             
             Your Mission: ${task.prompt}
             
-            === BASIC TOOLS ===
-            - read_file(path): Read file content.
-            - write_file(path, content): Write file content (auto-creates dirs). Use for NEW files only.
-                                          CRITICAL: ALL non-code/temporary files (notes, poems, plans) MUST go into .vibearchitect/ folder.
-                                          NEVER create .txt/.md files at workspace root unless explicitly asked for documentation.
-${task.missionFolder ? `
-            === MISSION ARTIFACTS (ISOLATION) ===
-            Your mission artifacts folder is: .vibearchitect/missions/${taskId}/
-            ⚠️ NEVER browse or read artifacts from other mission folders in .vibearchitect/missions/.
-            Only access YOUR folder: .vibearchitect/missions/${taskId}/
-            The system will transparently route your .vibearchitect/ artifact reads/writes there.
-` : ''}
-            - apply_diff(path, diff): Apply SEARCH/REPLACE diff to modify existing files. PREFERRED for edits.
-            - list_files(path): List directory.
-            - run_command(command): Execute shell command (git, npm, etc).
-            - search_web(query): Search the web for documentation, solutions, or new concepts.
-            
-            === TOKEN EFFICIENCY (CRITICAL) ===
-            When MODIFYING existing files, ALWAYS use apply_diff instead of write_file.
-            
-            apply_diff Format:
-            <<<<<<< SEARCH
-            exact code to find (must match perfectly)
-            =======
-            replacement code
-            >>>>>>> REPLACE
-            
-            Example - to change a function name:
-            apply_diff("src/utils.ts", "<<<<<<< SEARCH
-            function oldName() {
-            =======
-            function newName() {
-            >>>>>>> REPLACE")
-            
-            === APPLY_DIFF BEST PRACTICES ===
-            1. SEARCH block must match file content EXACTLY (including whitespace and indentation)
-            2. Include 2-3 lines of unique context to ensure correct match location
-            3. BATCH ALL CHANGES to the same file in ONE apply_diff call:
-               <<<<<<< SEARCH
-               first change
-               =======
-               first replacement
-               >>>>>>> REPLACE
-               
-               <<<<<<< SEARCH
-               second change
-               =======
-               second replacement
-               >>>>>>> REPLACE
-            4. For large files (>300 lines), add line hints: <<<<<<< SEARCH @@ 120-135 @@
-            5. Use write_file ONLY for creating NEW files
-            6. ALWAYS read_file BEFORE apply_diff to see exact current content
-            7. If apply_diff fails, read the file again - content may have changed
-            
-            === SIMPLE PREVIEW (just for quick display to user) ===
-            - reload_browser(): Reload the embedded preview pane. Use ONLY to show the user what you built.
-            - navigate_browser(url): Navigate the embedded preview to a URL. Does NOT verify anything.
-            
-            === AUTOMATED UI TESTING (MANDATORY for verification) ===
-            Use these tools to VERIFY your work. They provide AI-powered analysis and self-healing:
-            - browser_launch(true): Launch Chrome with video recording. ALWAYS use recordVideo=true.
-            - browser_navigate(url): Navigate and wait for page load.
-            - browser_screenshot(name?): Take a screenshot.
-            - browser_click(selector): Click an element.
-            - browser_type(selector, text): Type into an input.
-            - browser_wait_for(selector): Wait for an element.
-            - browser_get_dom(): Get page HTML.
-            - browser_verify_ui(category, description): CRITICAL - This uses AI Vision to verify the UI matches expectations.
-            - browser_close(): Close browser and save the video recording.
-
-            === CRITICAL RULES ===
-            
-            1. **VERIFICATION IS MANDATORY**: After creating any web UI, you MUST verify it:
-               a) Start server: run_command("python -m http.server 8080") or similar
-               b) Launch automated browser: browser_launch(true)  <-- ALWAYS with recording
-               c) Navigate: browser_navigate("http://localhost:8080")
-               d) AI Verify: browser_verify_ui("page-name", "description of expected UI")
-               e) If FAIL: Read the issues, fix the code, and call browser_verify_ui AGAIN
-               f) If PASS: browser_close() to save the video
-               g) (Optional) Show to user: navigate_browser("http://localhost:8080")
-               
-            2. **SELF-HEALING LOOP**: 
-               - browser_verify_ui() returns PASS or FAIL with specific issues
-               - If FAIL: Fix each issue listed, then verify again
-               - Repeat until PASS (max 3 attempts)
-               
-            3. **DO NOT SKIP AUTOMATED TESTING**:
-               - reload_browser() is NOT verification - it just shows the preview
-               - ONLY browser_verify_ui() provides actual verification with AI analysis
-               - Never say "verified" unless you called browser_verify_ui and got PASS
-               
-            4. **VIDEO RECORDING**: Always use browser_launch(true) so the session is recorded.
-            
-            5. **COMMUNICATE**: Explain what you did and what the verification found.
-            
-            6. **PYTHON RULES**:
-               - NEVER install globally.
-               - Create a venv: 'python -m venv venv'.
-               - Install packages: 'venv/Scripts/pip install ...' (Windows) or 'venv/bin/pip ...' (Mac/Linux).
-               - Run scripts: 'venv/Scripts/python app.py' (Windows) or 'venv/bin/python app.py' (Mac/Linux).
-               
-            7. **REASONING**: Before calling ANY tool, explain your plan in 1-2 sentences.
+${this.getBaseAgentInstructions(taskId, task.missionFolder)}
             `;
 
 
@@ -2182,15 +2308,71 @@ ${task.missionFolder ? `
                 task.logs.push(`> [Constitution]: Injected into agent context`);
             }
 
+            // Phase 4: Inject artifact reference section if artifacts exist on disk
+            const artifactReferences = this.buildArtifactReferenceSection(workspaceRoot, task.missionFolder);
+            if (artifactReferences) {
+                systemPrompt += artifactReferences;
+                task.logs.push(`> [Artifacts]: Source of truth document references injected`);
+            }
+
+            // Inject phase-aware context and instructions if TurnManager is enabled
+            if (taskContext.turnManager && FEATURE_FLAGS.USE_TURN_MANAGER) {
+                const phaseContext = taskContext.turnManager.getContextForModel();
+                if (phaseContext) {
+                    systemPrompt += `
+
+## PHASE EXECUTION CONTEXT
+
+${phaseContext}
+
+### IMPORTANT CONSTRAINTS
+- Focus ONLY on this phase's requirements
+- Do NOT implement features from future phases
+- Complete deliverables before finishing
+- If budget is critical, wrap up and note remaining work
+
+---
+
+`;
+                }
+                
+                // Add phase-based execution instructions
+                systemPrompt += `
+## Phase-Based Execution Protocol
+
+Your implementation is organized into phases from the implementation plan.
+After completing each task:
+1. Mark the task complete in task.md: change \`- [ ]\` to \`- [x]\`
+2. Announce: "✅ Completed: [task description]"
+3. When all tasks in a phase are done, announce: "Phase N complete"
+
+This helps the system track progress and manage context efficiently.
+
+## Diagnostic Verification Protocol
+
+After editing a file with apply_diff or write_file, call get_diagnostics on that file to verify no errors were introduced. Fix any errors before moving to the next file.
+
+Use codebase_search when you need to find code by concept (e.g., "authentication middleware", "database connection setup") rather than exact text. Falls back to grep if semantic search is unavailable.
+`;
+                
+                if (turnManagerLoggingEnabled()) {
+                    const progress = taskContext.turnManager.getPhaseProgress();
+                    if (progress) {
+                        console.log(`[TaskRunner] Phase context injected: Phase ${progress.current}/${progress.total}`);
+                    }
+                }
+            }
+
             // Start session with selected model
             let chat: ISession;
+            const mainTools = getMainAgentTools();
 
             if (isGPTModel && taskContext.copilotGPT) {
-                chat = taskContext.copilotGPT.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
+                chat = taskContext.copilotGPT.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low', true, mainTools);
             } else if (isGeminiCopilotModel && taskContext.copilotGemini) {
-                chat = taskContext.copilotGemini.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
+                chat = taskContext.copilotGemini.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low', true, mainTools);
             } else if (isClaudeModel && useCopilotForClaude && taskContext.copilotClaude) {
-                chat = taskContext.copilotClaude.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
+                chat = taskContext.copilotClaude.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low', true, mainTools);
             } else if (isClaudeModel && taskContext.claude) {
                 chat = taskContext.claude.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
             } else if (taskContext.gemini) {
@@ -2230,15 +2412,51 @@ ${task.missionFolder ? `
             this.updateStatus(taskId, 'executing', task.progress, "Resuming mission...");
         }
 
+        // Phase boundary reset tracking (read from phase-state.json written by update_phase_status tool)
+        let lastCompletedPhase = 0;
+
         try {
             // Maximum turns for complex tasks in large workspaces
             // Each turn = thinking + tool calls + response
             // Complex features may need: file reading (20), writing (30), commands (10), debugging (30), verification (10)
             // 200 turns provides headroom while preventing runaway tasks
             const maxTurns = 200;
-            for (let i = 0; i < maxTurns; i++) {
+            let turnCounter = 0;
+            let consecutiveApiErrors = 0;  // Track consecutive transient API failures for turn-level retry
+            const MAX_TURN_RETRIES = 2;    // Max turn-level retries before failing the mission
+            let consecutiveTextOnlyTurns = 0;  // Track text-only responses to allow "thinking" turns
+            const MAX_TEXT_ONLY_TURNS = 3;     // Allow up to 3 text-only turns before pausing for user
+            while (true) {
+                turnCounter++;
+
+                // ========== TURN LIMIT GATE ==========
+                // When turn limit is reached, pause and ask user whether to continue
+                if (turnCounter > maxTurns) {
+                    const turnLimitContent = `⏸ **Turn Limit Reached**\n\nThe mission has been running for **${maxTurns} turns**.\n\nThis is a safety check to make sure the mission is progressing as expected and to prevent runaway execution.\n\nWould you like to **continue** the mission for another ${maxTurns} turns, or **stop** it here?`;
+                    task.logs.push(`\n> [System]: **Turn limit reached (${maxTurns} turns).** Waiting for user confirmation to continue...`);
+                    this._onTaskUpdate.fire({ taskId, task });
+
+                    const shouldContinue = await this.waitForApproval(taskId, 'turn-limit', turnLimitContent);
+                    if (!shouldContinue) {
+                        // User chose to abort
+                        this.archiveMissionArtifacts(task);
+                        break;
+                    }
+                    // User chose to continue — reset counter for another batch of turns
+                    turnCounter = 1;
+                }
+
+                // ========== STOP GUARD ==========
+                // If the task was stopped by the user (or completed externally), exit loop immediately.
+                // Cast to string: TS narrows the type but status can be mutated asynchronously by stopTask().
+                const currentStatus = task.status as string;
+                if (currentStatus === 'failed' || currentStatus === 'completed') {
+                    console.log(`[TaskRunner] Loop exit: task ${taskId} status is '${currentStatus}', stopping execution loop`);
+                    break;
+                }
+
                 // If the user interrupted or we are just continuing
-                this.updateStatus(taskId, 'executing', task.progress, `Turn ${i + 1}: Thinking...`);
+                this.updateStatus(taskId, 'executing', task.progress, `Turn ${turnCounter}: Thinking...`);
 
                 // Check for user messages (High Priority)
                 const isToolResponse = Array.isArray(currentPrompt) && currentPrompt.some((p: any) => p.functionResponse);
@@ -2301,6 +2519,15 @@ ${task.missionFolder ? `
                         // If current prompt was string, upgrade it to parts
                         currentPrompt = [{ text: currentPrompt }, ...promptParts];
                     }
+                    
+                    // TurnManager: Track user message
+                    const userTurnCtx = this.taskContexts.get(taskId);
+                    if (userTurnCtx?.turnManager && FEATURE_FLAGS.USE_TURN_MANAGER) {
+                        userTurnCtx.turnManager.addTurn('user', userText);
+                        if (turnManagerLoggingEnabled()) {
+                            console.log(`[TaskRunner] TurnManager tracked user message (${userText.length} chars)`);
+                        }
+                    }
                 }
 
                 // Check if session was invalidated (e.g., by model switch)
@@ -2308,6 +2535,11 @@ ${task.missionFolder ? `
                 let activeChat = this.sessions.get(taskId);
                 console.log(`[TaskRunner] Session check - exists: ${!!activeChat}, task.model: ${task.model}`);
                 if (!activeChat) {
+                    // If task was stopped by user, don't recreate — just exit
+                    if ((task.status as string) === 'failed') {
+                        console.log(`[TaskRunner] Session gone and task failed — user stopped, exiting loop`);
+                        break;
+                    }
                     // Session was deleted (model switch) - recreate with new model
                     task.logs.push(`> [System]: Model changed mid-task, creating new session with ${task.model}...`);
                     const config = vscode.workspace.getConfiguration('vibearchitect');
@@ -2321,13 +2553,14 @@ ${task.missionFolder ? `
                     // Rebuild system prompt (simplified version for continuation)
                     const continuationPrompt = `You are continuing a task. Previous context is included. ${task.prompt}`;
 
+                    const recreateTools = getMainAgentTools();
                     if (isGPTModel) {
                         const gptClient = new CopilotGPTClient();
                         await gptClient.initialize(modelId);
                         if (this.taskContexts.has(taskId)) {
                             this.taskContexts.get(taskId)!.copilotGPT = gptClient;
                         }
-                        activeChat = gptClient.startSession(continuationPrompt, task.mode === 'planning' ? 'high' : 'low');
+                        activeChat = gptClient.startSession(continuationPrompt, task.mode === 'planning' ? 'high' : 'low', true, recreateTools);
                     } else if (isGeminiCopilotModel) {
                         const geminiCopilotClient = new CopilotGeminiClient();
                         const initialized = await geminiCopilotClient.initialize(modelId);
@@ -2335,7 +2568,7 @@ ${task.missionFolder ? `
                             if (this.taskContexts.has(taskId)) {
                                 this.taskContexts.get(taskId)!.copilotGemini = geminiCopilotClient;
                             }
-                            activeChat = geminiCopilotClient.startSession(continuationPrompt, task.mode === 'planning' ? 'high' : 'low');
+                            activeChat = geminiCopilotClient.startSession(continuationPrompt, task.mode === 'planning' ? 'high' : 'low', true, recreateTools);
                         } else {
                             // Fallback to API Gemini
                             const geminiApiKey = config.get<string>('geminiApiKey') || '';
@@ -2352,7 +2585,7 @@ ${task.missionFolder ? `
                         if (this.taskContexts.has(taskId)) {
                             this.taskContexts.get(taskId)!.copilotClaude = copilotClient;
                         }
-                        activeChat = copilotClient.startSession(continuationPrompt, task.mode === 'planning' ? 'high' : 'low');
+                        activeChat = copilotClient.startSession(continuationPrompt, task.mode === 'planning' ? 'high' : 'low', true, recreateTools);
                     } else if (isClaudeModel) {
                         const claudeApiKey = config.get<string>('claudeApiKey') || '';
                         if (!claudeApiKey) { throw new Error('Claude API key not configured'); }
@@ -2378,16 +2611,52 @@ ${task.missionFolder ? `
                 const response = await result.response;
                 const text = response.text();
 
-                if (text) {
+                // ==================== ERROR TEXT GUARD ====================
+                // Detect error responses early — do NOT log them as AI output or
+                // add them to TurnManager. They are handled in the isErrorResponse block below.
+                const isApiErrorText = text.startsWith('Error:') ||
+                    text.startsWith('TransientError:') ||
+                    text.includes('API Error') ||
+                    text.includes('access denied') ||
+                    text.includes('Copilot Response Filtered') ||
+                    text.includes('not initialized') ||
+                    text.includes('model not found') ||
+                    text.includes('service unavailable') ||
+                    text.includes('rate limit');
+
+                if (text && !isApiErrorText) {
                     // Use model-aware prefix for log parsing (Gemini or Claude)
                     const modelPrefix = (task.model || '').startsWith('claude') ? '**Claude**' :
                         (task.model || '').startsWith('gpt') ? '**GPT**' :
                             (task.model || '').startsWith('gemini') ? '**Gemini**' : '**AI**';
                     task.logs.push(`${modelPrefix}: ${text} `);
+                    // Immediately notify UI so AI response appears incrementally
+                    this._onTaskUpdate.fire({ taskId, task });
+
+                    // Reset consecutive error counter on any successful response
+                    consecutiveApiErrors = 0;
 
                     // Add debug logging for summary extraction
                     if (text.toLowerCase().includes("mission summary")) {
                         console.log(`[TaskRunner] Potential summary detected in response: ${text.substring(0, 50)}...`);
+                    }
+
+                    // TurnManager: Track AI response and check for phase completion
+                    const turnCtx = this.taskContexts.get(taskId);
+                    if (turnCtx?.turnManager && FEATURE_FLAGS.USE_TURN_MANAGER) {
+                        // Add the assistant turn
+                        turnCtx.turnManager.addTurn('assistant', text);
+                        
+                        // Check for phase completion signals in the response
+                        const phaseCompletion = turnCtx.turnManager.detectPhaseCompletion(text);
+                        if (phaseCompletion.completed) {
+                            turnCtx.turnManager.onPhaseComplete(phaseCompletion.phaseNumber);
+                            
+                            if (turnManagerLoggingEnabled()) {
+                                console.log(`[TaskRunner] Phase ${phaseCompletion.phaseNumber} complete: ${phaseCompletion.reason}`);
+                            }
+                            task.logs.push(`✅ Phase ${phaseCompletion.phaseNumber} complete. Context summarized for efficiency.`);
+                        }
                     }
 
                     // NOTE: Do NOT break here on "MISSION COMPLETE" - tool calls must be processed first!
@@ -2403,6 +2672,7 @@ ${task.missionFolder ? `
                         const fnName = call.name;
                         const args = call.args;
                         task.logs.push(`> [Tool Call]: ${fnName} (${JSON.stringify(args)})`);
+                        this._onTaskUpdate.fire({ taskId, task });
 
                         let toolResult = '';
                         try {
@@ -2426,29 +2696,53 @@ ${task.missionFolder ? `
                             switch (fnName) {
                                 case 'read_file': {
                                     const filePath = args.path as string;
-                                    let content = await tools.readFile(filePath);
+                                    const startLine = args.startLine as number | undefined;
+                                    const endLine = args.endLine as number | undefined;
 
-                                    // Token-aware truncation using unified TokenManager
-                                    // Gets model-specific limits from VS Code LM API or fallbacks
-                                    const taskContext = this.taskContexts.get(taskId);
-                                    const tokenMgr = taskContext?.tokenManager;
+                                    // Discovery phase guard: redirect code file reads to spawn_analysis_agents
+                                    if (FEATURE_FLAGS.USE_DISCOVERY_SUB_AGENTS) {
+                                        const normalizedPath = filePath.replace(/\\/g, '/').toLowerCase();
+                                        const isArtifactRead = normalizedPath.includes('.vibearchitect/');
+                                        if (!isArtifactRead) {
+                                            const guardBase = task.missionFolder
+                                                ? task.missionFolder
+                                                : path.join(task.worktreePath || '', '.vibearchitect');
+                                            const hasPlanningArtifacts = fs.existsSync(path.join(guardBase, 'task.md'))
+                                                && fs.existsSync(path.join(guardBase, 'implementation_plan.md'));
+                                            if (!hasPlanningArtifacts) {
+                                                console.log(`[TaskRunner] 🔍 Discovery guard: blocked read_file("${filePath}") — use spawn_analysis_agents instead`);
+                                                toolResult = `⚠️ DISCOVERY PHASE: read_file is not available for code files during Discovery. Use spawn_analysis_agents to analyze files in parallel. Example:\n\n\`\`\`tool_call\n{"name": "spawn_analysis_agents", "args": {"tasks": [\n  {"id": "analyze_main", "description": "Analyze ${filePath}", "files": ["${filePath}"], "question": "What does this file do? What are the key functions, classes, and patterns?"}\n]}}\n\`\`\`\n\nGroup multiple files into tasks for efficiency. After sub-agents complete, read their analysis artifacts from .vibearchitect/analysis/*.md.`;
+                                                break;
+                                            }
+                                        }
+                                    }
 
-                                    // Calculate max chars based on mode and available tokens
-                                    // For planning/fast, allow up to 25% of available tokens for a single file
-                                    const mode = task.mode === 'fast' ? 'fast' : 'planning';
-                                    const availableTokens = tokenMgr?.getAvailableTokens(mode) ?? 30000;
-                                    const maxFileTokens = Math.floor(availableTokens * 0.25);
-                                    const MAX_FILE_CHARS = Math.max(20000, maxFileTokens * 4); // Min 20K chars
+                                    let content = await tools.readFile(filePath, startLine, endLine);
 
-                                    if (!content.startsWith('Error') && content.length > MAX_FILE_CHARS) {
-                                        // Use intelligent truncation that preserves important parts
-                                        const originalLength = content.length;
-                                        content = tokenMgr?.truncateFile(content, MAX_FILE_CHARS, filePath)
-                                            ?? content.slice(0, MAX_FILE_CHARS);
-                                        const truncatedLength = content.length;
+                                    // Only apply truncation for full-file reads (no line range specified)
+                                    if (startLine === undefined && endLine === undefined) {
+                                        // Token-aware truncation using unified TokenManager
+                                        // Gets model-specific limits from VS Code LM API or fallbacks
+                                        const taskContext = this.taskContexts.get(taskId);
+                                        const tokenMgr = taskContext?.tokenManager;
 
-                                        task.logs.push(`[TokenManager] Truncated ${filePath}: ${Math.round(originalLength / 1000)}KB → ${Math.round(truncatedLength / 1000)}KB`);
-                                        content += `\n\n[FILE TRUNCATED: Original ${Math.round(originalLength / 1000)}KB. Use apply_diff for edits - do NOT use write_file on truncated content.]`;
+                                        // Calculate max chars based on mode and available tokens
+                                        // For planning/fast, allow up to 25% of available tokens for a single file
+                                        const mode = task.mode === 'fast' ? 'fast' : 'planning';
+                                        const availableTokens = tokenMgr?.getAvailableTokens(mode) ?? 30000;
+                                        const maxFileTokens = Math.floor(availableTokens * 0.25);
+                                        const MAX_FILE_CHARS = Math.max(30000, maxFileTokens * 4); // Min 30K chars
+
+                                        if (!content.startsWith('Error') && content.length > MAX_FILE_CHARS) {
+                                            // Use intelligent truncation that preserves important parts
+                                            const originalLength = content.length;
+                                            content = tokenMgr?.truncateFile(content, MAX_FILE_CHARS, filePath)
+                                                ?? content.slice(0, MAX_FILE_CHARS);
+                                            const truncatedLength = content.length;
+
+                                            task.logs.push(`[TokenManager] Truncated ${filePath}: ${Math.round(originalLength / 1000)}KB → ${Math.round(truncatedLength / 1000)}KB`);
+                                            content += `\n\n[FILE TRUNCATED: Original ${Math.round(originalLength / 1000)}KB. Use grep_search to find specific code, then read_file with startLine/endLine to read sections. Do NOT use write_file on truncated content.]`;
+                                        }
                                     }
 
                                     toolResult = content;
@@ -2659,6 +2953,20 @@ ${task.missionFolder ? `
                                 case 'list_files':
                                     toolResult = await tools.listFiles(args.path as string);
                                     break;
+                                case 'grep_search': {
+                                    const query = args.query as string;
+                                    const includePattern = args.includePattern as string | undefined;
+                                    const isRegexp = args.isRegexp as boolean | undefined;
+                                    const maxResults = args.maxResults as number | undefined;
+                                    toolResult = await tools.grepSearch(query, { includePattern, isRegexp, maxResults });
+                                    break;
+                                }
+                                case 'file_search': {
+                                    const searchPattern = args.pattern as string;
+                                    const searchMaxResults = args.maxResults as number | undefined;
+                                    toolResult = await tools.fileSearch(searchPattern, searchMaxResults);
+                                    break;
+                                }
 
                                 case 'run_command': {
                                     const cmd = (args.command as string || '').trim();
@@ -2682,6 +2990,10 @@ ${task.missionFolder ? `
                                     if (cmd.toLowerCase().includes('reload_browser')) {
                                         this._onReloadBrowser.fire();
                                         toolResult = "Browser reload triggered (via auto-correction).";
+                                    } else if (/^\s*(cat|type|more|head|tail|less)\s+[^|>&]+$/i.test(cmd) && !/type\s+nul/i.test(cmd)) {
+                                        // Intercept simple file-reading shell commands and redirect to read_file
+                                        const fileArg = cmd.replace(/^\s*(cat|type|more|head|tail|less)\s+/i, '').trim().replace(/["']/g, '');
+                                        toolResult = `⚠️ Use read_file("${fileArg}") instead of run_command to read files.\nread_file supports line ranges and won't have cross-platform issues.`;
                                     } else {
                                         toolResult = await tools.runCommand(cmd, waitTimeoutMs);
                                     }
@@ -2752,6 +3064,103 @@ ${task.missionFolder ? `
                                         }
                                     }
                                     break;
+                                case 'spawn_analysis_agents': {
+                                    if (!FEATURE_FLAGS.USE_DISCOVERY_SUB_AGENTS) {
+                                        toolResult = 'Error: Discovery sub-agents are disabled. Analyze files directly using read_file.';
+                                        break;
+                                    }
+
+                                    // Guard: only allowed during Discovery phase (before planning artifacts exist)
+                                    const spawnWorkspaceRoot = task.worktreePath || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
+                                    const artBasePath = task.missionFolder
+                                        ? task.missionFolder
+                                        : path.join(spawnWorkspaceRoot, '.vibearchitect');
+                                    const taskMdExists = fs.existsSync(path.join(artBasePath, 'task.md'));
+                                    const planMdExists = fs.existsSync(path.join(artBasePath, 'implementation_plan.md'));
+
+                                    if (taskMdExists && planMdExists) {
+                                        toolResult = 'Error: spawn_analysis_agents is only available during Discovery (Phase 1). Planning artifacts already exist — you are past the Discovery phase. Use read_file directly.';
+                                        console.warn('[TaskRunner] ⚠️ spawn_analysis_agents rejected: planning artifacts already exist');
+                                        break;
+                                    }
+
+                                    const analysisTasks = args.tasks as Array<{ id: string; description: string; files: string[]; question: string }>;
+                                    if (!analysisTasks || !Array.isArray(analysisTasks) || analysisTasks.length === 0) {
+                                        toolResult = 'Error: spawn_analysis_agents requires a "tasks" array with at least one analysis task.';
+                                        break;
+                                    }
+
+                                    console.log(`[TaskRunner] 🔍 spawn_analysis_agents: ${analysisTasks.length} tasks requested`);
+                                    task.logs.push(`🔍 Spawning ${analysisTasks.length} parallel analysis agents for discovery...`);
+                                    this._onTaskUpdate.fire({ taskId, task });
+
+                                    toolResult = await this.runDiscoverySubAgents(
+                                        taskId, analysisTasks, spawnWorkspaceRoot, tools, task.missionFolder
+                                    );
+                                    break;
+                                }
+                                case 'update_phase_status': {
+                                    const completedPhase = String(args.completedPhase || '').toLowerCase();
+                                    const nextPhase = String(args.nextPhase || '').toLowerCase();
+                                    const implPhaseNum = typeof args.implementationPhaseNumber === 'number' ? args.implementationPhaseNumber : undefined;
+                                    const summary = String(args.summary || '');
+
+                                    const validPhases = ['refinement', 'planning', 'implementation', 'testing', 'done'];
+                                    if (!validPhases.includes(completedPhase) || !validPhases.includes(nextPhase)) {
+                                        toolResult = `Error: Invalid phase names. completedPhase and nextPhase must be one of: ${validPhases.join(', ')}`;
+                                        break;
+                                    }
+
+                                    const phaseStateDir = task.missionFolder
+                                        || path.join(task.worktreePath || '', '.vibearchitect');
+                                    if (!fs.existsSync(phaseStateDir)) {
+                                        fs.mkdirSync(phaseStateDir, { recursive: true });
+                                    }
+                                    const phaseStatePath = path.join(phaseStateDir, 'phase-state.json');
+
+                                    // Load existing state or create new
+                                    let phaseState: any = {};
+                                    if (fs.existsSync(phaseStatePath)) {
+                                        try { phaseState = JSON.parse(fs.readFileSync(phaseStatePath, 'utf-8')); } catch { /* start fresh */ }
+                                    }
+
+                                    const transition = {
+                                        from: completedPhase,
+                                        to: nextPhase,
+                                        implementationPhaseNumber: implPhaseNum,
+                                        summary,
+                                        turn: turnCounter,
+                                        timestamp: new Date().toISOString()
+                                    };
+
+                                    phaseState.completedPhase = completedPhase;
+                                    phaseState.currentPhase = nextPhase;
+                                    if (implPhaseNum !== undefined) {
+                                        phaseState.implementationPhaseNumber = implPhaseNum;
+                                    }
+                                    phaseState.lastUpdatedByTurn = turnCounter;
+                                    if (!Array.isArray(phaseState.transitions)) {
+                                        phaseState.transitions = [];
+                                    }
+                                    phaseState.transitions.push(transition);
+
+                                    fs.writeFileSync(phaseStatePath, JSON.stringify(phaseState, null, 2), 'utf-8');
+                                    console.log(`[TaskRunner] Phase status updated: ${completedPhase} → ${nextPhase} (turn ${turnCounter})`);
+                                    task.logs.push(`🔄 Phase transition: ${completedPhase} → ${nextPhase}`);
+                                    this._onTaskUpdate.fire({ taskId, task });
+
+                                    toolResult = `Phase status updated. Completed: ${completedPhase}. Current: ${nextPhase}.${implPhaseNum !== undefined ? ` Implementation sub-phase: ${implPhaseNum}.` : ''} Proceed with ${nextPhase} phase.`;
+                                    break;
+                                }
+                                case 'get_diagnostics':
+                                    toolResult = await tools.getDiagnostics(args.filePath as string | undefined);
+                                    break;
+                                case 'codebase_search':
+                                    toolResult = await tools.codebaseSearch(args.query as string);
+                                    break;
+                                case 'run_tests':
+                                    toolResult = await tools.runTests(args.testPattern as string | undefined);
+                                    break;
                                 default:
                                     toolResult = `Error: Unknown tool ${fnName} `;
                             }
@@ -2761,12 +3170,37 @@ ${task.missionFolder ? `
 
                         const preview = toolResult.length > 500 ? toolResult.substring(0, 500) + '... (truncated)' : toolResult;
                         task.logs.push(`> [Result]: ${preview} `);
+                        this._onTaskUpdate.fire({ taskId, task });
 
                         // CRITICAL: Truncate tool result BEFORE sending to AI to prevent token limit issues
                         // This is especially important for compile errors which can be 50,000+ chars
                         // Use TokenManager for model-aware truncation limits
                         const taskCtx = this.taskContexts.get(taskId);
+                        
+                        // ALWAYS use truncateToolResult for the data sent to the model (preserves content)
                         const truncatedForAI = this.truncateToolResult(fnName, toolResult, taskCtx?.tokenManager);
+                        
+                        // If TurnManager is enabled, ALSO track the tool call for phase awareness
+                        // but do NOT use its summary for the model response
+                        if (taskCtx?.turnManager && FEATURE_FLAGS.USE_TURN_MANAGER) {
+                            taskCtx.turnManager.addToolResult(fnName, args, toolResult);
+                            
+                            // Special handling: refresh phase progress if task.md or implementation_plan.md was modified
+                            if ((fnName === 'apply_diff' || fnName === 'write_file') && args.path) {
+                                const filePath = String(args.path);
+                                if (filePath.endsWith('task.md') || filePath.endsWith('implementation_plan.md')) {
+                                    const refreshResult = taskCtx.turnManager.refreshPhaseProgress();
+                                    if (refreshResult.phaseJustCompleted && turnManagerLoggingEnabled()) {
+                                        console.log(`[TaskRunner] Phase ${refreshResult.completedPhase} completed via task file update`);
+                                        task.logs.push(`✅ Phase ${refreshResult.completedPhase} completed. Context optimized.`);
+                                    }
+                                }
+                            }
+                            
+                            if (turnManagerLoggingEnabled()) {
+                                console.log(`[TaskRunner] TurnManager processed ${fnName}`);
+                            }
+                        }
 
                         toolParts.push({
                             functionResponse: {
@@ -2780,6 +3214,9 @@ ${task.missionFolder ? `
                     // FLUSH AGGREGATED DIFFS AT END OF TURN
                     // After processing all tool calls, apply any queued diffs
                     // This ensures batched application with single undo step
+                    // IMPORTANT: Results are appended to existing tool results
+                    // (not pushed as new entries) to avoid tool_use/tool_result
+                    // count mismatch with native tool calling APIs.
                     // ============================================
                     const flushContext = this.taskContexts.get(taskId);
                     if (flushContext?.diffAggregator?.hasPendingDiffs()) {
@@ -2788,32 +3225,46 @@ ${task.missionFolder ? `
 
                         const flushResults = await flushContext.diffAggregator.flushAll();
 
+                        // Build a combined flush summary
+                        const flushSummaryParts: string[] = [];
                         for (const result of flushResults.results) {
                             task.logs.push(`[DiffAggregator] ${result.filePath}: ${result.message}`);
-
-                            // Add flush result to tool parts so model knows what happened
-                            toolParts.push({
-                                functionResponse: {
-                                    name: 'apply_diff_batch',
-                                    response: {
-                                        content: `Batched diff result for ${result.filePath}:\n${result.message}`,
-                                        success: result.success,
-                                        appliedBlocks: result.appliedBlocks,
-                                        totalBlocks: result.totalBlocks,
-                                        aggregatedDiffs: result.aggregatedDiffs
-                                    }
-                                }
-                            });
+                            flushSummaryParts.push(`Batched diff result for ${result.filePath}:\n${result.message}`);
                         }
 
                         if (flushResults.totalBlocksFailed > 0) {
                             task.logs.push(`[DiffAggregator] ⚠️ ${flushResults.totalBlocksFailed} blocks failed to apply`);
+                        }
+
+                        // Append flush results to the LAST apply_diff tool result
+                        // to avoid creating extra tool_result messages
+                        if (flushSummaryParts.length > 0) {
+                            const flushSummary = flushSummaryParts.join('\n\n');
+                            let lastDiffIdx = -1;
+                            for (let j = toolParts.length - 1; j >= 0; j--) {
+                                if ((toolParts[j] as any).functionResponse?.name === 'apply_diff') {
+                                    lastDiffIdx = j;
+                                    break;
+                                }
+                            }
+                            if (lastDiffIdx >= 0) {
+                                const existing = toolParts[lastDiffIdx].functionResponse.response.content || '';
+                                toolParts[lastDiffIdx].functionResponse.response.content =
+                                    existing + '\n\n' + flushSummary;
+                            } else if (toolParts.length > 0) {
+                                // No apply_diff found (edge case) — append to last result
+                                const last = toolParts[toolParts.length - 1];
+                                const existing = last.functionResponse.response.content || '';
+                                last.functionResponse.response.content = existing + '\n\n' + flushSummary;
+                            }
                         }
                     }
 
                     // ============================================
                     // CONSTITUTION RULE ENFORCEMENT
                     // Validate file edits against constitution rules
+                    // Results are appended to existing tool results to avoid
+                    // tool_use/tool_result count mismatch.
                     // ============================================
                     const enforceContext = this.taskContexts.get(taskId);
                     if (enforceContext?.ruleEnforcer && task.fileEdits && task.fileEdits.length > 0) {
@@ -2834,25 +3285,104 @@ ${task.missionFolder ? `
                             const logMsg = enforceContext.ruleEnforcer.generateLogMessage(violations);
                             task.logs.push(logMsg);
 
-                            // Inject violations into next prompt so agent can fix them
+                            // Append violations to the last tool result instead of pushing
+                            // a new entry, to avoid tool_use/tool_result count mismatch
                             const violationPrompt = enforceContext.ruleEnforcer.formatViolationsForAgent(violations);
-                            if (violationPrompt) {
-                                toolParts.push({
-                                    functionResponse: {
-                                        name: 'constitution_check',
-                                        response: { content: violationPrompt }
+                            if (violationPrompt && toolParts.length > 0) {
+                                const last = toolParts[toolParts.length - 1];
+                                const existing = last.functionResponse.response.content || '';
+                                last.functionResponse.response.content =
+                                    existing + '\n\n⚠️ CONSTITUTION VIOLATION:\n' + violationPrompt;
+                            }
+                        }
+                    }
+
+                    // ============================================
+                    // PHASE BOUNDARY DETECTION & SESSION RESET
+                    // Reads phase-state.json written by the update_phase_status tool.
+                    // Only resets session when the agent explicitly declares a transition.
+                    // ============================================
+                    if (FEATURE_FLAGS.USE_PHASE_BOUNDARY_RESETS) {
+                        const phaseStateDir = task.missionFolder
+                            || path.join(task.worktreePath || '', '.vibearchitect');
+                        const phaseStatePath = path.join(phaseStateDir, 'phase-state.json');
+
+                        if (fs.existsSync(phaseStatePath)) {
+                            try {
+                                const phaseState = JSON.parse(fs.readFileSync(phaseStatePath, 'utf-8'));
+                                const currentPhase = phaseState.currentPhase || '';
+                                const completedPhase = phaseState.completedPhase || '';
+                                const implPhaseNum = phaseState.implementationPhaseNumber || 0;
+
+                                // Determine if a transition happened THIS turn
+                                const transitionThisTurn = phaseState.lastUpdatedByTurn === (turnCounter);
+
+                                if (transitionThisTurn) {
+                                    // Map JSON state to boundary type
+                                    let boundaryType: 'planning-to-implementation' | 'phase-to-phase' | 'implementation-to-testing';
+                                    let description: string;
+                                    let nextPrompt: string;
+
+                                    if (completedPhase === 'planning' && currentPhase === 'implementation') {
+                                        boundaryType = 'planning-to-implementation';
+                                        description = 'Planning complete → Starting implementation';
+                                        nextPrompt = 'Read the implementation_plan.md and begin Phase 1.';
+                                        lastCompletedPhase = 0;
+                                    } else if (completedPhase === 'implementation' && currentPhase === 'implementation') {
+                                        // Sub-phase transition within implementation
+                                        boundaryType = 'phase-to-phase';
+                                        description = `Implementation Phase ${implPhaseNum} complete → Starting Phase ${implPhaseNum + 1}`;
+                                        nextPrompt = `Read the implementation_plan.md and begin Phase ${implPhaseNum + 1}.`;
+                                        lastCompletedPhase = implPhaseNum;
+                                    } else if (completedPhase === 'implementation' && currentPhase === 'testing') {
+                                        boundaryType = 'implementation-to-testing';
+                                        description = 'Implementation complete → Starting testing';
+                                        nextPrompt = 'Read the task.md and implementation_plan.md, then verify the implementation.';
+                                        lastCompletedPhase = implPhaseNum || lastCompletedPhase;
+                                    } else {
+                                        // Unknown/custom transition — skip reset, just log
+                                        console.log(`[TaskRunner] Phase transition noted: ${completedPhase} → ${currentPhase} (no session reset)`);
+                                        // fall through to normal flow
+                                        currentPrompt = toolParts;
+                                        continue;
                                     }
-                                });
+
+                                    console.log(`[TaskRunner] Phase boundary from phase-state.json: ${boundaryType}`);
+                                    task.logs.push(`🔄 ${description} — Optimizing context...`);
+                                    this._onTaskUpdate.fire({ taskId, task });
+
+                                    const freshPrompt = this.buildPhaseTransitionPrompt(
+                                        taskId, task, task.worktreePath || '', boundaryType, {
+                                            phaseNumber: implPhaseNum || undefined,
+                                            filesModified: [],
+                                            filesCreated: [],
+                                            summary: (phaseState.transitions?.slice(-1)?.[0]?.summary) || ''
+                                        }
+                                    );
+
+                                    const transitionTools = getMainAgentTools();
+                                    const newSession = this.createSessionFromContext(taskId, freshPrompt, 'high', transitionTools);
+                                    if (newSession) {
+                                        chat = newSession;
+                                        currentPrompt = nextPrompt;
+                                        continue;
+                                    }
+                                    // If createSessionFromContext returns null, fall through to normal flow
+                                }
+                            } catch (e) {
+                                console.warn(`[TaskRunner] Failed to read phase-state.json: ${e}`);
                             }
                         }
                     }
 
                     currentPrompt = toolParts;
+                    consecutiveTextOnlyTurns = 0;  // Reset: model is actively using tools
                     continue;
 
                 } else {
                     // Check if the AI returned an error rather than a conversational response
                     const isErrorResponse = text.startsWith('Error:') ||
+                        text.startsWith('TransientError:') ||
                         text.includes('API Error') ||
                         text.includes('access denied') ||
                         text.includes('Copilot Response Filtered') ||
@@ -2862,8 +3392,50 @@ ${task.missionFolder ? `
                         text.includes('rate limit');
 
                     if (isErrorResponse) {
-                        // This is an API/service error, NOT a question awaiting user input
-                        task.logs.push(`\n> [!CAUTION]\n> **AI API Error**: ${text.substring(0, 300)}`);
+                        // ==================== TRANSIENT RETRY AT TURN LEVEL ====================
+                        // The AI client already retried 3 times internally. This is a second safety net.
+                        // Because the client cleaned up (popped orphan message, reversed token count),
+                        // the session is in a clean state — safe to retry the same turn.
+                        const isTransientError = text.startsWith('TransientError:') ||
+                            text.includes('no choices') ||
+                            text.includes('timeout') ||
+                            text.includes('rate limit') ||
+                            text.includes('service unavailable') ||
+                            text.includes('overloaded');
+
+                        if (isTransientError && consecutiveApiErrors < MAX_TURN_RETRIES) {
+                            consecutiveApiErrors++;
+                            const waitSec = consecutiveApiErrors * 3; // 3s, 6s
+
+                            console.warn(
+                                `[TaskRunner] ⚠️ Turn-level retry ${consecutiveApiErrors}/${MAX_TURN_RETRIES} for task ${taskId}. ` +
+                                `Error: "${text.substring(0, 120)}". Waiting ${waitSec}s before retry. ` +
+                                `Turn: ${turnCounter}, Progress: ${task.progress}%`
+                            );
+
+                            task.logs.push(
+                                `⚠️ **Transient API error** (turn retry ${consecutiveApiErrors}/${MAX_TURN_RETRIES}). ` +
+                                `Retrying in ${waitSec}s... The mission context is preserved.`
+                            );
+                            this._onTaskUpdate.fire({ taskId, task });
+
+                            // Wait before retry
+                            await new Promise(r => setTimeout(r, waitSec * 1000));
+
+                            // currentPrompt is STILL the original prompt for this turn
+                            // (tool results, user text, etc.) — safe to re-send
+                            continue; // Retry the same turn
+                        }
+
+                        // Fatal or retries exhausted — fail the mission
+                        consecutiveApiErrors = 0;
+                        const retryInfo = isTransientError
+                            ? ` (after ${MAX_TURN_RETRIES} turn retries + 3 client retries each)`
+                            : ' (non-retryable error)';
+                        console.error(
+                            `[TaskRunner] ❌ Mission ${taskId} failed${retryInfo}. Error: "${text.substring(0, 200)}"`
+                        );
+                        task.logs.push(`\n> [!CAUTION]\n> **AI API Error**${retryInfo}: ${text.substring(0, 300)}`);
                         this.updateStatus(taskId, 'failed', task.progress, `AI Error: ${text.substring(0, 100)}`);
                         this._onTaskUpdate.fire({ taskId, task });
                         this.saveTask(task);
@@ -2875,11 +3447,24 @@ ${task.missionFolder ? `
                         // However, if we have pending user messages, we should continue processing them immediately.
                         if (task.userMessages.length > 0) {
                             currentPrompt = "Proceed.";
+                            consecutiveTextOnlyTurns = 0;
                             continue;
                         }
 
-                        // Otherwise, we STOP the loop and wait for the user to reply.
-                        currentPrompt = "Proceed."; // Default for next time, but we break now.
+                        // Allow the model a few consecutive text-only turns before pausing.
+                        // Models often produce a "thinking" or "analysis" response before
+                        // starting tool calls — especially after absorbing a large PRD.
+                        consecutiveTextOnlyTurns++;
+                        if (consecutiveTextOnlyTurns < MAX_TEXT_ONLY_TURNS) {
+                            console.log(`[TaskRunner] Text-only response ${consecutiveTextOnlyTurns}/${MAX_TEXT_ONLY_TURNS} — nudging agent to continue with tools`);
+                            currentPrompt = "Continue. Use your tools to proceed with the mission. Do not explain — take action now.";
+                            continue;
+                        }
+
+                        // Exhausted text-only allowance — pause for user input
+                        console.log(`[TaskRunner] ${MAX_TEXT_ONLY_TURNS} consecutive text-only responses — pausing for user input`);
+                        consecutiveTextOnlyTurns = 0;
+                        currentPrompt = "Proceed.";
                         break;
                     } else {
                         // "MISSION COMPLETE" detected - VERIFY BEFORE FINISHING
@@ -2904,7 +3489,7 @@ ${task.missionFolder ? `
                             log.includes('[Tool Call]: browser_verify_ui')
                         );
 
-                        // 3. The Gate
+                        // 3. The Gate - Now project-type aware
                         if (isCodeChange && !hasUiVerification) {
                             // Check for explicit "skip testing" override in prompt
                             const skipTesting = task.prompt.toLowerCase().includes('skip testing') ||
@@ -2916,13 +3501,42 @@ ${task.missionFolder ? `
                                 break;
                             }
 
-                            // REJECT COMPLETION
-                            const rejMsg = "⛔ COMPLETION REJECTED: You modified code but did not run 'browser_verify_ui()'. Even for backend changes, you MUST verify that the UI behaviors and data flow remain correct. Background tests (npm test) are NOT sufficient. Please visually verify the application now.";
-                            task.logs.push(`> [System]: ${rejMsg}`);
+                            // Check if browser testing is actually required for this project type
+                            let browserTestingRequired = true; // Safe default
+                            try {
+                                // Get constitution browserTesting setting if available
+                                let constitutionBrowserSetting: BrowserTestingSetting | undefined;
+                                const specMgr = this.taskContexts.get(taskId)?.specManager;
+                                if (specMgr) {
+                                    const structured = specMgr.getStructuredConstitution();
+                                    if (structured?.testingRequirements?.browserTesting) {
+                                        constitutionBrowserSetting = structured.testingRequirements.browserTesting;
+                                    }
+                                }
 
-                            // Feed rejection back to the agent
-                            currentPrompt = rejMsg;
-                            continue; // Force another turn loop
+                                // Auto-detect project type if workspace path is available
+                                if (task.worktreePath) {
+                                    const detectionResult = await detectProjectType(task.worktreePath, constitutionBrowserSetting);
+                                    browserTestingRequired = shouldRequireBrowserTesting(detectionResult, constitutionBrowserSetting);
+                                    console.log(`[TaskRunner] Verification gate: project=${detectionResult.projectType}, hasUI=${detectionResult.hasUI}, browserRequired=${browserTestingRequired}`);
+
+                                    if (!browserTestingRequired) {
+                                        task.logs.push(`> [System]: Browser verification not required - detected ${detectionResult.projectType} project with no UI components (${detectionResult.confidence} confidence).`);
+                                    }
+                                }
+                            } catch (err) {
+                                console.warn('[TaskRunner] Project type detection failed, defaulting to require browser testing:', err);
+                            }
+
+                            if (browserTestingRequired) {
+                                // REJECT COMPLETION
+                                const rejMsg = "⛔ COMPLETION REJECTED: You modified code but did not run 'browser_verify_ui()'. Even for backend changes, you MUST verify that the UI behaviors and data flow remain correct. Background tests (npm test) are NOT sufficient. Please visually verify the application now.";
+                                task.logs.push(`> [System]: ${rejMsg}`);
+
+                                // Feed rejection back to the agent
+                                currentPrompt = rejMsg;
+                                continue; // Force another turn loop
+                            }
                         }
 
                         break;
@@ -3117,11 +3731,8 @@ ${task.missionFolder ? `
                     // Paused for user interaction (implicit or explicit)
                     this.updateStatus(taskId, 'completed', task.progress, 'Waiting for user input...');
                 } else {
-                    // TIMEOUT (Loop finished without setting currentPrompt="Proceed." and without Mission Complete)
-                    this.updateStatus(taskId, 'failed', 100, 'Task paused (Max turns reached). Ask agent to continue.');
-                    task.logs.push(`\n> [System]: **Maximum turns reached.** The agent has paused to prevent infinite loops. You can reply "Continue" to resume.`);
-                    // Archive artifacts for max-turns failures too
-                    this.archiveMissionArtifacts(task);
+                    // Paused for other reasons or loop exited
+                    this.updateStatus(taskId, 'completed', task.progress, 'Mission paused.');
                 }
             }
 
@@ -3352,17 +3963,26 @@ ${task.missionFolder ? `
                     Use your tools to explore the current state of the code if needed.
                     
                     Available Tools:
-                    - read_file(path): Read file content.
+                    - read_file(path, startLine?, endLine?): Read file content. For large files, use startLine/endLine to read specific sections (1-indexed).
                     - apply_diff(path, diff): Apply SEARCH/REPLACE diff to modify existing files. PREFERRED for edits!
                     - write_file(path, content): Write file content. Use for NEW files only.
                     - list_files(path): List directory.
-                    - run_command(command): Execute shell command (git, npm, etc).
+                    - grep_search(query, includePattern?, isRegexp?, maxResults?): Search for text/regex across files. Returns file:line:preview. Use to DISCOVER where code lives.
+                    - file_search(pattern, maxResults?): Find files by name/glob pattern (e.g., '**/*Button*'). Use to DISCOVER correct file paths before reading or editing.
+                    - run_command(command): Execute shell command (git, npm, etc). NEVER use to read files (e.g., cat, type) — use read_file instead.
                     - reload_browser(): Reload the browser preview to verify changes. (Tool, NOT a shell command)
                     - navigate_browser(url): Navigate the browser preview to a specific URL (e.g., 'http://localhost:8080').
                     - search_web(query): Search the web for documentation, solutions, or new concepts.
+                    - get_diagnostics(filePath?): Get compiler errors, lint warnings, and type-check issues instantly. Call with no arguments for all errors, or with a file path for a specific file.
+                    - codebase_search(query): Search the codebase semantically — finds code by concept, not just exact text.
+                    - run_tests(testPattern?): Run tests. Optionally filter by pattern.
                     
                     TOKEN EFFICIENCY (IMPORTANT):
-                    When MODIFYING existing files, use apply_diff instead of write_file:
+                    When MODIFYING existing files, use apply_diff instead of write_file.
+                    For files under 600 lines, read_file("path") returns the full file — no line ranges needed.
+                    For larger files, use grep_search to find lines, then read_file with startLine/endLine.
+                    NEVER use run_command (cat/type) to read files — always use read_file.
+                    
                     apply_diff("file.ts", "old code
                     =======
                     new code
@@ -3408,10 +4028,34 @@ ${task.missionFolder ? `
                         );
 
                         const ruleEnforcer = createRuleEnforcer();
-                        taskContext = { shadowRepo, revertManager, diffAggregator, ruleEnforcer };
+                        
+                        // Initialize TurnManager for phase-aware context (if flag enabled)
+                        let turnManager: TurnManager | undefined;
+                        if (FEATURE_FLAGS.USE_TURN_MANAGER) {
+                            const implementationPlanPath = task.missionFolder
+                                ? path.join(task.missionFolder, 'implementation_plan.md')
+                                : path.join(worktreePath, '.vibearchitect', 'implementation_plan.md');
+                            
+                            turnManager = new TurnManager({
+                                maxRecentTurns: 10,
+                                maxTokens: DEFAULT_TOKEN_LIMIT, // Will be updated when client is available
+                                implementationPlanPath,
+                                workspaceRoot: worktreePath
+                            });
+                            
+                            await turnManager.loadImplementationPlan(implementationPlanPath);
+                            
+                            if (turnManagerLoggingEnabled()) {
+                                console.log(`[TaskRunner] TurnManager initialized for resumed task ${taskId}`);
+                            }
+                        }
+                        
+                        taskContext = { shadowRepo, revertManager, diffAggregator, ruleEnforcer, turnManager };
                         this.taskContexts.set(taskId, taskContext);
                     }
 
+
+                    const replyTools = getMainAgentTools();
 
                     if (modelId.startsWith('gpt')) {
                         task.logs.push(`> [System]: Resuming with ${modelId} via Copilot...`);
@@ -3422,14 +4066,14 @@ ${task.missionFolder ? `
                             return;
                         }
                         taskContext.copilotGPT = gptClient;
-                        session = gptClient.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
+                        session = gptClient.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low', true, replyTools);
                     } else if (modelId.startsWith('gemini')) {
                         task.logs.push(`> [System]: Resuming with ${modelId} via Copilot...`);
                         const geminiCopilotClient = new CopilotGeminiClient();
                         const initialized = await geminiCopilotClient.initialize(modelId);
                         if (initialized) {
                             taskContext.copilotGemini = geminiCopilotClient;
-                            session = geminiCopilotClient.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
+                            session = geminiCopilotClient.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low', true, replyTools);
                         } else {
                             const geminiApiKey = config.get<string>('geminiApiKey') || '';
                             if (!geminiApiKey) {
@@ -3449,7 +4093,7 @@ ${task.missionFolder ? `
                             return;
                         }
                         taskContext.copilotClaude = copilotClient;
-                        session = copilotClient.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low');
+                        session = copilotClient.startSession(systemPrompt, task.mode === 'planning' ? 'high' : 'low', true, replyTools);
                     } else if (isClaudeModel) {
                         const claudeApiKey = config.get<string>('claudeApiKey') || '';
                         if (!claudeApiKey) {
@@ -3470,6 +4114,18 @@ ${task.missionFolder ? `
                         session = geminiClient.startSession(systemPrompt, 'high');
                     }
                     this.sessions.set(taskId, session);
+
+                    // Update token limits from the actual VS Code LM API (Copilot clients only)
+                    const resumeCopilotClient = taskContext.copilotClaude || taskContext.copilotGPT || taskContext.copilotGemini;
+                    if (resumeCopilotClient) {
+                        const apiLimits = resumeCopilotClient.getModelLimits();
+                        if (apiLimits?.maxInputTokens && apiLimits.maxInputTokens > 0) {
+                            if (taskContext.turnManager) {
+                                taskContext.turnManager.updateMaxTokens(apiLimits.maxInputTokens);
+                            }
+                            console.log(`[TaskRunner] (Resume) Updated token limits from API: ${apiLimits.maxInputTokens}`);
+                        }
+                    }
                 }
 
                 if (session && worktreePath) {
@@ -3580,7 +4236,29 @@ ${task.missionFolder ? `
                 );
 
                 const ruleEnforcer = createRuleEnforcer();
-                taskContext = { shadowRepo, revertManager, diffAggregator, ruleEnforcer };
+                
+                // Initialize TurnManager for phase-aware context (if flag enabled)
+                let turnManager: TurnManager | undefined;
+                if (FEATURE_FLAGS.USE_TURN_MANAGER) {
+                    const implementationPlanPath = task.missionFolder
+                        ? path.join(task.missionFolder, 'implementation_plan.md')
+                        : path.join(task.worktreePath, '.vibearchitect', 'implementation_plan.md');
+                    
+                    turnManager = new TurnManager({
+                        maxRecentTurns: 10,
+                        maxTokens: DEFAULT_TOKEN_LIMIT, // Will be updated when client is available
+                        implementationPlanPath,
+                        workspaceRoot: task.worktreePath
+                    });
+                    
+                    await turnManager.loadImplementationPlan(implementationPlanPath);
+                    
+                    if (turnManagerLoggingEnabled()) {
+                        console.log(`[TaskRunner] TurnManager initialized for revert context ${taskId}`);
+                    }
+                }
+                
+                taskContext = { shadowRepo, revertManager, diffAggregator, ruleEnforcer, turnManager };
                 this.taskContexts.set(taskId, taskContext);
 
             } else {
@@ -3621,13 +4299,22 @@ ${task.missionFolder ? `
         if (!task || !task.fileEdits) {
             return undefined;
         }
-        // Find all edits for this path this path and return the most recent one
+        // Find all edits for this path
         const editsForPath = task.fileEdits.filter(e => e.path === filePath || e.path.endsWith(filePath) || filePath.endsWith(e.path));
         if (editsForPath.length === 0) {
             return undefined;
         }
-        // Return the last (most recent) edit
-        return editsForPath[editsForPath.length - 1];
+        // Return cumulative diff: beforeContent from the first edit, afterContent from the last
+        // This shows the user everything that changed from the original file state
+        const firstEdit = editsForPath[0];
+        const lastEdit = editsForPath[editsForPath.length - 1];
+        return {
+            path: lastEdit.path,
+            beforeContent: firstEdit.beforeContent,
+            afterContent: lastEdit.afterContent,
+            timestamp: lastEdit.timestamp,
+            checkpointId: lastEdit.checkpointId
+        };
     }
 
     /**
@@ -3887,6 +4574,219 @@ ${task.missionFolder ? `
     }
 
     /**
+     * Run parallel read-only sub-agents for Discovery phase analysis.
+     * Each sub-agent gets its own AI session, reads the specified files,
+     * answers the question, and writes findings to .vibearchitect/analysis/<id>.md.
+     */
+    private async runDiscoverySubAgents(
+        taskId: string,
+        tasks: Array<{ id: string; description: string; files: string[]; question: string }>,
+        workspaceRoot: string,
+        tools: AgentTools,
+        missionFolder?: string
+    ): Promise<string> {
+        const MAX_TASKS = 8;
+        const MAX_FILES_PER_TASK = 20; // No practical cap for testing
+        const MAX_SUB_AGENT_TURNS = 10;
+        const MAX_PARALLEL = 5;
+
+        // Validate and cap inputs
+        if (tasks.length > MAX_TASKS) {
+            console.warn(`[TaskRunner] 🔍 spawn_analysis_agents: Capping tasks from ${tasks.length} to ${MAX_TASKS}`);
+            tasks = tasks.slice(0, MAX_TASKS);
+        }
+
+        for (const t of tasks) {
+            // Sanitize id for filesystem safety
+            t.id = t.id.replace(/[^a-zA-Z0-9_]/g, '_').substring(0, 60);
+            if (t.files.length > MAX_FILES_PER_TASK) {
+                console.warn(`[TaskRunner] 🔍 Sub-agent [${t.id}]: Capping files from ${t.files.length} to ${MAX_FILES_PER_TASK}`);
+                t.files = t.files.slice(0, MAX_FILES_PER_TASK);
+            }
+        }
+
+        // Create analysis output directory
+        const analysisDir = path.join(
+            missionFolder || path.join(workspaceRoot, '.vibearchitect'),
+            'analysis'
+        );
+        fs.mkdirSync(analysisDir, { recursive: true });
+
+        // Get the active Copilot client
+        const taskContext = this.taskContexts.get(taskId);
+        const mainClient = taskContext?.copilotClaude || taskContext?.copilotGPT || taskContext?.copilotGemini;
+        if (!mainClient) {
+            return 'Error: No Copilot client available for sub-agent analysis.';
+        }
+
+        // Try to use Sonnet 4.6 for sub-agents (fast, cost-effective, reliable tool calls)
+        let subAgentClient: CopilotClaudeClient | CopilotGPTClient | CopilotGeminiClient = mainClient;
+        try {
+            const sonnetClient = new CopilotClaudeClient();
+            const sonnetTargets = ['claude-sonnet-4.6', 'claude-4.6-sonnet', 'sonnet-4.6', 'claude-sonnet-4', 'claude-4-sonnet', 'sonnet-4'];
+            let sonnetFound = false;
+            for (const target of sonnetTargets) {
+                if (await sonnetClient.initialize(target)) {
+                    subAgentClient = sonnetClient;
+                    sonnetFound = true;
+                    console.log(`[TaskRunner] 🔍 Sub-agents will use ${target} (cost-optimized discovery)`);
+                    break;
+                }
+            }
+            if (!sonnetFound) {
+                console.log(`[TaskRunner] 🔍 Sonnet not available, sub-agents will use main agent model`);
+            }
+        } catch (err: any) {
+            console.warn(`[TaskRunner] 🔍 Failed to initialize Sonnet for sub-agents: ${err.message}. Using main agent model.`);
+        }
+
+        // Sub-agent runner for a single task
+        const runSingleSubAgent = async (task: { id: string; description: string; files: string[]; question: string }): Promise<{ id: string; success: boolean; chars: number; turns: number }> => {
+            const startTime = Date.now();
+            console.log(`[TaskRunner] 🔍 Sub-agent [${task.id}]: Starting — ${task.description} (${task.files.length} files)`);
+
+            const subSystemPrompt = `You are a code analysis assistant. You have access to read-only tools to explore a codebase.
+Your job: ${task.description}
+Your specific question to answer: ${task.question}
+
+Guidelines:
+- You have a maximum of ${MAX_SUB_AGENT_TURNS} tool-call turns to complete your analysis
+- Focus on answering the specific question thoroughly
+- Include KEY CODE VERBATIM in your analysis: function signatures, class definitions, data structures, conditional logic, and important constants — do not paraphrase code, quote it
+- When analyzing business logic, include the exact formulas, calculations, and branching conditions
+- Your final response (when you have no more tool calls) should be a structured analysis with code excerpts
+- Follow imports and references across files when they are relevant to the question`;
+
+            const subAgentToolSet = getSubAgentTools();
+            const session = subAgentClient.startSession(subSystemPrompt, 'low', true, subAgentToolSet);
+
+            let finalAnalysis = '';
+            let prompt: string | any[] = `Analyze the following files: ${task.files.join(', ')}\n\nQuestion: ${task.question}\n\nStart by reading the files.`;
+
+            let turn = 0;
+            for (turn = 0; turn < MAX_SUB_AGENT_TURNS; turn++) {
+                try {
+                    const result = await session.sendMessage(prompt);
+                    const response = result.response;
+                    const text = response.text();
+                    const functionCalls = response.functionCalls();
+
+                    const turnLabel = (!functionCalls || functionCalls.length === 0) ? 'final-response' : functionCalls.map(c => c.name).join(', ');
+                    console.log(`[TaskRunner] 🔍 Sub-agent [${task.id}]: Turn ${turn + 1}/${MAX_SUB_AGENT_TURNS} — ${turnLabel}`);
+
+                    if (!functionCalls || functionCalls.length === 0) {
+                        // No more tool calls — this is the final analysis
+                        finalAnalysis = text;
+                        break;
+                    }
+
+                    // Execute ONLY read-only tools
+                    const toolResults: any[] = [];
+                    for (const call of functionCalls) {
+                        let toolResult: string;
+                        switch (call.name) {
+                            case 'read_file':
+                                toolResult = await tools.readFile(
+                                    call.args.path as string,
+                                    call.args.startLine as number | undefined,
+                                    call.args.endLine as number | undefined
+                                );
+                                break;
+                            case 'grep_search':
+                                toolResult = await tools.grepSearch(
+                                    call.args.query as string,
+                                    {
+                                        includePattern: call.args.includePattern as string | undefined,
+                                        isRegexp: call.args.isRegexp as boolean | undefined,
+                                        maxResults: call.args.maxResults as number | undefined
+                                    }
+                                );
+                                break;
+                            case 'file_search':
+                                toolResult = await tools.fileSearch(
+                                    call.args.pattern as string,
+                                    call.args.maxResults as number | undefined
+                                );
+                                break;
+                            case 'list_files':
+                                toolResult = await tools.listFiles(call.args.path as string);
+                                break;
+                            case 'get_diagnostics':
+                                toolResult = await tools.getDiagnostics(call.args.filePath as string | undefined);
+                                break;
+                            case 'codebase_search':
+                                toolResult = await tools.codebaseSearch(call.args.query as string);
+                                break;
+                            default:
+                                toolResult = `Error: Tool "${call.name}" is not available to analysis agents. Only read-only tools (read_file, grep_search, file_search, list_files, get_diagnostics, codebase_search) are allowed.`;
+                        }
+                        toolResults.push({
+                            functionResponse: { name: call.name, response: { content: toolResult } }
+                        });
+                    }
+                    prompt = toolResults;
+                } catch (err: any) {
+                    console.error(`[TaskRunner] 🔍 Sub-agent [${task.id}]: Turn ${turn + 1} error — ${err.message}`);
+                    finalAnalysis = `Analysis incomplete due to error: ${err.message}`;
+                    break;
+                }
+            }
+
+            if (!finalAnalysis) {
+                finalAnalysis = 'Analysis incomplete: sub-agent exhausted maximum turns without producing a final response.';
+            }
+
+            // Write the analysis to disk
+            const analysisPath = path.join(analysisDir, `${task.id}.md`);
+            const content = `# Analysis: ${task.description}\n\n**Question:** ${task.question}\n**Files analyzed:** ${task.files.join(', ')}\n\n---\n\n${finalAnalysis}`;
+            fs.writeFileSync(analysisPath, content, 'utf-8');
+
+            const elapsed = Date.now() - startTime;
+            console.log(`[TaskRunner] 🔍 Sub-agent [${task.id}]: Completed in ${turn + 1} turns, analysis written to ${analysisPath} (${content.length} chars, ${elapsed}ms)`);
+
+            return { id: task.id, success: true, chars: content.length, turns: turn + 1 };
+        };
+
+        // Run sub-agents in parallel batches of MAX_PARALLEL
+        const allResults: PromiseSettledResult<{ id: string; success: boolean; chars: number; turns: number }>[] = [];
+        const batches = Math.ceil(tasks.length / MAX_PARALLEL);
+
+        for (let batch = 0; batch < batches; batch++) {
+            const batchTasks = tasks.slice(batch * MAX_PARALLEL, (batch + 1) * MAX_PARALLEL);
+            console.log(`[TaskRunner] 🔍 Discovery sub-agents: Spawning ${batchTasks.length} analysis agents (parallel batch ${batch + 1}/${batches})`);
+
+            const batchResults = await Promise.allSettled(batchTasks.map(t => runSingleSubAgent(t)));
+            allResults.push(...batchResults);
+        }
+
+        // Build summary result for main agent
+        const succeeded = allResults.filter(r => r.status === 'fulfilled').length;
+        const failed = allResults.filter(r => r.status === 'rejected').length;
+
+        // Log failures
+        for (let i = 0; i < allResults.length; i++) {
+            const r = allResults[i];
+            if (r.status === 'rejected') {
+                console.error(`[TaskRunner] 🔍 Sub-agent [${tasks[i].id}]: FAILED — ${r.reason?.message || r.reason}`);
+            }
+        }
+
+        console.log(`[TaskRunner] 🔍 Discovery sub-agents: ${succeeded}/${tasks.length} completed. Artifacts at ${analysisDir}`);
+
+        let summary = `Discovery analysis complete. ${succeeded}/${tasks.length} agents succeeded.${failed > 0 ? ` ${failed} failed.` : ''}\n\nAnalysis artifacts:\n`;
+        for (const task of tasks) {
+            const analysisPath = path.join(analysisDir, `${task.id}.md`);
+            const exists = fs.existsSync(analysisPath);
+            const relPath = missionFolder
+                ? path.relative(workspaceRoot, analysisPath).replace(/\\/g, '/')
+                : `.vibearchitect/analysis/${task.id}.md`;
+            summary += `- ${relPath} — ${task.description}${exists ? '' : ' (FAILED)'}\n`;
+        }
+        summary += `\nUse read_file to review each analysis before proceeding to planning.`;
+        return summary;
+    }
+
+    /**
      * Build mode-specific workflow instructions for the AI agent.
      * Used by both processTask() and replyToTask() for consistency.
      */
@@ -3927,7 +4827,7 @@ Do NOT write code in refinement mode. Focus only on requirements clarification.
 CORE WORKFLOW (FAST MODE):
 1. ACT: Execute the request immediately.
 2. NO PLANNING DOCS: Do NOT create '.vibearchitect/task.md' or '.vibearchitect/implementation_plan.md' unless explicitly asked.
-3. EXPLORE (optional): Only if needed to locate files.
+3. EXPLORE (if needed): Use file_search / grep_search to locate files before reading or editing. Never guess paths.
 
 4. ⚠️ TEST & VERIFY (MANDATORY - CANNOT SKIP):
    
@@ -3968,14 +4868,14 @@ WORKFLOW PHASES (STRICT ORDER - CANNOT SKIP):
 PHASE 1: DISCOVERY (Read-Only)
 ═══════════════════════════════════════════════════════════════════════════════
 Purpose: Understand the codebase before planning
-Allowed tools: read_file, list_files ONLY
+Allowed tools: read_file, list_files, file_search, grep_search (read-only tools)
 Forbidden: write_file, apply_diff, run_command (until Phase 2/3)
 
 Steps:
 1a. **CHECK FOR PRD** (Refinement Mode Output):
-    - Check if PRD exists at '.vibearchitect/prd.md' or '.vibearchitect/current/prd.md'
-    - If PRD exists: READ IT FIRST - this is the APPROVED specification
-    - Your plans MUST implement the PRD requirements exactly
+    - Check if PRD exists (the task description above provides the exact path, typically under .vibearchitect/missions/)
+    - If PRD exists: Use read_file to read the FULL PRD yourself — do NOT delegate PRD reading to sub-agents
+    - This is the APPROVED specification — your plans MUST implement the PRD requirements exactly
 
 1b. **CHECK FOR EXISTING PLAN** (Phased Implementation):
     - Check if '.vibearchitect/task.md' or '.vibearchitect/implementation_plan.md' exists
@@ -3984,10 +4884,21 @@ Steps:
     - Do NOT create new plans - continue the existing one
 
 1c. **EXPLORE CODEBASE**:
-    - Use list_files / read_file to understand the project structure
+${FEATURE_FLAGS.USE_DISCOVERY_SUB_AGENTS ? `    - Use list_files, file_search, and grep_search to discover file PATHS and project structure
+    - Do NOT use read_file to read project source code files during Discovery — delegate source code reading to sub-agents in step 1d
+    - EXCEPTION: Always use read_file directly for .vibearchitect/ mission artifacts (prd.md, task.md, implementation_plan.md, analysis/*.md). These are YOUR specifications — never delegate them to sub-agents.
+    - Your goal in this step is ONLY to identify which source code files are relevant and what questions need answering
+
+1d. **DEEP ANALYSIS (MANDATORY)**:
+    - You MUST call spawn_analysis_agents to have sub-agents read and analyze the source code files you discovered in 1c
+    - Do NOT include mission artifacts (prd.md, task.md, implementation_plan.md) in spawn_analysis_agents tasks — read those yourself with read_file
+    - Group related source code files into focused analysis tasks with specific questions
+    - Review the analysis artifacts (use read_file on the .vibearchitect/analysis/*.md outputs) before proceeding to Phase 2
+    - You may spawn additional analysis agents if gaps are found
+` : `    - Use list_files / read_file to understand the project structure
     - Read as many files as needed to create a comprehensive plan
     - No artificial limits on exploration
-
+`}
 ⚠️ CRITICAL - IGNORE MISSION SUMMARIES:
    - NEVER read 'mission_summary.md' - it means a PREVIOUS mission is done!
    - If you find mission_summary.md, IGNORE it completely
@@ -4167,5 +5078,381 @@ ${reviewEnabled ? `
 - Separate from plan approval
 ` : ''}
         `.trim();
+    }
+
+    /**
+     * Returns the base agent instructions (tool usage, apply_diff rules, browser testing,
+     * python rules, etc.) that are shared across initial session creation and phase
+     * boundary resets.
+     */
+    private getBaseAgentInstructions(taskId: string, missionFolder?: string): string {
+        return `=== BASIC TOOLS ===
+            - read_file(path, startLine?, endLine?): Read file content. For large files (>300 lines), use startLine/endLine to read specific sections. Lines are 1-indexed.
+            - write_file(path, content): Write file content (auto-creates dirs). Use for NEW files only.
+                                          CRITICAL: ALL non-code/temporary files (notes, poems, plans) MUST go into .vibearchitect/ folder.
+                                          NEVER create .txt/.md files at workspace root unless explicitly asked for documentation.
+${missionFolder ? `
+            === MISSION ARTIFACTS (ISOLATION) ===
+            Your mission artifacts folder is: .vibearchitect/missions/${taskId}/
+            ⚠️ NEVER browse or read artifacts from other mission folders in .vibearchitect/missions/.
+            Only access YOUR folder: .vibearchitect/missions/${taskId}/
+            The system will transparently route your .vibearchitect/ artifact reads/writes there.
+` : ''}
+            - apply_diff(path, diff): Apply SEARCH/REPLACE diff to modify existing files. PREFERRED for edits.
+            - list_files(path): List directory.
+            - grep_search(query, includePattern?, isRegexp?, maxResults?): Search for text/regex across files. Returns file:line:preview. Use to DISCOVER where code lives AND to find line numbers in large files.
+            - file_search(pattern, maxResults?): Find files by name/glob pattern (e.g., '**/*Button*', 'src/**/*.tsx'). Use to DISCOVER correct file paths before reading or editing.
+            - run_command(command): Execute shell command (git, npm, etc). NEVER use run_command to read files (e.g., cat, type) — always use read_file.
+            - search_web(query): Search the web for documentation, solutions, or new concepts.
+            - get_diagnostics(filePath?): Get compiler errors, lint warnings, and type-check issues instantly from the IDE. Call with no arguments for all errors, or with a file path for a specific file.
+            - codebase_search(query): Search the codebase semantically — finds code by concept, not just exact text.
+            - run_tests(testPattern?): Run tests. Optionally filter by pattern.
+            - update_phase_status(completedPhase, nextPhase, summary, implementationPhaseNumber?): Declare a phase transition.
+              Call this ONCE when you finish a phase and are about to start the next one.
+              Valid phases: 'refinement', 'planning', 'implementation', 'testing', 'done'.
+              Examples:
+                - After PRD approved in refinement: update_phase_status("refinement", "planning", "PRD approved by user")
+                - After writing task.md + implementation_plan.md: update_phase_status("planning", "implementation", "Created task checklist and implementation plan")
+                - After finishing implementation Phase 2: update_phase_status("implementation", "implementation", "Completed Phase 2: added CSS styles", 2)
+                - After all implementation done: update_phase_status("implementation", "testing", "All phases implemented")
+              ⚠️ MANDATORY: You MUST call this at each phase boundary. Do NOT skip it.
+            
+            === FILE DISCOVERY (IMPORTANT) ===
+            Before reading or editing files you haven't seen yet:
+              1. Use codebase_search("concept or feature description") for conceptual exploration — e.g., "authentication middleware", "database connection", "error handling"
+              2. Use file_search("**/*PartialName*") to find files by name
+              3. Use grep_search("className or functionName") to find exact text matches
+              4. NEVER guess file paths — verify with file_search or list_files first
+              5. If read_file returns an error, use file_search to locate the correct file
+              6. Prefer codebase_search when you don't know exact names; prefer grep_search when you know the exact text
+            
+            === TOKEN EFFICIENCY (CRITICAL) ===
+            When MODIFYING existing files, ALWAYS use apply_diff instead of write_file.
+            
+            READING FILES:
+              - Files under 600 lines: read_file("path") with NO line ranges. Returns the full file.
+              - Files over 600 lines: use grep_search to find the line number, then read_file with startLine/endLine.
+              - If a partial read isn't enough, call read_file AGAIN with a wider range or no range.
+              - NEVER use run_command (cat, type, more, head) to read files — always use read_file.
+            
+            apply_diff Format:
+            <<<<<<< SEARCH
+            exact code to find (must match perfectly)
+            =======
+            replacement code
+            >>>>>>> REPLACE
+            
+            Example - to change a function name:
+            apply_diff("src/utils.ts", "<<<<<<< SEARCH
+            function oldName() {
+            =======
+            function newName() {
+            >>>>>>> REPLACE")
+            
+            === APPLY_DIFF BEST PRACTICES ===
+            1. SEARCH block must match file content EXACTLY (including whitespace and indentation)
+            2. Include 2-3 lines of unique context to ensure correct match location
+            3. BATCH ALL CHANGES to the same file in ONE apply_diff call:
+               <<<<<<< SEARCH
+               first change
+               =======
+               first replacement
+               >>>>>>> REPLACE
+               
+               <<<<<<< SEARCH
+               second change
+               =======
+               second replacement
+               >>>>>>> REPLACE
+            4. For large files (>300 lines), add line hints: <<<<<<< SEARCH @@ 120-135 @@
+            5. Use write_file ONLY for creating NEW files
+            6. ALWAYS read_file BEFORE apply_diff to see exact current content
+            7. If apply_diff fails, read the file again - content may have changed
+            
+            === SIMPLE PREVIEW (just for quick display to user) ===
+            - reload_browser(): Reload the embedded preview pane. Use ONLY to show the user what you built.
+            - navigate_browser(url): Navigate the embedded preview to a URL. Does NOT verify anything.
+            
+            === AUTOMATED UI TESTING (MANDATORY for verification) ===
+            Use these tools to VERIFY your work. They provide AI-powered analysis and self-healing:
+            - browser_launch(true): Launch Chrome with video recording. ALWAYS use recordVideo=true.
+            - browser_navigate(url): Navigate and wait for page load.
+            - browser_screenshot(name?): Take a screenshot.
+            - browser_click(selector): Click an element.
+            - browser_type(selector, text): Type into an input.
+            - browser_wait_for(selector): Wait for an element.
+            - browser_get_dom(): Get page HTML.
+            - browser_verify_ui(category, description): CRITICAL - This uses AI Vision to verify the UI matches expectations.
+            - browser_close(): Close browser and save the video recording.
+${FEATURE_FLAGS.USE_DISCOVERY_SUB_AGENTS ? `
+            === DISCOVERY ACCELERATION TOOL (MANDATORY) ===
+            - spawn_analysis_agents(tasks): Spawns parallel read-only analysis agents for deep codebase investigation.
+              Each agent gets its own context, reads the specified files, and writes findings to disk.
+
+              ⚠️ MANDATORY: You MUST use this tool during Phase 1 Discovery instead of reading source code files yourself.
+              After initial file_search/grep_search/list_files to discover what files exist, call spawn_analysis_agents
+              to have sub-agents read and analyze source code. Do NOT use read_file to analyze source code yourself during Discovery.
+              EXCEPTION: Always read .vibearchitect/ mission artifacts (prd.md, task.md, implementation_plan.md) directly with read_file — never delegate these to sub-agents.
+
+              Each task needs: id (unique string), description (what to analyze), files (array of paths), question (specific question).
+              Rules: max 8 tasks per call. Use focused questions per task.
+              After agents complete, use read_file on the analysis artifacts to review findings.
+` : ''}
+            === CRITICAL RULES ===
+            
+            1. **VERIFICATION IS MANDATORY**: After creating any web UI, you MUST verify it:
+               a) Start server: run_command("python -m http.server 8080") or similar
+               b) Launch automated browser: browser_launch(true)  <-- ALWAYS with recording
+               c) Navigate: browser_navigate("http://localhost:8080")
+               d) AI Verify: browser_verify_ui("page-name", "description of expected UI")
+               e) If FAIL: Read the issues, fix the code, and call browser_verify_ui AGAIN
+               f) If PASS: browser_close() to save the video
+               g) (Optional) Show to user: navigate_browser("http://localhost:8080")
+               
+            2. **SELF-HEALING LOOP**: 
+               - browser_verify_ui() returns PASS or FAIL with specific issues
+               - If FAIL: Fix each issue listed, then verify again
+               - Repeat until PASS (max 3 attempts)
+               
+            3. **DO NOT SKIP AUTOMATED TESTING**:
+               - reload_browser() is NOT verification - it just shows the preview
+               - ONLY browser_verify_ui() provides actual verification with AI analysis
+               - Never say "verified" unless you called browser_verify_ui and got PASS
+               
+            4. **VIDEO RECORDING**: Always use browser_launch(true) so the session is recorded.
+            
+            5. **COMMUNICATE**: Explain what you did and what the verification found.
+            
+            6. **PYTHON RULES**:
+               - NEVER install globally.
+               - Create a venv: 'python -m venv venv'.
+               - Install packages: 'venv/Scripts/pip install ...' (Windows) or 'venv/bin/pip ...' (Mac/Linux).
+               - Run scripts: 'venv/Scripts/python app.py' (Windows) or 'venv/bin/python app.py' (Mac/Linux).
+               
+            7. **REASONING**: Before calling ANY tool, explain your plan in 1-2 sentences.`;
+    }
+
+    /**
+     * Build a fresh system prompt for a new session at a phase boundary.
+     * Used when USE_PHASE_BOUNDARY_RESETS is enabled to create context-efficient
+     * sessions that reference artifacts on disk instead of carrying full conversation history.
+     */
+    private buildPhaseTransitionPrompt(
+        taskId: string,
+        task: AgentTask,
+        workspaceRoot: string,
+        transitionType: 'planning-to-implementation' | 'phase-to-phase' | 'implementation-to-testing',
+        completedPhaseInfo: {
+            phaseNumber?: number;
+            phaseName?: string;
+            filesModified: string[];
+            filesCreated: string[];
+            summary: string;
+        }
+    ): string {
+        const missionPrompt = task.displayPrompt || task.prompt.substring(0, 500);
+
+        // Start with base agent identity + instructions
+        let prompt = `You are an expert software engineer connected to a real file system.
+            You are working DIRECTLY in the user's workspace.
+            
+            Your Mission: ${task.prompt}
+            
+${this.getBaseAgentInstructions(taskId, task.missionFolder)}
+`;
+
+        // Add mode workflow (implementation/fast for all transition types)
+        const modeWorkflow = this.buildModeWorkflow(task.mode || 'planning', false, this._globalAgentMode === 'review-enabled');
+        prompt += `\n${modeWorkflow}\n`;
+
+        // Add constitution if available
+        const taskContext = this.taskContexts.get(taskId);
+        if (taskContext?.specManager && taskContext.specManager.hasConstitution()) {
+            const constitution = taskContext.specManager.getConstitution();
+            prompt += `
+            
+            === PROJECT CONSTITUTION ===
+            The following constitution defines the rules and patterns you MUST follow for this workspace.
+            Violating these rules will result in poor code quality and user rejection.
+            
+            ${constitution}
+            
+            === END CONSTITUTION ===
+            
+            IMPORTANT: Always respect the constitution when making decisions about:
+            - Technology choices
+            - File organization
+            - Coding patterns
+            - Testing approaches
+            `;
+        }
+
+        // Add artifact references
+        const artifactReferences = this.buildArtifactReferenceSection(workspaceRoot, task.missionFolder);
+        if (artifactReferences) {
+            prompt += artifactReferences;
+        }
+
+        // Add transition-specific context summary
+        switch (transitionType) {
+            case 'planning-to-implementation':
+                prompt += `
+## Session Context
+Planning is complete. The following artifacts have been created and define your work:
+- Read the implementation_plan.md for phased implementation details
+- Read the task.md for the task checklist — mark [x] when done
+- If a PRD exists, read it for full requirements
+
+Begin implementation. Read the implementation_plan.md first to understand the phases.
+Your original mission: ${missionPrompt}
+`;
+                break;
+
+            case 'phase-to-phase':
+                prompt += `
+## Session Context
+Implementation Phase ${completedPhaseInfo.phaseNumber || '?'} ("${completedPhaseInfo.phaseName || 'unnamed'}") is complete.
+
+${completedPhaseInfo.filesCreated.length > 0 ? `Files created in Phase ${completedPhaseInfo.phaseNumber}: ${completedPhaseInfo.filesCreated.join(', ')}` : ''}
+${completedPhaseInfo.filesModified.length > 0 ? `Files modified in Phase ${completedPhaseInfo.phaseNumber}: ${completedPhaseInfo.filesModified.join(', ')}` : ''}
+Summary: ${completedPhaseInfo.summary}
+
+You are now starting Phase ${(completedPhaseInfo.phaseNumber || 0) + 1}. Read implementation_plan.md to see what's needed.
+Mark completed tasks [x] in task.md as you finish them.
+Your original mission: ${missionPrompt}
+`;
+                break;
+
+            case 'implementation-to-testing':
+                prompt += `
+## Session Context
+Implementation is complete. All code changes have been made.
+
+You must now test and verify. Read task.md for the full checklist.
+Read implementation_plan.md for the testing/verification section.
+If PRD exists, verify each acceptance criterion.
+Your original mission: ${missionPrompt}
+`;
+                break;
+        }
+
+        return prompt;
+    }
+
+    /**
+     * Create a fresh ISession from the already-initialized Copilot client in taskContext.
+     * Calling startSession() on an existing client creates a new closure with a fresh
+     * messages array while reusing the already-initialized model reference.
+     */
+    private createSessionFromContext(
+        taskId: string,
+        systemPrompt: string,
+        thinkingLevel: 'low' | 'high',
+        tools?: vscode.LanguageModelChatTool[]
+    ): ISession | null {
+        const task = this.tasks.get(taskId);
+        const taskContext = this.taskContexts.get(taskId);
+        if (!task || !taskContext) { return null; }
+
+        const modelId = task.model || '';
+        let newSession: ISession | null = null;
+
+        if (modelId.startsWith('gpt') && taskContext.copilotGPT) {
+            newSession = taskContext.copilotGPT.startSession(systemPrompt, thinkingLevel, true, tools);
+        } else if (modelId.startsWith('gemini') && taskContext.copilotGemini) {
+            newSession = taskContext.copilotGemini.startSession(systemPrompt, thinkingLevel, true, tools);
+        } else if (modelId.startsWith('claude') && taskContext.copilotClaude) {
+            newSession = taskContext.copilotClaude.startSession(systemPrompt, thinkingLevel, true, tools);
+        } else if (taskContext.claude) {
+            newSession = taskContext.claude.startSession(systemPrompt, thinkingLevel);
+        } else if (taskContext.gemini) {
+            newSession = taskContext.gemini.startSession(systemPrompt, 'high');
+        }
+
+        if (newSession) {
+            this.sessions.set(taskId, newSession);
+        }
+
+        return newSession;
+    }
+
+    /**
+     * Build artifact reference section for system prompt.
+     * Phase 4: Artifact-Aware Loading - injects references to source of truth documents
+     * so the agent knows where to find requirements and is encouraged to re-read instead of guessing.
+     * 
+     * @param workspaceRoot - Root path of the workspace
+     * @param missionFolder - Optional mission-specific folder path
+     * @returns Formatted string section or empty string if no artifacts exist
+     */
+    private buildArtifactReferenceSection(workspaceRoot: string, missionFolder?: string): string {
+        const artifacts: { name: string; path: string; description: string; exists: boolean }[] = [];
+        
+        // Determine the base path for artifacts
+        // missionFolder is already an absolute path (e.g. c:\...\missions\agent-123)
+        // so use it directly instead of double-nesting it under workspaceRoot
+        const basePath = missionFolder || path.join(workspaceRoot, '.vibearchitect');
+        
+        // Define the source of truth documents
+        const documentDefs = [
+            { name: 'PRD', file: 'prd.md', description: 'Product requirements and specifications' },
+            { name: 'Task', file: 'task.md', description: 'Task breakdown with checkboxes' },
+            { name: 'Plan', file: 'implementation_plan.md', description: 'Detailed implementation phases' },
+            { name: 'Constitution', file: 'constitution.md', description: 'Coding standards and rules' }
+        ];
+        
+        // Check which artifacts exist on disk
+        for (const doc of documentDefs) {
+            const fullPath = path.join(basePath, doc.file);
+            const relativePath = missionFolder 
+                ? path.relative(workspaceRoot, path.join(missionFolder, doc.file)).replace(/\\/g, '/')
+                : `.vibearchitect/${doc.file}`;
+            
+            const exists = fs.existsSync(fullPath);
+            artifacts.push({
+                name: doc.name,
+                path: relativePath,
+                description: doc.description,
+                exists
+            });
+        }
+        
+        // Also check workspace root for constitution (it might be at root level)
+        const rootConstitutionPath = path.join(workspaceRoot, '.vibearchitect', 'constitution.md');
+        if (fs.existsSync(rootConstitutionPath)) {
+            const constitutionArtifact = artifacts.find(a => a.name === 'Constitution');
+            if (constitutionArtifact && !constitutionArtifact.exists) {
+                constitutionArtifact.path = '.vibearchitect/constitution.md';
+                constitutionArtifact.exists = true;
+            }
+        }
+        
+        // Only include section if at least one artifact exists
+        const existingArtifacts = artifacts.filter(a => a.exists);
+        if (existingArtifacts.length === 0) {
+            return '';
+        }
+        
+        // Build the reference section
+        let section = `
+            
+## Source of Truth Documents
+
+The following documents define the requirements and standards for this mission:
+`;
+        
+        for (const artifact of existingArtifacts) {
+            section += `- **${artifact.name}**: \`${artifact.path}\` (${artifact.description})\n`;
+        }
+        
+        section += `
+**IMPORTANT Guidelines:**
+- 📖 Re-read these files if unsure about requirements instead of guessing
+- ✅ Mark tasks complete in task.md as you finish them: change \`- [ ]\` to \`- [x]\`
+- 🎯 PRD is the ultimate source of truth for WHAT to build
+- 📋 Task.md and implementation_plan.md define HOW to build it
+`;
+        
+        return section;
     }
 }

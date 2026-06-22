@@ -137,6 +137,7 @@ export interface RefinementSessionState {
     currentDraft?: string;         // Current PRD draft markdown
     latestCritique?: CritiqueResult;
     finalArtifact?: RefinementArtifact;
+    currentCycleNumber?: number;   // Track which Analyst→Critic→Refiner cycle we're on
     createdAt: number;
     updatedAt: number;
 }
@@ -169,3 +170,54 @@ export interface QuestionnaireEventPayload {
     contextSummary?: string;
     rawAnalystResponse?: string;  // Original full response for fallback display
 }
+
+/** Represents one complete Analyst→Critic→Refiner pass */
+export interface RefinementCycle {
+    cycleNumber: number;
+    analystDraft: string;           // Draft PRD from analyst
+    critiqueResult?: CritiqueResult; // Structured critique
+    refinedPrd?: string;             // Final PRD from this cycle
+    userFeedback?: string;           // User's change request (if any)
+    clarifications: string[];        // Q&A answers within this cycle
+    timestamp: number;
+}
+
+/** File-based session checkpoint */
+export interface RefinementCheckpoint {
+    sessionId: string;
+    taskId: string;
+    originalPrompt: string;
+    skeletonContext: string;
+    constitutionContext: string;
+    cycles: RefinementCycle[];
+    currentCycleNumber: number;
+    totalIterationCount: number;
+    createdAt: number;
+    updatedAt: number;
+}
+
+/**
+ * Callback type for executing discovery sub-agents from refinement mode.
+ * Injected by TaskRunner at session start — keeps RefinementSession decoupled
+ * from AgentTools and TaskRunner internals.
+ *
+ * @param tasks - Array of discovery tasks to run in parallel
+ * @returns Aggregated findings text (token-capped by the executor)
+ */
+export type DiscoveryExecutor = (
+    tasks: Array<{ id: string; description: string; files: string[]; question: string }>
+) => Promise<string>;
+
+/**
+ * Callback type for executing lightweight read-only tools from refinement mode.
+ * Handles grep_search, list_files, file_search directly without spawning sub-agents.
+ * Injected by TaskRunner at session start — keeps RefinementSession decoupled from AgentTools.
+ *
+ * @param toolName - The tool to execute (grep_search, list_files, file_search)
+ * @param args - Tool-specific arguments (same schema as main agent tools)
+ * @returns Tool execution result as a string
+ */
+export type RefinementToolExecutor = (
+    toolName: string,
+    args: Record<string, any>
+) => Promise<string>;
